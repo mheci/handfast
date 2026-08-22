@@ -15,7 +15,7 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = { workspace = true }
 handfast-ipc = { path = "../ipc" }
 ratatui = "0.29"
