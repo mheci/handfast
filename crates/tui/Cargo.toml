@@ -18,7 +18,7 @@ clap_complete = { workspace = true }
 crossterm = { version = "0.28", features = ["event-stream"] }
 futures-util = { workspace = true }
 handfast-ipc = { path = "../ipc" }
-ratatui = "0.29"
+ratatui = "0.30"
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
