@@ -125,7 +125,11 @@ impl Packet {
         r.read_exact(&mut prefix).await?;
         let len = u32::from_be_bytes(prefix) as usize;
         if len > crate::MAX_PACKET_LEN {
-            tracing::warn!(len, max = crate::MAX_PACKET_LEN, "rejecting oversized frame");
+            tracing::warn!(
+                len,
+                max = crate::MAX_PACKET_LEN,
+                "rejecting oversized frame"
+            );
             return Err(Error::Other(format!(
                 "framed packet of {len} bytes exceeds MAX_PACKET_LEN ({})",
                 crate::MAX_PACKET_LEN

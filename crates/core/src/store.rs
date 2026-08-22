@@ -144,20 +144,19 @@ impl Store {
     /// Remove a device record; deleting an unknown id is a no-op.
     pub fn delete_device(&self, id: &str) -> Result<()> {
         let conn = lock(&self.conn);
-        conn.execute(
-            "DELETE FROM devices WHERE device_id = ?1",
-            params![id],
-        )
-        .map_err(sqlite_err)?;
+        conn.execute("DELETE FROM devices WHERE device_id = ?1", params![id])
+            .map_err(sqlite_err)?;
         Ok(())
     }
 
     /// Fetch a key/value entry, or `None` when absent.
     pub fn kv_get(&self, key: &str) -> Result<Option<String>> {
         let conn = lock(&self.conn);
-        conn.query_row("SELECT v FROM kv WHERE k = ?1", params![key], |row| row.get(0))
-            .optional()
-            .map_err(sqlite_err)
+        conn.query_row("SELECT v FROM kv WHERE k = ?1", params![key], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(sqlite_err)
     }
 
     /// Insert or overwrite a key/value entry.

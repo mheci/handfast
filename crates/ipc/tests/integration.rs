@@ -23,9 +23,7 @@ fn handler() -> Arc<dyn Fn(Request) -> BoxFuture<'static, Response> + Send + Syn
         Box::pin(async move {
             match req {
                 Request::Ping => Response::ok_json(serde_json::json!({ "pong": true })),
-                other => {
-                    Response::err(404, format!("unimplemented method: {other:?}"))
-                }
+                other => Response::err(404, format!("unimplemented method: {other:?}")),
             }
         })
     })
@@ -136,8 +134,7 @@ async fn oversized_frame_gets_connection_dropped_and_server_survives() {
 
     // The server must reject the frame and close this connection promptly.
     let mut sink = Vec::new();
-    let read =
-        tokio::time::timeout(Duration::from_secs(2), raw.read_to_end(&mut sink)).await;
+    let read = tokio::time::timeout(Duration::from_secs(2), raw.read_to_end(&mut sink)).await;
     assert!(
         read.is_ok(),
         "server did not close the oversized-frame connection"
@@ -147,7 +144,11 @@ async fn oversized_frame_gets_connection_dropped_and_server_survives() {
 
     // And the daemon must still serve well-behaved clients afterwards.
     let mut client = Client::connect(&sock).await.expect("reconnect");
-    match client.request(Request::Ping).await.expect("ping after abuse") {
+    match client
+        .request(Request::Ping)
+        .await
+        .expect("ping after abuse")
+    {
         Response::Ok { .. } => {}
         other => panic!("expected Ok after abusive client, got {other:?}"),
     }

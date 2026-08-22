@@ -135,7 +135,10 @@ fn persist_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
-            Error::Cert(format!("unsupported certificate file path {}", path.display()))
+            Error::Cert(format!(
+                "unsupported certificate file path {}",
+                path.display()
+            ))
         })?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let nonce = std::time::SystemTime::now()
@@ -172,5 +175,8 @@ fn open_exclusive_private(path: &Path) -> Result<fs::File> {
 
 #[cfg(not(unix))]
 fn open_exclusive_private(path: &Path) -> Result<fs::File> {
-    Ok(fs::OpenOptions::new().write(true).create_new(true).open(path)?)
+    Ok(fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?)
 }

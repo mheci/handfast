@@ -138,7 +138,9 @@ mod imp {
                 ));
             }
             if input.keyboard_manager.is_none() {
-                tracing::warn!("compositor lacks zwp_virtual_keyboard_manager_v1; key injection disabled");
+                tracing::warn!(
+                    "compositor lacks zwp_virtual_keyboard_manager_v1; key injection disabled"
+                );
             }
             if input.pointer_manager.is_none() {
                 tracing::warn!(
@@ -205,7 +207,11 @@ mod imp {
             keyboard.key(
                 self.now_ms(),
                 keycode,
-                if press { KEY_STATE_PRESSED } else { KEY_STATE_RELEASED },
+                if press {
+                    KEY_STATE_PRESSED
+                } else {
+                    KEY_STATE_RELEASED
+                },
             );
             keyboard.modifiers(depressed, latched, locked, group);
             Ok(())
@@ -263,12 +269,13 @@ mod imp {
         /// protocol's `keymap(format, fd, size)` request).
         fn ensure_keyboard(&mut self) -> Result<&ZwpVirtualKeyboardV1> {
             if self.keyboard.is_none() {
-                let keyboard_manager = self
-                    .keyboard_manager
-                    .clone()
-                    .ok_or_else(|| Error::ProtocolMissing("zwp_virtual_keyboard_manager_v1".to_string()))?;
+                let keyboard_manager = self.keyboard_manager.clone().ok_or_else(|| {
+                    Error::ProtocolMissing("zwp_virtual_keyboard_manager_v1".to_string())
+                })?;
                 let seat = self.seat.clone().ok_or_else(|| {
-                    Error::ProtocolMissing("wl_seat (required to attach a virtual keyboard)".to_string())
+                    Error::ProtocolMissing(
+                        "wl_seat (required to attach a virtual keyboard)".to_string(),
+                    )
                 })?;
                 let keymap = self.ensure_keymap()?;
                 let keymap_text = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
@@ -277,14 +284,16 @@ mod imp {
                 keymap_fd.write_all(keymap_text.as_bytes())?;
                 keymap_fd.flush()?;
 
-                let keyboard =
-                    keyboard_manager.create_virtual_keyboard(&seat, &self.qh, ());
+                let keyboard = keyboard_manager.create_virtual_keyboard(&seat, &self.qh, ());
                 keyboard.keymap(
                     KEYMAP_FORMAT_XKB_V1,
                     keymap_fd.as_fd(),
                     keymap_text.len() as u32,
                 );
-                tracing::debug!(bytes = keymap_text.len(), "uploaded virtual keyboard keymap");
+                tracing::debug!(
+                    bytes = keymap_text.len(),
+                    "uploaded virtual keyboard keymap"
+                );
                 self.keyboard = Some(keyboard);
             }
             Ok(self.keyboard.as_ref().ok_or_else(|| {
@@ -295,13 +304,13 @@ mod imp {
         /// Lazily create the `zwlr_virtual_pointer_v1`.
         fn ensure_pointer(&mut self) -> Result<&ZwlrVirtualPointerV1> {
             if self.pointer.is_none() {
-                let pointer_manager = self
-                    .pointer_manager
-                    .clone()
-                    .ok_or_else(|| Error::ProtocolMissing("zwlr_virtual_pointer_manager_v1".to_string()))?;
+                let pointer_manager = self.pointer_manager.clone().ok_or_else(|| {
+                    Error::ProtocolMissing("zwlr_virtual_pointer_manager_v1".to_string())
+                })?;
                 // Seat is optional per protocol; pass it when known so the
                 // compositor can attribute the device.
-                let pointer = pointer_manager.create_virtual_pointer(self.seat.as_ref(), &self.qh, ());
+                let pointer =
+                    pointer_manager.create_virtual_pointer(self.seat.as_ref(), &self.qh, ());
                 self.pointer = Some(pointer);
             }
             Ok(self.pointer.as_ref().ok_or_else(|| {
@@ -323,7 +332,9 @@ mod imp {
                     None,
                     xkb::COMPILE_NO_FLAGS,
                 )
-                .ok_or_else(|| Error::Other("failed to compile US-qwerty XKB keymap".to_string()))?;
+                .ok_or_else(|| {
+                    Error::Other("failed to compile US-qwerty XKB keymap".to_string())
+                })?;
                 let state = xkb::State::new(&keymap);
                 self.key_state = Some(state);
                 self.keymap = Some(keymap);
@@ -375,7 +386,12 @@ mod imp {
             _: &Connection,
             qh: &QueueHandle<Self>,
         ) {
-            let wl_registry::Event::Global { name, interface, version } = event else {
+            let wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } = event
+            else {
                 return;
             };
             match interface.as_str() {
@@ -391,12 +407,8 @@ mod imp {
                     ));
                 }
                 "zwlr_virtual_pointer_manager_v1" => {
-                    state.pointer_manager = Some(registry.bind(
-                        name,
-                        version.min(POINTER_MANAGER_MAX_VERSION),
-                        qh,
-                        (),
-                    ));
+                    state.pointer_manager =
+                        Some(registry.bind(name, version.min(POINTER_MANAGER_MAX_VERSION), qh, ()));
                 }
                 other => {
                     tracing::trace!(interface = other, "ignoring wayland global");

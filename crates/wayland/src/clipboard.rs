@@ -82,7 +82,9 @@ mod imp {
                 reader.read_to_end(&mut buffer)?;
                 Ok(Some(String::from_utf8_lossy(&buffer).into_owned()))
             }
-            Err(paste::Error::NoSeats | paste::Error::ClipboardEmpty | paste::Error::NoMimeType) => Ok(None),
+            Err(
+                paste::Error::NoSeats | paste::Error::ClipboardEmpty | paste::Error::NoMimeType,
+            ) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -409,7 +411,9 @@ mod imp {
             }
             match super::Clipboard::watch_text() {
                 Err(Error::Unsupported(_) | Error::ProtocolMissing(_) | Error::Other(_)) => Ok(()),
-                Ok(_) => Err(Error::Other("watch unexpectedly succeeded headless".to_string())),
+                Ok(_) => Err(Error::Other(
+                    "watch unexpectedly succeeded headless".to_string(),
+                )),
             }
         }
     }

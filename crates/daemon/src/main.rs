@@ -1,10 +1,8 @@
 //! `handfastd` — the Handfast device-pairing daemon.
 //!
-//! Phase 1 wiring: XDG paths, SQLite state, certificate identity, the IPC
-//! server and a supervision tree that restarts any crashed subsystem with
-//! exponential backoff. Discovery, pairing and plugins land in Phases 2-3;
-//! their supervised tasks are already stubbed in below so the tree shape is
-//! final from day one.
+//! Phase 2 wiring: full KDE Connect-compatible networking — UDP broadcast
+//! discovery, TLS connections with certificate pinning, identity exchange,
+//! pairing, and a device-manager actor that routes packets through plugins.
 //!
 //! # Runtime
 //!
@@ -16,23 +14,35 @@
 //!
 //! The daemon is the only process in the Handfast suite that talks to the
 //! display server. It detects the session type at startup via
-//! [`handfast_wayland::detect_session`] and logs the result; input injection,
-//! clipboard watching and idle inhibition all live behind that bridge.
+//! [`handfast_wayland::detect_session`]; input injection, clipboard watching
+//! and idle inhibition all live behind that bridge.
 
 #![deny(clippy::unwrap_used)]
 #![forbid(unsafe_code)]
 
+mod device;
+mod discovery;
+mod handshake;
+mod tls;
+
+use std::collections::BTreeSet;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use anyhow::Context as _;
 use clap::Parser;
 use futures_util::future::BoxFuture;
 use handfast_core::bus::{Bus, Event};
+use handfast_core::error::Result as CoreResult;
 use handfast_core::paths::Paths;
-use handfast_core::store::{DeviceRow, Store};
+use handfast_core::store::Store;
 use handfast_core::supervise::Supervisor;
 use handfast_ipc::{Request, RequestHandler, Response, ServerEvent};
+use handfast_protocol::{Identity, DEFAULT_TCP_PORT, PROTO_VERSION};
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+
+use crate::device::{Command, Manager};
 
 /// Global allocator: jemalloc where packaging enables it (linux-gnu), mimalloc elsewhere.
 #[cfg(all(target_os = "linux", target_env = "gnu", feature = "jemalloc"))]
@@ -45,11 +55,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Command line surface (kept minimal; the control planes are `hfctl`/GUI).
 #[derive(Debug, Parser)]
-#[command(
-    name = "handfastd",
-    version,
-    about = "Handfast device-pairing daemon"
-)]
+#[command(name = "handfastd", version, about = "Handfast device-pairing daemon")]
 struct Args {
     /// Override the IPC socket path (default: $XDG_RUNTIME_DIR/handfast.sock).
     #[arg(long)]
@@ -57,6 +63,9 @@ struct Args {
     /// Override the state directory (default: $XDG_DATA_HOME/handfast).
     #[arg(long)]
     data_dir: Option<std::path::PathBuf>,
+    /// Display name advertised to peers.
+    #[arg(long, default_value = "Handfast Desktop")]
+    name: String,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -101,16 +110,19 @@ async fn run(args: Args) -> anyhow::Result<()> {
             .await
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let store = Store::open(&db_path)
-        .with_context(|| format!("opening state database at {}", db_path.display()))?;
-    let store = Arc::new(store);
+    let store = Arc::new(
+        Store::open(&db_path)
+            .with_context(|| format!("opening state database at {}", db_path.display()))?,
+    );
 
     // Stable per-install device id; regenerated only if the store is wiped.
     let device_id = ensure_device_id(&store).context("ensuring device identity")?;
 
-    // TLS identity: self-signed cert with CN = device_id, pinned by fingerprint.
-    let _cert = handfast_protocol::tls::CertPair::load_or_generate(&paths.config, &device_id)
-        .context("loading or generating TLS identity")?;
+    // TLS identity: self-signed cert with CN = device id, pinned by fingerprint.
+    let cert = Arc::new(
+        handfast_protocol::tls::CertPair::load_or_generate(&paths.config, &device_id)
+            .context("loading or generating TLS identity")?,
+    );
 
     let session = handfast_wayland::detect_session();
     tracing::info!(
@@ -119,6 +131,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         "session detected"
     );
 
+    let self_identity = build_self_identity(&device_id, &args.name);
     let bus = Bus::new();
     let supervisor = Supervisor::new(bus.clone());
 
@@ -140,7 +153,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                             tracing::debug!(skipped = n, "ipc event bridge lagged");
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            return Ok(());
+                            return CoreResult::Ok(());
                         }
                     }
                 }
@@ -148,9 +161,100 @@ async fn run(args: Args) -> anyhow::Result<()> {
         });
     }
 
-    // IPC control plane.
-    let handler: RequestHandler = build_handler(store.clone(), device_id.clone());
-    let socket_path = args.socket.clone().unwrap_or_else(handfast_ipc::default_socket_path);
+    // Device manager actor — owns pairing state, pinning, plugin dispatch.
+    let factories = handfast_plugins::registry();
+    let (manager_handle, manager) = Manager::new(
+        store.clone(),
+        bus.clone(),
+        device_id.clone(),
+        self_identity.clone(),
+        cert.clone(),
+        factories,
+    );
+    {
+        // The channel cannot be rebuilt after an actor crash (handles would go
+        // stale), so supervision runs exactly one real lifecycle; afterwards
+        // retries end supervision quietly instead of crash-looping uselessly.
+        let cell = Arc::new(std::sync::Mutex::new(Some(manager)));
+        supervisor.spawn("devices", move || {
+            let manager = lock_cell(&cell).take();
+            async move {
+                match manager {
+                    Some(mut manager) => {
+                        manager.load_persisted().await?;
+                        manager.run().await
+                    }
+                    None => CoreResult::Ok(()),
+                }
+            }
+        });
+    }
+
+    // UDP broadcast discovery (announce + listen in one supervised loop).
+    {
+        let identity = self_identity.clone();
+        let self_device_id = device_id.clone();
+        let tx = manager_handle.command_sender();
+        supervisor.spawn("discovery", move || {
+            let identity = identity.clone();
+            let self_device_id = self_device_id.clone();
+            let tx = tx.clone();
+            async move {
+                let socket = discovery::bind().await?;
+                discovery::run(socket, identity, self_device_id, tx).await
+            }
+        });
+    }
+
+    // TCP/TLS listener for inbound connections on the well-known port.
+    {
+        let pair = cert.clone();
+        let mine = self_identity.clone();
+        let tx = manager_handle.command_sender();
+        supervisor.spawn("tcp-listener", move || {
+            let pair = pair.clone();
+            let mine = mine.clone();
+            let tx = tx.clone();
+            async move {
+                let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, DEFAULT_TCP_PORT)).await?;
+                tracing::info!(port = DEFAULT_TCP_PORT, "tcp/tls listening");
+                loop {
+                    let (tcp, peer) = listener.accept().await?;
+                    let pair = pair.clone();
+                    let mine = mine.clone();
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        match async {
+                            let transport = tls::Transport::accept(tcp, pair).await?;
+                            handshake::complete_inbound(transport, &mine).await
+                        }
+                        .await
+                        {
+                            Ok((remote_id, transport)) => {
+                                let _ = tx
+                                    .send(Command::Connected {
+                                        device_id: remote_id,
+                                        transport,
+                                    })
+                                    .await;
+                            }
+                            Err(err) => {
+                                tracing::debug!(%err, %peer, "inbound handshake failed")
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    // IPC control plane backed by live manager queries.
+    let handler: RequestHandler =
+        build_handler(store.clone(), manager_handle.clone(), device_id.clone());
+    let socket_path = args
+        .socket
+        .clone()
+        .unwrap_or_else(handfast_ipc::default_socket_path);
     {
         let socket_path = socket_path.clone();
         supervisor.spawn("ipc-server", move || {
@@ -165,19 +269,6 @@ async fn run(args: Args) -> anyhow::Result<()> {
         });
     }
 
-    // Discovery — replaced by real UDP/TLS discovery in Phase 2.
-    {
-        let shutdown = ShutdownListener::new();
-        supervisor.spawn("discovery", move || {
-            let mut shutdown = shutdown.clone();
-            async move {
-                tracing::info!("discovery stub active until Phase 2");
-                shutdown.wait().await;
-                Ok(())
-            }
-        });
-    }
-
     tracing::info!(%device_id, plugins = handfast_plugins::registry().len(), "handfastd ready");
 
     wait_for_shutdown().await;
@@ -188,26 +279,65 @@ async fn run(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Advertised identity: capabilities aggregated from every registered plugin.
+fn build_self_identity(device_id: &str, name: &str) -> Identity {
+    let mut incoming: BTreeSet<String> = BTreeSet::new();
+    let mut outgoing: BTreeSet<String> = BTreeSet::new();
+    for factory in handfast_plugins::registry() {
+        let meta = factory.meta();
+        incoming.extend(meta.incoming.iter().map(|s| (*s).to_string()));
+        outgoing.extend(meta.outgoing.iter().map(|s| (*s).to_string()));
+    }
+    Identity {
+        device_id: device_id.to_string(),
+        name: name.to_string(),
+        device_type: "desktop".into(),
+        protocol_version: PROTO_VERSION,
+        incoming: incoming.into_iter().collect(),
+        outgoing: outgoing.into_iter().collect(),
+        tcp_source_port: DEFAULT_TCP_PORT,
+    }
+}
+
+/// Lock a possibly poisoned mutex, recovering the guard regardless of poison.
+fn lock_cell<T>(cell: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    cell.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Load-or-create the persistent device id.
 fn ensure_device_id(store: &Store) -> anyhow::Result<String> {
     if let Some(existing) = store.kv_get("device_id").context("reading device_id")? {
         return Ok(existing);
     }
     let fresh = uuid::Uuid::new_v4().to_string();
-    store.kv_set("device_id", &fresh).context("storing device_id")?;
+    store
+        .kv_set("device_id", &fresh)
+        .context("storing device_id")?;
     Ok(fresh)
 }
 
-/// Build the phase-1 request handler backed by SQLite and the wayland bridge.
-fn build_handler(store: Arc<Store>, device_id: String) -> RequestHandler {
+/// Build the request handler backed by SQLite, the wayland bridge and the
+/// live device manager.
+fn build_handler(
+    store: Arc<Store>,
+    manager: device::ManagerHandle,
+    device_id: String,
+) -> RequestHandler {
     Arc::new(move |req: Request| -> BoxFuture<'static, Response> {
         let store = store.clone();
+        let manager = manager.clone();
         let device_id = device_id.clone();
-        Box::pin(async move { handle_request(req, store, device_id).await })
+        Box::pin(async move { handle_request(req, store, manager, device_id).await })
     })
 }
 
-async fn handle_request(req: Request, store: Arc<Store>, device_id: String) -> Response {
+async fn handle_request(
+    req: Request,
+    store: Arc<Store>,
+    manager: device::ManagerHandle,
+    device_id: String,
+) -> Response {
     match req {
         Request::Ping => Response::ok_json(serde_json::json!("pong")),
         Request::DaemonInfo => {
@@ -215,7 +345,7 @@ async fn handle_request(req: Request, store: Arc<Store>, device_id: String) -> R
             Response::ok_json(serde_json::json!({
                 "app": handfast_core::APP_NAME,
                 "version": env!("CARGO_PKG_VERSION"),
-                "protocol": handfast_protocol::PROTO_VERSION,
+                "protocol": PROTO_VERSION,
                 "ipc": handfast_ipc::IPC_VERSION,
                 "device_id": device_id,
                 "session": {
@@ -225,16 +355,17 @@ async fn handle_request(req: Request, store: Arc<Store>, device_id: String) -> R
                 },
             }))
         }
-        Request::DeviceList => match store.list_devices() {
-            Ok(rows) => {
-                let rows: Vec<serde_json::Value> =
-                    rows.iter().map(device_row_json).collect();
-                Response::ok_json(serde_json::Value::Array(rows))
-            }
-            Err(err) => Response::err(1000, err.to_string()),
+        Request::DeviceList => {
+            Response::ok_json(serde_json::Value::Array(manager.list_devices().await))
+        }
+        Request::DevicePair { device_id } => match manager.start_pairing(device_id).await {
+            Ok(accepted) => Response::ok_json(serde_json::json!({ "accepted": accepted })),
+            Err(err) => Response::err(2001, err.to_string()),
         },
-        Request::DevicePair { device_id } => set_paired(&store, &device_id, true).await,
-        Request::DeviceUnpair { device_id } => set_paired(&store, &device_id, false).await,
+        Request::DeviceUnpair { device_id } => match manager.unpair(device_id).await {
+            Ok(()) => Response::ok_json(serde_json::json!({ "unpaired": true })),
+            Err(err) => Response::err(2002, err.to_string()),
+        },
         Request::PluginList { .. } => {
             let plugins: Vec<serde_json::Value> = handfast_plugins::registry()
                 .iter()
@@ -251,16 +382,18 @@ async fn handle_request(req: Request, store: Arc<Store>, device_id: String) -> R
                 .collect();
             Response::ok_json(serde_json::Value::Array(plugins))
         }
-        Request::PluginSetEnabled { device_id, plugin, enabled } => {
+        Request::PluginSetEnabled {
+            device_id,
+            plugin,
+            enabled,
+        } => {
             let key = format!("plugin:{device_id}:{plugin}");
             match store.kv_set(&key, if enabled { "1" } else { "0" }) {
                 Ok(()) => Response::ok_json(serde_json::json!({"saved": true})),
                 Err(err) => Response::err(3000, err.to_string()),
             }
         }
-        Request::SendFile { .. } => {
-            Response::err(4000, "file transfers arrive in Phase 3")
-        }
+        Request::SendFile { .. } => Response::err(4000, "file transfers arrive in Phase 3"),
         Request::NotificationList => Response::ok_json(serde_json::Value::Array(vec![])),
         Request::NotificationDismiss { notification_id } => {
             tracing::debug!(%notification_id, "notification dismiss is a no-op until Phase 3");
@@ -276,44 +409,6 @@ async fn handle_request(req: Request, store: Arc<Store>, device_id: String) -> R
                 Err(err) => Response::err(5000, err.to_string()),
             }
         }
-    }
-}
-
-fn device_row_json(row: &DeviceRow) -> serde_json::Value {
-    serde_json::json!({
-        "device_id": row.device_id,
-        "name": row.name,
-        "type": row.device_type,
-        "paired": row.paired,
-        "last_seen": row.last_seen,
-    })
-}
-
-async fn set_paired(store: &Arc<Store>, device_id: &str, paired: bool) -> Response {
-    let rows = match store.list_devices() {
-        Ok(rows) => rows,
-        Err(err) => return Response::err(2000, err.to_string()),
-    };
-    let Some(mut row) = rows.into_iter().find(|row| row.device_id == device_id) else {
-        return Response::err(2004, format!("unknown device '{device_id}'"));
-    };
-    row.paired = paired;
-    if let Err(err) = store.upsert_device(&row) {
-        return Response::err(2000, err.to_string());
-    }
-    Response::ok_json(serde_json::json!({"paired": paired}))
-}
-
-/// Shutdown signal listener shared by supervised stub tasks.
-#[derive(Clone)]
-struct ShutdownListener(Arc<tokio::sync::Notify>);
-
-impl ShutdownListener {
-    fn new() -> Self {
-        Self(Arc::new(tokio::sync::Notify::new()))
-    }
-    async fn wait(&mut self) {
-        self.0.notified().await;
     }
 }
 
@@ -346,9 +441,8 @@ async fn wait_for_shutdown() {
 
 /// Best-effort systemd readiness notification (`Type=notify` compatible).
 ///
-/// Writes `READY=1` to `$NOTIFY_SOCKET` when running under systemd with
-/// notify-type supervision; silently does nothing otherwise. Safe code only:
-/// an unbound datagram socket to the abstract/filesystem socket path.
+/// Writes `READY=1` to `$NOTIFY_SOCKET` when running under systemd; silently
+/// does nothing otherwise. Safe code only.
 fn sd_notify_ready() {
     #[cfg(unix)]
     {

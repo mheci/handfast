@@ -107,7 +107,10 @@ fn dist(out: &Path) -> anyhow::Result<()> {
 fn completions(shell: Shell, out: &Path) -> anyhow::Result<()> {
     let hfctl = release_dir().join("hfctl");
     if !hfctl.is_file() {
-        bail!("hfctl not found at {} — build release first", hfctl.display());
+        bail!(
+            "hfctl not found at {} — build release first",
+            hfctl.display()
+        );
     }
     std::fs::create_dir_all(out).context("creating completions dir")?;
     let output = Command::new(&hfctl)
@@ -116,7 +119,10 @@ fn completions(shell: Shell, out: &Path) -> anyhow::Result<()> {
         .output()
         .context("running hfctl completions")?;
     if !output.status.success() {
-        bail!("hfctl completions failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "hfctl completions failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     let file_name = match shell {
         Shell::Bash => "hfctl.bash",

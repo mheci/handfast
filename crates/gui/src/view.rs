@@ -5,8 +5,8 @@
 //! progress bar, text input). No display-server specifics live here.
 
 use iced::widget::{
-    button, checkbox, column, container, horizontal_space, progress_bar, row, rule,
-    scrollable, text, text_input,
+    button, checkbox, column, container, horizontal_space, progress_bar, row, rule, scrollable,
+    text, text_input,
 };
 use iced::{Alignment, Element, Length};
 
@@ -76,8 +76,7 @@ fn sidebar(app: &HandfastApp) -> Element<'_, Message> {
         text(daemon_label(app)).size(12),
         rule::horizontal(2),
         clipboard_panel(app),
-        button("refresh devices")
-            .on_press_maybe(can_refresh.then_some(Message::RefreshPressed)),
+        button("refresh devices").on_press_maybe(can_refresh.then_some(Message::RefreshPressed)),
     ]
     .width(Length::Fixed(240.0))
     .spacing(8)
@@ -86,8 +85,7 @@ fn sidebar(app: &HandfastApp) -> Element<'_, Message> {
 
 /// Clipboard-to-daemon sender panel.
 fn clipboard_panel(app: &HandfastApp) -> Element<'_, Message> {
-    let can_send =
-        app.conn == ConnState::Connected && !app.clipboard_draft.trim().is_empty();
+    let can_send = app.conn == ConnState::Connected && !app.clipboard_draft.trim().is_empty();
 
     let mut panel = column![
         text("clipboard").size(12),
@@ -131,8 +129,10 @@ fn devices_pane(app: &HandfastApp) -> Element<'_, Message> {
         cards = cards.push(device_row(app, index, device));
     }
 
-    let list: Element<'_, Message> =
-        scrollable(cards).height(Length::Fill).width(Length::Fill).into();
+    let list: Element<'_, Message> = scrollable(cards)
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .into();
 
     match selected_card(app) {
         Some(device) => column![list, rule::horizontal(2), detail_panel(app, device)]
@@ -155,7 +155,11 @@ fn device_row(app: &HandfastApp, index: usize, device: &DeviceCard) -> Element<'
         button("pair").on_press(Message::PairPressed(device.id.clone()))
     };
 
-    let marker = if app.selected == Some(index) { "> " } else { "" };
+    let marker = if app.selected == Some(index) {
+        "> "
+    } else {
+        ""
+    };
     let info = column![
         text(format!("{marker}{}", device.name)),
         text(format!("{}/{}", device.kind, device.state)).size(11),
@@ -253,8 +257,7 @@ fn notifications_pane(app: &HandfastApp) -> Element<'_, Message> {
         rows = rows.push(
             row![
                 column![
-                    text(format!("{}: {}", notification.app, notification.title))
-                        .size(12),
+                    text(format!("{}: {}", notification.app, notification.title)).size(12),
                     text(notification.body.clone()).size(11),
                 ]
                 .spacing(2)

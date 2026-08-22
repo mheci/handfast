@@ -19,15 +19,13 @@ use std::io::{Stdout, Write as _};
 use crossterm::{
     cursor::{Hide, Show},
     event::{Event as CrosstermEvent, EventStream},
-    terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-    },
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures_util::StreamExt;
 use handfast_ipc::{Client, ServerEvent};
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::time::{Duration, MissedTickBehavior, interval};
+use tokio::time::{interval, Duration, MissedTickBehavior};
 
 use crate::cmd;
 use crate::model::short_hash;
@@ -141,9 +139,7 @@ async fn next_server_event(
 }
 
 /// Await the next terminal input; parks forever once the stream ends.
-async fn next_input(
-    stream: Option<&mut EventStream>,
-) -> Option<std::io::Result<CrosstermEvent>> {
+async fn next_input(stream: Option<&mut EventStream>) -> Option<std::io::Result<CrosstermEvent>> {
     match stream {
         Some(stream) => stream.next().await,
         None => std::future::pending().await,
@@ -166,8 +162,9 @@ fn spawn_bootstrap(client: Client, outcomes: UnboundedSender<Outcome>) {
                 let _ = outcomes.send(Outcome::Notifications(rows));
             }
             Err(error) => {
-                let _ =
-                    outcomes.send(Outcome::Flash(format!("notifications unavailable: {error}")));
+                let _ = outcomes.send(Outcome::Flash(format!(
+                    "notifications unavailable: {error}"
+                )));
             }
         }
     });
@@ -210,14 +207,11 @@ fn perform(
             tokio::spawn(async move {
                 match cmd::pair(&client, &device_id).await {
                     Ok(()) => {
-                        let _ = outcomes.send(Outcome::Flash(format!(
-                            "pair requested for {device_id}"
-                        )));
+                        let _ = outcomes
+                            .send(Outcome::Flash(format!("pair requested for {device_id}")));
                     }
                     Err(error) => {
-                        let _ = outcomes.send(Outcome::Flash(format!(
-                            "pair failed: {error}"
-                        )));
+                        let _ = outcomes.send(Outcome::Flash(format!("pair failed: {error}")));
                     }
                 }
                 refresh_devices(&client, &outcomes).await;
@@ -231,14 +225,10 @@ fn perform(
             tokio::spawn(async move {
                 match cmd::unpair(&client, &device_id).await {
                     Ok(()) => {
-                        let _ = outcomes.send(Outcome::Flash(format!(
-                            "unpaired {device_id}"
-                        )));
+                        let _ = outcomes.send(Outcome::Flash(format!("unpaired {device_id}")));
                     }
                     Err(error) => {
-                        let _ = outcomes.send(Outcome::Flash(format!(
-                            "unpair failed: {error}"
-                        )));
+                        let _ = outcomes.send(Outcome::Flash(format!("unpair failed: {error}")));
                     }
                 }
                 refresh_devices(&client, &outcomes).await;
@@ -251,18 +241,24 @@ fn perform(
             tokio::spawn(async move {
                 match cmd::fetch_plugins(&client, &device_id).await {
                     Ok(rows) => {
-                        let _ = outcomes.send(Outcome::Plugins { device: device_id, plugins: rows });
+                        let _ = outcomes.send(Outcome::Plugins {
+                            device: device_id,
+                            plugins: rows,
+                        });
                     }
                     Err(error) => {
-                        let _ = outcomes.send(Outcome::Flash(format!(
-                            "plugin list failed: {error}"
-                        )));
+                        let _ =
+                            outcomes.send(Outcome::Flash(format!("plugin list failed: {error}")));
                     }
                 }
             });
         }
 
-        Action::TogglePlugin { device_id, plugin, enabled } => {
+        Action::TogglePlugin {
+            device_id,
+            plugin,
+            enabled,
+        } => {
             apply_optimistic_toggle(state, &plugin, enabled);
             let verb = if enabled { "enabling" } else { "disabling" };
             state.set_flash(format!("{verb} {plugin}…"));
@@ -273,13 +269,14 @@ fn perform(
                 if let Err(error) =
                     cmd::set_plugin_enabled(&client, &device_id, &plugin, enabled).await
                 {
-                    let _ = outcomes.send(Outcome::Flash(format!(
-                        "toggle failed: {error}"
-                    )));
+                    let _ = outcomes.send(Outcome::Flash(format!("toggle failed: {error}")));
                 }
                 // Re-sync from the authoritative source either way.
                 if let Ok(rows) = cmd::fetch_plugins(&client, &device_id).await {
-                    let _ = outcomes.send(Outcome::Plugins { device: device_id, plugins: rows });
+                    let _ = outcomes.send(Outcome::Plugins {
+                        device: device_id,
+                        plugins: rows,
+                    });
                 }
             });
         }

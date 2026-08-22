@@ -24,8 +24,8 @@
 
 #![forbid(unsafe_code)]
 
-pub mod codec;
 mod client;
+pub mod codec;
 pub mod error;
 mod peercred;
 mod proto;
@@ -52,11 +52,8 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub fn default_socket_path() -> std::path::PathBuf {
     #[cfg(unix)]
     {
-        if let Some(dir) =
-            std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty())
-        {
-            return std::path::PathBuf::from(dir)
-                .join(format!("{}.sock", handfast_core::APP_NAME));
+        if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty()) {
+            return std::path::PathBuf::from(dir).join(format!("{}.sock", handfast_core::APP_NAME));
         }
         #[cfg(target_os = "linux")]
         {
@@ -65,8 +62,7 @@ pub fn default_socket_path() -> std::path::PathBuf {
                     .join(format!("{}-{uid}.sock", handfast_core::APP_NAME));
             }
         }
-        std::path::PathBuf::from("/tmp")
-            .join(format!("{}.sock", handfast_core::APP_NAME))
+        std::path::PathBuf::from("/tmp").join(format!("{}.sock", handfast_core::APP_NAME))
     }
 
     #[cfg(windows)]

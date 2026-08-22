@@ -9,7 +9,7 @@
 # Any agent or human fixing a tracked failure MUST reference the issue number
 # in a commit trailer of the fixing change so the fix loop stays auditable:
 #
-#     Fixes: https://github.com/handfast-rs/handfast/issues/<n>
+#     Fixes: https://github.com/mheci/handfast/issues/<n>
 #
 # Pushing such a fix re-triggers CI on main; once green, close the issue.
 # ───────────────────────────────────────────────────────────────────────────

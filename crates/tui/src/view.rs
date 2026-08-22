@@ -5,17 +5,15 @@
 //! alongside the reducers in `state.rs` through plain unit tests.
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap,
-    },
+    widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap},
+    Frame,
 };
 
 use crate::model::{human_bytes, short_hash};
-use crate::state::{LOG_CAP, NOTIFICATION_CAP, State, Tab};
+use crate::state::{State, Tab, LOG_CAP, NOTIFICATION_CAP};
 
 /// Render the whole interface for one frame.
 pub(crate) fn draw(f: &mut Frame<'_>, state: &State) {
@@ -50,7 +48,9 @@ pub(crate) fn draw(f: &mut Frame<'_>, state: &State) {
 fn draw_header(f: &mut Frame<'_>, area: Rect, state: &State) {
     let mut spans = vec![Span::styled(
         " hfctl",
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
     )];
     if let Some(daemon) = &state.daemon {
         spans.push(Span::raw(format!(
@@ -89,7 +89,11 @@ fn draw_tabs(f: &mut Frame<'_>, area: Rect, state: &State) {
 /// Devices tab: device table, optionally split with the plugin detail panel.
 fn draw_devices(f: &mut Frame<'_>, area: Rect, state: &State) {
     if state.devices.is_empty() {
-        render_empty(f, area, "no devices discovered yet — waiting for discovery events");
+        render_empty(
+            f,
+            area,
+            "no devices discovered yet — waiting for discovery events",
+        );
         return;
     }
 
@@ -193,38 +197,34 @@ fn draw_transfers(f: &mut Frame<'_>, area: Rect, state: &State) {
         return;
     }
 
-    let bar_width = (area.width as usize)
-        .saturating_sub(26)
-        .clamp(8, 40);
-    let items = state
-        .transfer_rows()
-        .into_iter()
-        .enumerate()
-        .map(|(index, (id, (done, total)))| {
-            let finished = *total > 0 && done >= total;
-            let bar_style = Style::default().fg(if finished {
-                Color::Green
-            } else {
-                Color::Cyan
+    let bar_width = (area.width as usize).saturating_sub(26).clamp(8, 40);
+    let items =
+        state
+            .transfer_rows()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (id, (done, total)))| {
+                let finished = *total > 0 && done >= total;
+                let bar_style =
+                    Style::default().fg(if finished { Color::Green } else { Color::Cyan });
+                let line = Line::from(vec![
+                    Span::raw(short_hash(id)),
+                    Span::raw("  "),
+                    Span::styled(progress_bar(*done, *total, bar_width), bar_style),
+                    Span::raw(format!(
+                        " {:>3}%  {} / {}",
+                        percent_of(*done, *total),
+                        human_bytes(*done),
+                        human_bytes(*total),
+                    )),
+                ]);
+                let style = if index == state.transfer_cursor {
+                    row_selected_style()
+                } else {
+                    Style::default()
+                };
+                ListItem::new(line).style(style)
             });
-            let line = Line::from(vec![
-                Span::raw(short_hash(id)),
-                Span::raw("  "),
-                Span::styled(progress_bar(*done, *total, bar_width), bar_style),
-                Span::raw(format!(
-                    " {:>3}%  {} / {}",
-                    percent_of(*done, *total),
-                    human_bytes(*done),
-                    human_bytes(*total),
-                )),
-            ]);
-            let style = if index == state.transfer_cursor {
-                row_selected_style()
-            } else {
-                Style::default()
-            };
-            ListItem::new(line).style(style)
-        });
 
     let list = List::new(items).block(
         Block::default()
@@ -262,14 +262,10 @@ fn draw_notifications(f: &mut Frame<'_>, area: Rect, state: &State) {
         ListItem::new(line).style(style)
     });
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(
-                " Notifications ({}/{NOTIFICATION_CAP}) ",
-                state.notifications.len()
-            )),
-    );
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+        " Notifications ({}/{NOTIFICATION_CAP}) ",
+        state.notifications.len()
+    )));
     f.render_widget(list, area);
 }
 
@@ -345,14 +341,15 @@ fn draw_footer(f: &mut Frame<'_>, area: Rect, state: &State) {
 
 /// Dim placeholder message centered nowhere in particular (top-left of area).
 fn render_empty(f: &mut Frame<'_>, area: Rect, text: &str) {
-    let page =
-        Paragraph::new(text.to_owned()).style(Style::default().fg(Color::DarkGray));
+    let page = Paragraph::new(text.to_owned()).style(Style::default().fg(Color::DarkGray));
     f.render_widget(page, area);
 }
 
 /// Shared style for table/list headers.
 fn header_style() -> Style {
-    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
 }
 
 /// Shared style highlighting the cursor row/item.
@@ -364,7 +361,10 @@ fn row_selected_style() -> Style {
 #[must_use]
 pub(crate) fn help_lines() -> Vec<Line<'static>> {
     const ROWS: [(&str, &str); 10] = [
-        ("Tab / Shift+Tab", "switch tabs (Devices/Transfers/Notifications/Logs/Help)"),
+        (
+            "Tab / Shift+Tab",
+            "switch tabs (Devices/Transfers/Notifications/Logs/Help)",
+        ),
         ("j / Down, k / Up", "move the selection down/up"),
         ("g / Home, G / End", "jump to the first / last row"),
         ("p", "pair the selected device"),
@@ -379,10 +379,7 @@ pub(crate) fn help_lines() -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(ROWS.len() + 4);
     for (keys, description) in ROWS {
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{keys:<22}"),
-                Style::default().fg(Color::Cyan),
-            ),
+            Span::styled(format!("{keys:<22}"), Style::default().fg(Color::Cyan)),
             Span::raw(description.to_owned()),
         ]));
     }

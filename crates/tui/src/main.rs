@@ -94,7 +94,10 @@ async fn run() -> anyhow::Result<ExitCode> {
         Command::Plugins { action } => {
             cmd::print_plugins_action(&client, action).await?;
         }
-        Command::Send { device_id, file_path } => {
+        Command::Send {
+            device_id,
+            file_path,
+        } => {
             cmd::print_send(&client, &device_id, &file_path).await?;
         }
         Command::Notifications { action } => {

@@ -70,7 +70,10 @@ fn detect_compositor() -> Option<&'static str> {
         if desktops.split(':').any(|d| d == "gnome") {
             return Some("GNOME");
         }
-        if desktops.split(':').any(|d| d == "kde" || d.contains("plasma")) {
+        if desktops
+            .split(':')
+            .any(|d| d == "kde" || d.contains("plasma"))
+        {
             return Some("KDE Plasma");
         }
     }
@@ -129,8 +132,7 @@ fn advertised_protocols(compositor: Option<&'static str>) -> Vec<&'static str> {
 pub fn detect_session() -> SessionInfo {
     let wayland_socket =
         non_empty("WAYLAND_DISPLAY").is_some() || non_empty("WAYLAND_SOCKET").is_some();
-    let session_type =
-        non_empty("XDG_SESSION_TYPE").map(|v| v.to_ascii_lowercase());
+    let session_type = non_empty("XDG_SESSION_TYPE").map(|v| v.to_ascii_lowercase());
 
     let kind = if wayland_socket || session_type.as_deref() == Some("wayland") {
         SessionKind::Wayland
@@ -148,7 +150,11 @@ pub fn detect_session() -> SessionInfo {
 
     let compositor = detect_compositor();
     let protocols = advertised_protocols(compositor);
-    SessionInfo { kind, compositor, protocols }
+    SessionInfo {
+        kind,
+        compositor,
+        protocols,
+    }
 }
 
 #[cfg(test)]
@@ -247,9 +253,7 @@ mod tests {
             || {
                 let info = detect_session();
                 assert_eq!(info.compositor, Some("Sway"));
-                assert!(info
-                    .protocols
-                    .contains(&"zwp_virtual_keyboard_manager_v1"));
+                assert!(info.protocols.contains(&"zwp_virtual_keyboard_manager_v1"));
             },
             &[
                 ("WAYLAND_DISPLAY", Some(OsStr::new("wayland-1"))),

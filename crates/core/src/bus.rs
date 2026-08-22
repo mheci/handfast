@@ -125,7 +125,9 @@ mod tests {
         let mut rx = bus.subscribe();
         assert_eq!(bus.receiver_count(), 1);
 
-        bus.publish(Event::DeviceLost { id: "d1".to_string() });
+        bus.publish(Event::DeviceLost {
+            id: "d1".to_string(),
+        });
         match rx.try_recv() {
             Ok(Event::DeviceLost { id }) => assert_eq!(id, "d1"),
             other => panic!("expected DeviceLost, got {other:?}"),
@@ -137,7 +139,9 @@ mod tests {
         let bus = Bus::new();
         assert_eq!(bus.receiver_count(), 0);
         bus.publish(Event::DaemonShutdown);
-        bus.publish(Event::ClipboardUpdated { text: "ignored".to_string() });
+        bus.publish(Event::ClipboardUpdated {
+            text: "ignored".to_string(),
+        });
         assert_eq!(bus.receiver_count(), 0);
     }
 
@@ -165,7 +169,9 @@ mod tests {
         let mut second = bus.subscribe();
         assert_eq!(bus.receiver_count(), 2);
 
-        bus.publish(Event::ClipboardUpdated { text: "hi".to_string() });
+        bus.publish(Event::ClipboardUpdated {
+            text: "hi".to_string(),
+        });
         assert!(matches!(
             first.try_recv(),
             Ok(Event::ClipboardUpdated { .. })

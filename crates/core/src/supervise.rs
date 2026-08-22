@@ -132,12 +132,14 @@ impl Supervisor {
             latest_child.clone(),
         ));
 
-        let previous =
-            lock(&self.inner.children).insert(name.to_string(), Entry {
+        let previous = lock(&self.inner.children).insert(
+            name.to_string(),
+            Entry {
                 generation,
                 watcher,
                 latest_child,
-            });
+            },
+        );
 
         // Supersede the previous generation, if any.
         if let Some(old) = previous {
@@ -270,10 +272,8 @@ mod tests {
     /// allowed and the concrete async block type is unnameable.
     fn panic_once_factory(
         hits: Arc<AtomicUsize>,
-    ) -> impl Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send>>
-           + Send
-           + Sync
-           + 'static {
+    ) -> impl Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync + 'static
+    {
         move || {
             let hits = Arc::clone(&hits);
             Box::pin(async move {

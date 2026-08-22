@@ -72,8 +72,14 @@ pub const FINDMYPHONE: PluginMeta = PluginMeta {
 pub const MOUSEPAD: PluginMeta = PluginMeta {
     name: "mousepad",
     title: "Remote input",
-    incoming: &["kdeconnect.mousepad.request", "kdeconnect.mousepad.keyboardstate"],
-    outgoing: &["kdeconnect.mousepad.echo", "kdeconnect.mousepad.keyboardstate"],
+    incoming: &[
+        "kdeconnect.mousepad.request",
+        "kdeconnect.mousepad.keyboardstate",
+    ],
+    outgoing: &[
+        "kdeconnect.mousepad.echo",
+        "kdeconnect.mousepad.keyboardstate",
+    ],
     default_enabled: true,
     requires_wayland: true,
     requires_dbus: false,

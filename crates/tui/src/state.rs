@@ -97,7 +97,11 @@ pub(crate) enum Action {
     /// Fetch the plugin list for the given device (detail panel opened).
     LoadPlugins(String),
     /// Set one plugin's enabled flag on a device.
-    TogglePlugin { device_id: String, plugin: String, enabled: bool },
+    TogglePlugin {
+        device_id: String,
+        plugin: String,
+        enabled: bool,
+    },
 }
 
 /// Result of an asynchronous IPC action spawned by the event loop, funneled
@@ -111,7 +115,10 @@ pub(crate) enum Outcome {
     /// Fresh authoritative notification list.
     Notifications(Vec<NotifRow>),
     /// Fresh plugin rows for one device's detail panel.
-    Plugins { device: String, plugins: Vec<PluginRow> },
+    Plugins {
+        device: String,
+        plugins: Vec<PluginRow>,
+    },
 }
 
 /// Full UI snapshot: lists, cursors, mode flags. Pure data; no handles.
@@ -211,10 +218,20 @@ impl State {
                     device.apply_state(state);
                 }
             }
-            ServerEvent::TransferProgress { id, bytes_done, bytes_total } => {
-                self.transfers.insert(id.clone(), (*bytes_done, *bytes_total));
+            ServerEvent::TransferProgress {
+                id,
+                bytes_done,
+                bytes_total,
+            } => {
+                self.transfers
+                    .insert(id.clone(), (*bytes_done, *bytes_total));
             }
-            ServerEvent::NotificationReceived { id, app, title, body } => {
+            ServerEvent::NotificationReceived {
+                id,
+                app,
+                title,
+                body,
+            } => {
                 self.push_notification(NotifRow {
                     id: id.clone(),
                     app: app.clone(),
@@ -319,14 +336,18 @@ impl State {
             }
             KeyCode::Char('p') => {
                 if self.tab == Tab::Devices && !self.devices.is_empty() {
-                    self.selected_device_id().map(str::to_owned).map(Action::Pair)
+                    self.selected_device_id()
+                        .map(str::to_owned)
+                        .map(Action::Pair)
                 } else {
                     None
                 }
             }
             KeyCode::Char('u') => {
                 if self.tab == Tab::Devices && !self.devices.is_empty() {
-                    self.selected_device_id().map(str::to_owned).map(Action::Unpair)
+                    self.selected_device_id()
+                        .map(str::to_owned)
+                        .map(Action::Unpair)
                 } else {
                     None
                 }
@@ -338,9 +359,11 @@ impl State {
                     Some((row.name.clone(), !row.enabled))
                 });
                 match (device, target) {
-                    (Some(device_id), Some((plugin, enabled))) => {
-                        Some(Action::TogglePlugin { device_id, plugin, enabled })
-                    }
+                    (Some(device_id), Some((plugin, enabled))) => Some(Action::TogglePlugin {
+                        device_id,
+                        plugin,
+                        enabled,
+                    }),
                     _ => None,
                 }
             }
@@ -392,14 +415,18 @@ impl State {
     /// Id of the device under the cursor.
     #[must_use]
     pub(crate) fn selected_device_id(&self) -> Option<&str> {
-        self.devices.get(self.device_cursor).map(|device| device.id.as_str())
+        self.devices
+            .get(self.device_cursor)
+            .map(|device| device.id.as_str())
     }
 
     /// Index of the focused plugin row, if the detail panel is active.
     #[must_use]
     pub(crate) fn selected_plugin_index(&self) -> Option<usize> {
         if self.tab == Tab::Devices && self.detail_open {
-            self.plugins.get(self.plugin_cursor).map(|_| self.plugin_cursor)
+            self.plugins
+                .get(self.plugin_cursor)
+                .map(|_| self.plugin_cursor)
         } else {
             None
         }
@@ -476,8 +503,7 @@ impl State {
         self.device_cursor = clamp_at(self.device_cursor, self.devices.len());
         self.plugin_cursor = clamp_at(self.plugin_cursor, self.plugins.len());
         self.transfer_cursor = clamp_at(self.transfer_cursor, self.transfers.len());
-        self.notification_cursor =
-            clamp_at(self.notification_cursor, self.notifications.len());
+        self.notification_cursor = clamp_at(self.notification_cursor, self.notifications.len());
     }
 
     // ---- capped buffers ---------------------------------------------------
@@ -559,7 +585,10 @@ mod tests {
     }
 
     fn found(id: &str, name: &str) -> ServerEvent {
-        ServerEvent::DeviceFound { id: id.to_owned(), name: name.to_owned() }
+        ServerEvent::DeviceFound {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        }
     }
 
     fn notif(id: &str) -> ServerEvent {
@@ -572,7 +601,10 @@ mod tests {
     }
 
     fn log(level: &str, msg: &str) -> ServerEvent {
-        ServerEvent::LogRecord { level: level.to_owned(), msg: msg.to_owned() }
+        ServerEvent::LogRecord {
+            level: level.to_owned(),
+            msg: msg.to_owned(),
+        }
     }
 
     #[test]
@@ -654,7 +686,10 @@ mod tests {
         }
         assert_eq!(state.notifications.len(), NOTIFICATION_CAP);
         // Oldest five were dropped: front is now n5, back is n204.
-        assert_eq!(state.notifications.front().map(|r| r.id.as_str()), Some("n5"));
+        assert_eq!(
+            state.notifications.front().map(|r| r.id.as_str()),
+            Some("n5")
+        );
         assert_eq!(
             state.notifications.back().map(|r| r.id.as_str()),
             Some(format!("n{}", NOTIFICATION_CAP + 4).as_str())
@@ -683,7 +718,9 @@ mod tests {
         let daemon = state.daemon.as_ref();
         assert_eq!(daemon.map(|d| d.version), Some(7));
         assert_eq!(daemon.map(|d| d.pid), Some(4242));
-        state.apply_event(&ServerEvent::ClipboardUpdated { text: "hi".to_owned() });
+        state.apply_event(&ServerEvent::ClipboardUpdated {
+            text: "hi".to_owned(),
+        });
         assert_eq!(state.clipboard.as_deref(), Some("hi"));
     }
 
@@ -758,8 +795,16 @@ mod tests {
         state.apply_outcome(Outcome::Plugins {
             device: "dev".to_owned(),
             plugins: vec![
-                PluginRow { name: "ping".into(), title: "Ping".into(), enabled: false },
-                PluginRow { name: "sms".into(), title: "SMS".into(), enabled: true },
+                PluginRow {
+                    name: "ping".into(),
+                    title: "Ping".into(),
+                    enabled: false,
+                },
+                PluginRow {
+                    name: "sms".into(),
+                    title: "SMS".into(),
+                    enabled: true,
+                },
             ],
         });
         assert_eq!(state.plugins.len(), 2);
@@ -810,8 +855,14 @@ mod tests {
     #[test]
     fn quit_via_q_and_ctrl_c_only_on_press_kind() {
         let mut state = State::new();
-        assert_eq!(state.handle_key(key(KeyCode::Char('q'))), Some(Action::Quit));
-        assert_eq!(state.handle_key(ctrl(KeyCode::Char('c'))), Some(Action::Quit));
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            Some(Action::Quit)
+        );
+        assert_eq!(
+            state.handle_key(ctrl(KeyCode::Char('c'))),
+            Some(Action::Quit)
+        );
         // Windows sends release events; those must be ignored everywhere.
         assert_eq!(state.handle_key(released(KeyCode::Char('q'))), None);
     }
@@ -821,9 +872,7 @@ mod tests {
         let mut state = State::new();
         state.apply_outcome(Outcome::Flash("hello".to_owned()));
         assert_eq!(state.flash.as_deref(), Some("hello"));
-        state.apply_outcome(Outcome::Devices(vec![DeviceEntry::from_found(
-            "x", "X",
-        )]));
+        state.apply_outcome(Outcome::Devices(vec![DeviceEntry::from_found("x", "X")]));
         assert_eq!(state.devices.len(), 1);
         state.apply_outcome(Outcome::Notifications(vec![NotifRow {
             id: "n".into(),

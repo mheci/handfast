@@ -182,9 +182,17 @@ impl From<handfast_core::bus::Event> for ServerEvent {
                 bytes_done,
                 bytes_total,
             },
-            Event::NotificationReceived { id, app, title, body } => {
-                ServerEvent::NotificationReceived { id, app, title, body }
-            }
+            Event::NotificationReceived {
+                id,
+                app,
+                title,
+                body,
+            } => ServerEvent::NotificationReceived {
+                id,
+                app,
+                title,
+                body,
+            },
             Event::ClipboardUpdated { text } => ServerEvent::ClipboardUpdated { text },
             Event::LogRecord { level, msg } => ServerEvent::LogRecord { level, msg },
             Event::DaemonShutdown => ServerEvent::DaemonShutdown,

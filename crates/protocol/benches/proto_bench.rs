@@ -19,7 +19,9 @@ fn bench_identity_encode(c: &mut Criterion) {
     let identity: Identity =
         serde_json::from_value(packet.body.clone()).expect("fixture body is an identity");
     c.bench_function("identity_encode", |b| {
-        b.iter(|| serde_json::to_vec(black_box(&identity)).expect("identity serialization cannot fail"))
+        b.iter(|| {
+            serde_json::to_vec(black_box(&identity)).expect("identity serialization cannot fail")
+        })
     });
 }
 

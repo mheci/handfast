@@ -156,9 +156,7 @@ mod imp {
         /// Returns the receiver exactly once per connection (`None`
         /// afterwards, including on clones). Events published before this call
         /// remain buffered inside.
-        pub fn take_event_receiver(
-            &mut self,
-        ) -> Option<mpsc::UnboundedReceiver<ServerEvent>> {
+        pub fn take_event_receiver(&mut self) -> Option<mpsc::UnboundedReceiver<ServerEvent>> {
             self.events.take()
         }
     }
@@ -233,8 +231,7 @@ impl Client {
     /// Always fails on this platform; there is no connection.
     pub async fn request(&self, _req: Request) -> Result<Response> {
         Err(Error::Other(
-            "IPC transport requires Unix domain sockets; named-pipe support pending"
-                .to_string(),
+            "IPC transport requires Unix domain sockets; named-pipe support pending".to_string(),
         ))
     }
 

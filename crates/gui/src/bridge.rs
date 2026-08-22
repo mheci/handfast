@@ -27,9 +27,9 @@
 use std::thread;
 use std::time::Duration;
 
-use iced::Subscription;
-use iced::futures::{channel::mpsc, sink::SinkExt, Stream, StreamExt};
 use handfast_ipc::{default_socket_path, Client, Error, Request, Response};
+use iced::futures::{channel::mpsc, sink::SinkExt, Stream, StreamExt};
+use iced::Subscription;
 use tokio::runtime::Builder;
 use tokio::time::sleep;
 
@@ -195,16 +195,22 @@ async fn run_sessions(
 /// Load devices and notifications once per connection.
 async fn load_snapshot(client: &Client, out: &mpsc::UnboundedSender<Message>) {
     let devices = unwrap_response(client.request(Request::DeviceList).await);
-    notify(out, match devices {
-        Ok(payload) => Message::DevicesLoaded(model::parse_devices(&payload)),
-        Err(err) => Message::LoadFailed(format!("device list failed: {err}")),
-    });
+    notify(
+        out,
+        match devices {
+            Ok(payload) => Message::DevicesLoaded(model::parse_devices(&payload)),
+            Err(err) => Message::LoadFailed(format!("device list failed: {err}")),
+        },
+    );
 
     let notifications = unwrap_response(client.request(Request::NotificationList).await);
-    notify(out, match notifications {
-        Ok(payload) => Message::NotificationsLoaded(model::parse_notifications(&payload)),
-        Err(err) => Message::LoadFailed(format!("notification list failed: {err}")),
-    });
+    notify(
+        out,
+        match notifications {
+            Ok(payload) => Message::NotificationsLoaded(model::parse_notifications(&payload)),
+            Err(err) => Message::LoadFailed(format!("notification list failed: {err}")),
+        },
+    );
 }
 
 /// Execute one user-initiated request and report its outcome.
@@ -212,18 +218,23 @@ async fn perform(client: &Client, out: &mpsc::UnboundedSender<Message>, command:
     match command {
         BridgeIn::RefreshDevices => {
             let reply = unwrap_response(client.request(Request::DeviceList).await);
-            notify(out, match reply {
-                Ok(payload) => Message::DevicesLoaded(model::parse_devices(&payload)),
-                Err(err) => Message::LoadFailed(format!("refresh failed: {err}")),
-            });
+            notify(
+                out,
+                match reply {
+                    Ok(payload) => Message::DevicesLoaded(model::parse_devices(&payload)),
+                    Err(err) => Message::LoadFailed(format!("refresh failed: {err}")),
+                },
+            );
         }
         BridgeIn::ListPlugins(device_id) => {
-            let reply =
-                unwrap_response(client.request(Request::PluginList { device_id }).await);
-            notify(out, match reply {
-                Ok(payload) => Message::PluginsLoaded(model::parse_plugins(&payload)),
-                Err(err) => Message::LoadFailed(format!("plugin list failed: {err}")),
-            });
+            let reply = unwrap_response(client.request(Request::PluginList { device_id }).await);
+            notify(
+                out,
+                match reply {
+                    Ok(payload) => Message::PluginsLoaded(model::parse_plugins(&payload)),
+                    Err(err) => Message::LoadFailed(format!("plugin list failed: {err}")),
+                },
+            );
         }
         BridgeIn::SetPlugin {
             device_id,
@@ -247,9 +258,8 @@ async fn perform(client: &Client, out: &mpsc::UnboundedSender<Message>, command:
             }
         }
         BridgeIn::Pair(device_id) => {
-            let outcome =
-                unwrap_response(client.request(Request::DevicePair { device_id }).await)
-                    .map(|_| ());
+            let outcome = unwrap_response(client.request(Request::DevicePair { device_id }).await)
+                .map(|_| ());
             notify(out, Message::Paired(outcome));
         }
         BridgeIn::Unpair(device_id) => {
@@ -275,8 +285,7 @@ async fn perform(client: &Client, out: &mpsc::UnboundedSender<Message>, command:
         }
         BridgeIn::ClipboardSet(text) => {
             let outcome =
-                unwrap_response(client.request(Request::ClipboardSet { text }).await)
-                    .map(|_| ());
+                unwrap_response(client.request(Request::ClipboardSet { text }).await).map(|_| ());
             notify(out, Message::ClipboardSet(outcome));
         }
     }
@@ -311,10 +320,8 @@ mod tests {
     #[test]
     fn daemon_errors_carry_code_and_message() {
         let result = unwrap_response(Ok(Response::err(7, "denied")));
-        assert!(
-            matches!(result, Err(ref message)
-                if message.contains("7") && message.contains("denied"))
-        );
+        assert!(matches!(result, Err(ref message)
+                if message.contains("7") && message.contains("denied")));
     }
 
     #[test]

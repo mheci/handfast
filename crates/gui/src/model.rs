@@ -177,7 +177,8 @@ fn field_str(obj: &Map<String, Value>, keys: &[&str]) -> Option<String> {
 
 /// First present boolean field among `keys`.
 fn field_bool(obj: &Map<String, Value>, keys: &[&str]) -> Option<bool> {
-    keys.iter().find_map(|key| obj.get(*key).and_then(Value::as_bool))
+    keys.iter()
+        .find_map(|key| obj.get(*key).and_then(Value::as_bool))
 }
 
 /// Accept either a bare array or an object wrapping one under `wrapper_key`.
@@ -199,12 +200,10 @@ pub(crate) fn parse_devices(value: &Value) -> Vec<DeviceCard> {
         .filter_map(|item| {
             let obj = item.as_object()?;
             let id = field_str(obj, &["id", "device_id"])?;
-            let name =
-                field_str(obj, &["name", "device_name"]).unwrap_or_else(|| id.clone());
+            let name = field_str(obj, &["name", "device_name"]).unwrap_or_else(|| id.clone());
             let kind = field_str(obj, &["type", "kind", "device_type"])
                 .unwrap_or_else(|| "unknown".to_owned());
-            let state = field_str(obj, &["state", "status"])
-                .unwrap_or_else(|| "found".to_owned());
+            let state = field_str(obj, &["state", "status"]).unwrap_or_else(|| "found".to_owned());
             let paired = field_bool(obj, &["paired"]).unwrap_or(state == "paired");
             Some(DeviceCard {
                 id,
@@ -228,8 +227,7 @@ pub(crate) fn parse_plugins(value: &Value) -> Vec<PluginRow> {
         .filter_map(|item| {
             let obj = item.as_object()?;
             let name = field_str(obj, &["name", "plugin", "id"])?;
-            let title =
-                field_str(obj, &["title", "label"]).unwrap_or_else(|| name.clone());
+            let title = field_str(obj, &["title", "label"]).unwrap_or_else(|| name.clone());
             let enabled = field_bool(obj, &["enabled", "active"]).unwrap_or(false);
             Some(PluginRow {
                 name,
@@ -252,8 +250,7 @@ pub(crate) fn parse_notifications(value: &Value) -> Vec<NotifRow> {
             let obj = item.as_object()?;
             Some(NotifRow {
                 id: field_str(obj, &["id", "notification_id"])?,
-                app: field_str(obj, &["app", "application", "source"])
-                    .unwrap_or_default(),
+                app: field_str(obj, &["app", "application", "source"]).unwrap_or_default(),
                 title: field_str(obj, &["title", "summary"]).unwrap_or_default(),
                 body: field_str(obj, &["body", "text", "message"]).unwrap_or_default(),
             })
@@ -339,11 +336,23 @@ mod tests {
 
     #[test]
     fn transfer_percent_clamps() {
-        let row = TransferRow { id: "t".into(), done: 50, total: 100 };
+        let row = TransferRow {
+            id: "t".into(),
+            done: 50,
+            total: 100,
+        };
         assert_eq!(row.percent(), 50.0);
-        let zero = TransferRow { id: "t".into(), done: 10, total: 0 };
+        let zero = TransferRow {
+            id: "t".into(),
+            done: 10,
+            total: 0,
+        };
         assert_eq!(zero.percent(), 0.0);
-        let over = TransferRow { id: "t".into(), done: 150, total: 100 };
+        let over = TransferRow {
+            id: "t".into(),
+            done: 150,
+            total: 100,
+        };
         assert_eq!(over.percent(), 100.0);
     }
 
@@ -357,8 +366,22 @@ mod tests {
         assert_eq!(cards[0].name, "A2");
 
         let mut rows = Vec::new();
-        TransferRow::upsert(&mut rows, TransferRow { id: "t".into(), done: 1, total: 2 });
-        TransferRow::upsert(&mut rows, TransferRow { id: "t".into(), done: 3, total: 4 });
+        TransferRow::upsert(
+            &mut rows,
+            TransferRow {
+                id: "t".into(),
+                done: 1,
+                total: 2,
+            },
+        );
+        TransferRow::upsert(
+            &mut rows,
+            TransferRow {
+                id: "t".into(),
+                done: 3,
+                total: 4,
+            },
+        );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].done, 3);
     }

@@ -188,9 +188,15 @@ mod tests {
     #[test]
     fn socket_override_works_before_and_after_subcommand() {
         let cli = parse(&["--socket", "/run/h.sock", "status"]).unwrap();
-        assert_eq!(cli.socket.as_deref(), Some(std::path::Path::new("/run/h.sock")));
+        assert_eq!(
+            cli.socket.as_deref(),
+            Some(std::path::Path::new("/run/h.sock"))
+        );
         let cli = parse(&["status", "--socket", "/run/h.sock"]).unwrap();
-        assert_eq!(cli.socket.as_deref(), Some(std::path::Path::new("/run/h.sock")));
+        assert_eq!(
+            cli.socket.as_deref(),
+            Some(std::path::Path::new("/run/h.sock"))
+        );
         // Socket plus no subcommand still means "launch the TUI".
         let cli = parse(&["--socket", "/run/h.sock"]).unwrap();
         assert!(cli.command.is_none());
@@ -248,7 +254,9 @@ mod tests {
     fn notification_actions_round_trip() {
         assert!(matches!(
             parse(&["notifications", "list"]).unwrap().command,
-            Some(Command::Notifications { action: NotificationAction::List })
+            Some(Command::Notifications {
+                action: NotificationAction::List
+            })
         ));
         let cli = parse(&["notifications", "dismiss", "n42"]).unwrap();
         assert!(matches!(
@@ -270,17 +278,16 @@ mod tests {
         ));
         assert!(matches!(
             parse(&["clipboard", "get"]).unwrap().command,
-            Some(Command::Clipboard { action: ClipboardAction::Get })
+            Some(Command::Clipboard {
+                action: ClipboardAction::Get
+            })
         ));
     }
 
     #[test]
     fn logs_default_is_50_and_flag_overrides() {
         let cli = parse(&["logs"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Logs { number: 50 })
-        ));
+        assert!(matches!(cli.command, Some(Command::Logs { number: 50 })));
         let cli = parse(&["logs", "-n", "7"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Logs { number: 7 })));
         // `-n` demands a value.
@@ -290,10 +297,7 @@ mod tests {
     #[test]
     fn completions_accept_all_shell_names_and_reject_others() {
         for name in ["bash", "zsh", "fish", "powershell", "elvish"] {
-            assert!(
-                parse(&["completions", name]).is_ok(),
-                "{name} should parse"
-            );
+            assert!(parse(&["completions", name]).is_ok(), "{name} should parse");
         }
         assert!(parse(&["completions", "tcsh"]).is_err());
         assert!(parse(&["completions"]).is_err());

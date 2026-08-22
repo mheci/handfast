@@ -64,11 +64,15 @@ impl IdleInhibit {
 
         match first_result {
             Ok(handle) => return Ok(Self { handle }),
-            Err(e) => tracing::debug!(strategy = first_name, error = %e, "idle-inhibit strategy failed"),
+            Err(e) => {
+                tracing::debug!(strategy = first_name, error = %e, "idle-inhibit strategy failed")
+            }
         }
         match second_result {
             Ok(handle) => return Ok(Self { handle }),
-            Err(e) => tracing::debug!(strategy = second_name, error = %e, "idle-inhibit fallback failed"),
+            Err(e) => {
+                tracing::debug!(strategy = second_name, error = %e, "idle-inhibit fallback failed")
+            }
         }
 
         Err(Error::Unsupported(format!(
@@ -117,14 +121,15 @@ mod tests {
     fn acquire_headless_degrades_gracefully() -> Result<()> {
         let has_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
             || std::env::var_os("WAYLAND_SOCKET").is_some();
-        let has_bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS")
-            .is_some_and(|v| !v.is_empty());
+        let has_bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty());
         if has_wayland || has_bus {
             return Ok(()); // real-session CI: nothing to assert here
         }
         match IdleInhibit::acquire("handfast-test") {
             Err(Error::Unsupported(_) | Error::ProtocolMissing(_) | Error::Other(_)) => Ok(()),
-            Ok(_) => Err(Error::Other("inhibitor acquired without any session".to_string())),
+            Ok(_) => Err(Error::Other(
+                "inhibitor acquired without any session".to_string(),
+            )),
         }
     }
 }
@@ -216,12 +221,14 @@ mod wayland {
             let compositor = setup.compositor.clone().ok_or_else(|| {
                 Error::Other("internal: compositor vanished after scan".to_string())
             })?;
-            let shm = setup.shm.clone().ok_or_else(|| {
-                Error::Other("internal: shm vanished after scan".to_string())
-            })?;
-            let manager = setup.manager.clone().ok_or_else(|| {
-                Error::Other("internal: manager vanished after scan".to_string())
-            })?;
+            let shm = setup
+                .shm
+                .clone()
+                .ok_or_else(|| Error::Other("internal: shm vanished after scan".to_string()))?;
+            let manager = setup
+                .manager
+                .clone()
+                .ok_or_else(|| Error::Other("internal: manager vanished after scan".to_string()))?;
 
             // Anonymous temp file stands in for memfd (workspace forbids unsafe);
             // the compositor reads the pixels server-side from this fd.
@@ -231,15 +238,8 @@ mod wayland {
 
             let pool: wl_shm_pool::WlShmPool =
                 shm.create_pool(pixel_file.as_fd(), PIXEL_BYTES, &qh, ());
-            let buffer: wl_buffer::WlBuffer = pool.create_buffer(
-                0,
-                1,
-                1,
-                PIXEL_BYTES,
-                wl_shm::Format::Argb8888,
-                &qh,
-                (),
-            );
+            let buffer: wl_buffer::WlBuffer =
+                pool.create_buffer(0, 1, 1, PIXEL_BYTES, wl_shm::Format::Argb8888, &qh, ());
             let surface: wl_surface::WlSurface = compositor.create_surface(&qh, ());
             surface.attach(Some(&buffer), 0, 0);
             if surface.version() >= 4 {
@@ -285,7 +285,12 @@ mod wayland {
             _: &Connection,
             qh: &QueueHandle<Self>,
         ) {
-            let wl_registry::Event::Global { name, interface, version } = event else {
+            let wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } = event
+            else {
                 return;
             };
             match interface.as_str() {
@@ -409,9 +414,8 @@ mod dbus_imp {
         pub(super) fn acquire(application: &str, reason: &str) -> Result<Self> {
             let conn = zbus::blocking::Connection::session()
                 .map_err(|e| Error::Other(format!("session bus unavailable: {e}")))?;
-            let proxy =
-                ScreenSaverProxyBlocking::new(&conn)
-                    .map_err(|e| Error::Other(format!("ScreenSaver proxy: {e}")))?;
+            let proxy = ScreenSaverProxyBlocking::new(&conn)
+                .map_err(|e| Error::Other(format!("ScreenSaver proxy: {e}")))?;
             let cookie = proxy
                 .inhibit(application, reason)
                 .map_err(|e| Error::Other(format!("ScreenSaver.Inhibit: {e}")))?;

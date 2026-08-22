@@ -26,13 +26,14 @@ use crate::IPC_VERSION;
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Callback turning a decoded request into an asynchronous response.
-pub type RequestHandler =
-    Arc<dyn Fn(Request) -> BoxFuture<'static, Response> + Send + Sync>;
+pub type RequestHandler = Arc<dyn Fn(Request) -> BoxFuture<'static, Response> + Send + Sync>;
 
 /// Lock a possibly poisoned mutex, recovering the guard regardless of poison.
 #[cfg(unix)]
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// IPC listener bound to `socket_path`; call [`Server::serve`] to run it.
@@ -104,8 +105,7 @@ impl Server {
                 Ok((stream, _addr)) => {
                     let handler = handler.clone();
                     let registry = registry.clone();
-                    let _session =
-                        tokio::spawn(handle_connection(stream, handler, registry));
+                    let _session = tokio::spawn(handle_connection(stream, handler, registry));
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -128,8 +128,7 @@ impl Server {
     ) -> Result<()> {
         let _ = (handler, events);
         Err(Error::Other(
-            "IPC transport requires Unix domain sockets; named-pipe support pending"
-                .to_string(),
+            "IPC transport requires Unix domain sockets; named-pipe support pending".to_string(),
         ))
     }
 }
@@ -162,17 +161,13 @@ enum Outbound {
 
 /// Registry of per-client outbound queues used by the broadcast relay.
 #[cfg(unix)]
-type ClientSinks =
-    Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Outbound>>>>;
+type ClientSinks = Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Outbound>>>>;
 
 /// Relay broadcast events into every live client's write queue.
 ///
 /// Clients whose queue failed (disconnected) are pruned on each delivery.
 #[cfg(unix)]
-async fn dispatch_events(
-    mut events: broadcast::Receiver<ServerEvent>,
-    sinks: ClientSinks,
-) {
+async fn dispatch_events(mut events: broadcast::Receiver<ServerEvent>, sinks: ClientSinks) {
     loop {
         match events.recv().await {
             Ok(event) => {

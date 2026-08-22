@@ -55,9 +55,7 @@ where
     let mut buf = BytesMut::with_capacity(1024);
     loop {
         if buf.len() >= LENGTH_PREFIX {
-            let declared = u32::from_le_bytes([
-                buf[0], buf[1], buf[2], buf[3],
-            ]) as usize;
+            let declared = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
             if declared > MAX_FRAME_BYTES {
                 return Err(Error::FrameTooLarge {
                     size: declared,
@@ -104,9 +102,7 @@ mod tests {
                 .expect("write_frame");
         });
 
-        let decoded: serde_json::Value = read_frame(&mut server)
-            .await
-            .expect("read_frame");
+        let decoded: serde_json::Value = read_frame(&mut server).await.expect("read_frame");
         writer.await.expect("writer task");
         assert_eq!(decoded, json!({ "hello": "world", "n": 7 }));
     }

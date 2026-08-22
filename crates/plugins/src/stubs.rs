@@ -30,7 +30,11 @@ impl Plugin for StubPlugin {
     }
 
     fn handle(&mut self, pkt: &Packet) -> Vec<Packet> {
-        tracing::debug!(plugin = self.meta.name, got = pkt.ty(), "stub plugin received packet");
+        tracing::debug!(
+            plugin = self.meta.name,
+            got = pkt.ty(),
+            "stub plugin received packet"
+        );
         Vec::new()
     }
 }
@@ -182,12 +186,7 @@ mod tests {
             for ty in &types {
                 for body in &bodies {
                     let replies = plugin.handle(&Packet::new(ty, body.clone()));
-                    assert!(
-                        replies.is_empty(),
-                        "stub {} replied to {}",
-                        name,
-                        ty
-                    );
+                    assert!(replies.is_empty(), "stub {} replied to {}", name, ty);
                 }
             }
         }
@@ -226,8 +225,7 @@ mod tests {
             VirtualInputFactory,
         ];
         assert_eq!(stubs.len(), 16);
-        let names: std::collections::HashSet<&str> =
-            stubs.iter().map(|f| f.meta().name).collect();
+        let names: std::collections::HashSet<&str> = stubs.iter().map(|f| f.meta().name).collect();
         assert_eq!(names.len(), 16);
         for f in stubs {
             assert_ne!(f.meta().name, meta::PING.name);

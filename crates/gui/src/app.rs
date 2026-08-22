@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 
-use handfast_ipc::{IPC_VERSION, ServerEvent};
+use handfast_ipc::{ServerEvent, IPC_VERSION};
 use iced::futures::channel::mpsc;
 use iced::{Subscription, Task};
 
@@ -249,9 +249,7 @@ impl HandfastApp {
             }
             Message::TogglePlugin(name, enabled) => {
                 // Optimistic flip; an authoritative refresh follows shortly.
-                if let Some(row) =
-                    app.plugins.iter_mut().find(|row| row.name == name)
-                {
+                if let Some(row) = app.plugins.iter_mut().find(|row| row.name == name) {
                     row.enabled = enabled;
                 }
                 if let Some(device_id) = app.selected_device_id() {
@@ -599,16 +597,14 @@ mod tests {
         reduce(&mut app, &messages);
         assert_eq!(app.logs.len(), LOG_CAP);
         // One boot line plus LOG_CAP+10 records: the oldest eleven fell off.
-        assert!(
-            app.logs
-                .back()
-                .is_some_and(|line| line.contains("line-309"))
-        );
-        assert!(
-            app.logs
-                .front()
-                .is_some_and(|line| line.contains("line-10"))
-        );
+        assert!(app
+            .logs
+            .back()
+            .is_some_and(|line| line.contains("line-309")));
+        assert!(app
+            .logs
+            .front()
+            .is_some_and(|line| line.contains("line-10")));
     }
 
     #[test]
@@ -631,11 +627,10 @@ mod tests {
             &mut app,
             &[Message::DismissPressed(format!("n{}", NOTIF_CAP + 4))],
         );
-        assert!(
-            app.notifications
-                .iter()
-                .all(|row| row.id != format!("n{}", NOTIF_CAP + 4))
-        );
+        assert!(app
+            .notifications
+            .iter()
+            .all(|row| row.id != format!("n{}", NOTIF_CAP + 4)));
     }
 
     #[test]
@@ -656,10 +651,8 @@ mod tests {
                 Message::DeviceSelected(0),
             ],
         );
-        assert!(
-            matches!(drained(&mut receiver).first(),
-                Some(BridgeIn::ListPlugins(id)) if id == "a")
-        );
+        assert!(matches!(drained(&mut receiver).first(),
+                Some(BridgeIn::ListPlugins(id)) if id == "a"));
         assert_eq!(app.selected, Some(0));
         // Stale rows were dropped pending the authoritative refresh.
         assert!(app.plugins.is_empty());
@@ -712,10 +705,8 @@ mod tests {
                 Message::PairPressed("a".into()),
             ],
         );
-        assert!(
-            matches!(drained(&mut receiver).first(),
-                Some(BridgeIn::Pair(id)) if id == "a")
-        );
+        assert!(matches!(drained(&mut receiver).first(),
+                Some(BridgeIn::Pair(id)) if id == "a"));
         assert_eq!(app.devices[0].state, "pairing");
 
         reduce(&mut app, &[Message::Paired(Err("refused".into()))]);

@@ -242,7 +242,7 @@ jobs:
         run: |
           set -euo pipefail
           VER="${TAG_NAME#v}"
-          TARBALL_URL="https://github.com/handfast-rs/handfast/archive/refs/tags/${TAG_NAME}.tar.gz"
+          TARBALL_URL="https://github.com/mheci/handfast/archive/refs/tags/${TAG_NAME}.tar.gz"
           SUM="$(curl -fsSL "$TARBALL_URL" | sha256sum | cut -d' ' -f1)"
           test -n "$SUM"
           cp "$GITHUB_WORKSPACE/packaging/arch/PKGBUILD" ./PKGBUILD

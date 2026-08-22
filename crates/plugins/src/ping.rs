@@ -43,7 +43,11 @@ impl Plugin for PingPlugin {
 
     fn handle(&mut self, pkt: &Packet) -> Vec<Packet> {
         if pkt.ty() != TYPE_PING {
-            tracing::debug!(plugin = meta::PING.name, got = pkt.ty(), "ignoring foreign packet");
+            tracing::debug!(
+                plugin = meta::PING.name,
+                got = pkt.ty(),
+                "ignoring foreign packet"
+            );
             return Vec::new();
         }
         self.last_ping_at = Some(SystemTime::now());

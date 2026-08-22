@@ -60,9 +60,7 @@ mod imp {
         /// `RemoteDesktop::connect_to_eis()` and keeps the returned EIS fd
         /// alive inside this handle for libei event streaming.
         pub async fn connect() -> Result<Self> {
-            let proxy = RemoteDesktop::new()
-                .await
-                .map_err(portal_err("connect"))?;
+            let proxy = RemoteDesktop::new().await.map_err(portal_err("connect"))?;
             let session = proxy
                 .create_session(Default::default())
                 .await

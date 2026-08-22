@@ -15,10 +15,10 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::cli::{ClipboardAction, NotificationAction, PluginAction};
-use crate::error::{Error, Result, expect_ok};
+use crate::error::{expect_ok, Error, Result};
 use crate::model::{
-    DeviceEntry, NotifRow, PluginRow, extract_text, field_str, field_u64, parse_devices,
-    parse_notifications, parse_plugins, yes_no,
+    extract_text, field_str, field_u64, parse_devices, parse_notifications, parse_plugins, yes_no,
+    DeviceEntry, NotifRow, PluginRow,
 };
 
 // ---- connection ---------------------------------------------------------
@@ -44,13 +44,12 @@ pub(crate) async fn fetch_notifications(client: &Client) -> Result<Vec<NotifRow>
 }
 
 /// Fetch and defensively parse one device's plugin rows.
-pub(crate) async fn fetch_plugins(
-    client: &Client,
-    device_id: &str,
-) -> Result<Vec<PluginRow>> {
+pub(crate) async fn fetch_plugins(client: &Client, device_id: &str) -> Result<Vec<PluginRow>> {
     let payload = expect_ok(
         client
-            .request(Request::PluginList { device_id: device_id.to_owned() })
+            .request(Request::PluginList {
+                device_id: device_id.to_owned(),
+            })
             .await?,
     )?;
     Ok(parse_plugins(&payload))
@@ -60,7 +59,9 @@ pub(crate) async fn fetch_plugins(
 pub(crate) async fn pair(client: &Client, device_id: &str) -> Result<()> {
     expect_ok(
         client
-            .request(Request::DevicePair { device_id: device_id.to_owned() })
+            .request(Request::DevicePair {
+                device_id: device_id.to_owned(),
+            })
             .await?,
     )?;
     Ok(())
@@ -70,7 +71,9 @@ pub(crate) async fn pair(client: &Client, device_id: &str) -> Result<()> {
 pub(crate) async fn unpair(client: &Client, device_id: &str) -> Result<()> {
     expect_ok(
         client
-            .request(Request::DeviceUnpair { device_id: device_id.to_owned() })
+            .request(Request::DeviceUnpair {
+                device_id: device_id.to_owned(),
+            })
             .await?,
     )?;
     Ok(())
@@ -97,11 +100,7 @@ pub(crate) async fn set_plugin_enabled(
 
 /// Queue a file transfer; returns whatever bookkeeping payload the daemon
 /// attached (transfer id etc.).
-pub(crate) async fn send_file(
-    client: &Client,
-    device_id: &str,
-    file_path: &Path,
-) -> Result<Value> {
+pub(crate) async fn send_file(client: &Client, device_id: &str, file_path: &Path) -> Result<Value> {
     let payload = expect_ok(
         client
             .request(Request::SendFile {
@@ -114,10 +113,7 @@ pub(crate) async fn send_file(
 }
 
 /// Dismiss one mirrored notification by id.
-pub(crate) async fn dismiss_notification(
-    client: &Client,
-    notification_id: &str,
-) -> Result<()> {
+pub(crate) async fn dismiss_notification(client: &Client, notification_id: &str) -> Result<()> {
     expect_ok(
         client
             .request(Request::NotificationDismiss {
@@ -138,7 +134,9 @@ pub(crate) async fn clipboard_text(client: &Client) -> Result<String> {
 pub(crate) async fn store_clipboard(client: &Client, text: &str) -> Result<()> {
     expect_ok(
         client
-            .request(Request::ClipboardSet { text: text.to_owned() })
+            .request(Request::ClipboardSet {
+                text: text.to_owned(),
+            })
             .await?,
     )?;
     Ok(())
@@ -162,8 +160,9 @@ pub(crate) async fn print_status(client: &mut Client, socket: &Path) -> Result<(
     let name = fields
         .and_then(|obj| field_str(obj, &["name", "app", "hostname"]))
         .unwrap_or("handfast");
-    let version =
-        fields.and_then(|obj| field_str(obj, &["version"])).unwrap_or("unknown");
+    let version = fields
+        .and_then(|obj| field_str(obj, &["version"]))
+        .unwrap_or("unknown");
     let pid_label = fields
         .and_then(|obj| field_u64(obj, &["pid"]))
         .map_or_else(|| "pid unknown".to_owned(), |pid| format!("pid {pid}"));
@@ -224,10 +223,7 @@ pub(crate) async fn print_unpair(client: &Client, device_id: &str) -> Result<()>
 }
 
 /// Dispatch `hfctl plugins …`.
-pub(crate) async fn print_plugins_action(
-    client: &Client,
-    action: PluginAction,
-) -> Result<()> {
+pub(crate) async fn print_plugins_action(client: &Client, action: PluginAction) -> Result<()> {
     match action {
         PluginAction::List { device_id } => {
             let rows = fetch_plugins(client, &device_id).await?;
@@ -257,11 +253,7 @@ pub(crate) async fn print_plugins_action(
 }
 
 /// `hfctl send <DEVICE_ID> <FILE_PATH>`; pretty-prints any transfer payload.
-pub(crate) async fn print_send(
-    client: &Client,
-    device_id: &str,
-    file_path: &Path,
-) -> Result<()> {
+pub(crate) async fn print_send(client: &Client, device_id: &str, file_path: &Path) -> Result<()> {
     let payload = send_file(client, device_id, file_path).await?;
     let mut out = std::io::stdout();
     match serde_json::to_string_pretty(&payload) {
@@ -301,10 +293,7 @@ pub(crate) async fn print_notifications_action(
 }
 
 /// Dispatch `hfctl clipboard …`.
-pub(crate) async fn print_clipboard_action(
-    client: &Client,
-    action: ClipboardAction,
-) -> Result<()> {
+pub(crate) async fn print_clipboard_action(client: &Client, action: ClipboardAction) -> Result<()> {
     match action {
         ClipboardAction::Get => {
             let text = clipboard_text(client).await?;
@@ -339,7 +328,7 @@ pub(crate) async fn print_logs(client: &mut Client, limit: usize) -> Result<()> 
                 records.push(format!("[{level:<5}] {msg}"));
             }
             Ok(Some(_)) => continue,
-            Ok(None) => break,        // daemon closed the stream early
+            Ok(None) => break,             // daemon closed the stream early
             Err(_window_elapsed) => break, // listen window over
         }
     }

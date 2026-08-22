@@ -84,12 +84,14 @@ pub(crate) fn field_str<'a>(obj: &'a Map<String, Value>, keys: &[&str]) -> Optio
 
 /// First present boolean field among `keys`.
 pub(crate) fn field_bool(obj: &Map<String, Value>, keys: &[&str]) -> Option<bool> {
-    keys.iter().find_map(|key| obj.get(*key).and_then(Value::as_bool))
+    keys.iter()
+        .find_map(|key| obj.get(*key).and_then(Value::as_bool))
 }
 
 /// First present integer field among `keys`.
 pub(crate) fn field_u64(obj: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| obj.get(*key).and_then(Value::as_u64))
+    keys.iter()
+        .find_map(|key| obj.get(*key).and_then(Value::as_u64))
 }
 
 /// Accept either a bare array or an object wrapping one under `wrapper_key`.
@@ -111,15 +113,23 @@ pub(crate) fn parse_devices(value: &Value) -> Vec<DeviceEntry> {
         .filter_map(|item| {
             let obj = item.as_object()?;
             let id = field_str(obj, &["id", "device_id"])?;
-            let name =
-                field_str(obj, &["name", "device_name"]).unwrap_or(id).to_owned();
+            let name = field_str(obj, &["name", "device_name"])
+                .unwrap_or(id)
+                .to_owned();
             let kind = field_str(obj, &["type", "kind", "device_type"])
                 .unwrap_or("unknown")
                 .to_owned();
-            let state =
-                field_str(obj, &["state", "status"]).unwrap_or("found").to_owned();
+            let state = field_str(obj, &["state", "status"])
+                .unwrap_or("found")
+                .to_owned();
             let paired = field_bool(obj, &["paired"]).unwrap_or(state == "paired");
-            Some(DeviceEntry { id: id.to_owned(), name, kind, paired, state })
+            Some(DeviceEntry {
+                id: id.to_owned(),
+                name,
+                kind,
+                paired,
+                state,
+            })
         })
         .collect()
 }
@@ -135,10 +145,15 @@ pub(crate) fn parse_plugins(value: &Value) -> Vec<PluginRow> {
         .filter_map(|item| {
             let obj = item.as_object()?;
             let name = field_str(obj, &["name", "plugin", "id"])?;
-            let title =
-                field_str(obj, &["title", "label"]).unwrap_or(name).to_owned();
+            let title = field_str(obj, &["title", "label"])
+                .unwrap_or(name)
+                .to_owned();
             let enabled = field_bool(obj, &["enabled", "active"]).unwrap_or(false);
-            Some(PluginRow { name: name.to_owned(), title, enabled })
+            Some(PluginRow {
+                name: name.to_owned(),
+                title,
+                enabled,
+            })
         })
         .collect()
 }
@@ -158,7 +173,9 @@ pub(crate) fn parse_notifications(value: &Value) -> Vec<NotifRow> {
                 app: field_str(obj, &["app", "application", "source"])
                     .unwrap_or("")
                     .to_owned(),
-                title: field_str(obj, &["title", "summary"]).unwrap_or("").to_owned(),
+                title: field_str(obj, &["title", "summary"])
+                    .unwrap_or("")
+                    .to_owned(),
                 body: field_str(obj, &["body", "text", "message"])
                     .unwrap_or("")
                     .to_owned(),

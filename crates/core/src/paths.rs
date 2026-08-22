@@ -98,14 +98,10 @@ fn resolve() -> Paths {
 #[cfg(not(unix))]
 fn resolve() -> Paths {
     let appdata = env_dir("APPDATA")
-        .or_else(|| {
-            env_dir("USERPROFILE").map(|home| home.join("AppData").join("Roaming"))
-        })
+        .or_else(|| env_dir("USERPROFILE").map(|home| home.join("AppData").join("Roaming")))
         .unwrap_or_else(std::env::temp_dir);
     let local_appdata = env_dir("LOCALAPPDATA")
-        .or_else(|| {
-            env_dir("USERPROFILE").map(|home| home.join("AppData").join("Local"))
-        })
+        .or_else(|| env_dir("USERPROFILE").map(|home| home.join("AppData").join("Local")))
         .unwrap_or_else(std::env::temp_dir);
 
     Paths {
@@ -155,7 +151,11 @@ mod tests {
     #[test]
     fn init_creates_all_directories_idempotently() {
         let first = Paths::init().expect("init should not fail on any platform");
-        assert!(first.config.is_dir(), "config dir missing: {:?}", first.config);
+        assert!(
+            first.config.is_dir(),
+            "config dir missing: {:?}",
+            first.config
+        );
         assert!(first.data.is_dir(), "data dir missing: {:?}", first.data);
         assert!(first.cache.is_dir(), "cache dir missing: {:?}", first.cache);
         assert!(
