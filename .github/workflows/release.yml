@@ -1,0 +1,269 @@
+# Release pipeline for Handfast.
+#
+# Trigger blocks:
+#   A) push to main   -> googleapis/release-please-action maintains release PRs
+#                        from conventional commits; merging one creates tag
+#                        v<version> + the GitHub Release.
+#   B) push of v* tag -> build Linux tarballs (x86_64/aarch64) + Arch packages,
+#                        attach everything to the GitHub Release, sync AUR.
+#
+# workflow_dispatch: manual trigger — select a v* tag as ref to re-publish it
+# (on main it is an idempotent no-op pass of release-please).
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ==================================================== A) main -> release ==
+  release-please:
+    name: release-please
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write       # create release branches/tags/releases
+      pull-requests: write  # maintain the release PR + labels
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # ================================================ B) tag -> build linux ==
+  build-linux:
+    name: build-linux (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            cross: true
+    steps:
+      - uses: actions/checkout@v4   # implicit ref = pushed tag
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps (wayland / xkbcommon)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev
+      # cross (Docker-based) is only needed to link the aarch64 GNU target.
+      - name: Install cross (aarch64 only)
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
+      - name: Build release binaries
+        run: |
+          TARGET='${{ matrix.target }}'
+          if [ '${{ matrix.cross }}' = 'true' ]; then
+            cross build --release --workspace --all-features --target "$TARGET"
+          else
+            cargo build --release --workspace --all-features --target "$TARGET"
+          fi
+      - name: Package tarball + sha256
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          TARGET='${{ matrix.target }}'
+          NAME="handfast-${VER}-${TARGET}"
+          STAGE="dist/${NAME}"
+          mkdir -p "${STAGE}"
+          BIN="target/${TARGET}/release"
+          cp "${BIN}/handfastd" "${BIN}/hfctl" "${BIN}/handfast-gui" "${STAGE}/"
+          cp README.md LICENSE-MIT "${STAGE}/"
+          mkdir -p "${STAGE}/packaging"
+          for d in systemd desktop icons; do
+            if [ -d "packaging/${d}" ]; then
+              cp -r "packaging/${d}" "${STAGE}/packaging/"
+            else
+              echo "::warning::packaging/${d} missing in repo — skipped"
+            fi
+          done
+          tar -cJf "dist/${NAME}.tar.zst" -C dist "${NAME}"
+          rm -rf "${STAGE}"
+          ( cd dist && sha256sum "${NAME}.tar.zst" > "${NAME}.tar.zst.sha256" )
+      - name: Upload tarball + checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/*.tar.zst
+            dist/*.tar.zst.sha256
+          if-no-files-found: error
+
+  # ================================================= B) tag -> arch pkgs ===
+  arch-pkg:
+    name: arch-pkg (tagged source)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install toolchain + package deps
+        run: pacman -Syu --noconfirm git rust pkg-config libxkbcommon wayland sudo
+      - uses: actions/checkout@v4   # implicit ref = pushed tag (tagged source)
+      - name: Create unprivileged builder user
+        run: |
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
+      # Same HF_LOCAL_SRC=1 contract as CI's arch-build job: build from the
+      # locally staged tagged checkout instead of fetching a remote tarball.
+      - name: Stage tagged source into makepkg srcdir layout
+        run: |
+          STAGE=/tmp/makepkg-stage
+          mkdir -p "$STAGE/src"
+          cp -a "$GITHUB_WORKSPACE" "$STAGE/src/handfast"
+          cp "$GITHUB_WORKSPACE/packaging/arch/PKGBUILD" "$STAGE/PKGBUILD"
+          chown -R builder:builder "$STAGE"
+      - name: Build package as builder (HF_LOCAL_SRC=1)
+        working-directory: /tmp/makepkg-stage
+        run: sudo -u builder env HOME=/home/builder HF_LOCAL_SRC=1 makepkg -f --nodeps
+      - name: Generate .SRCINFO
+        working-directory: /tmp/makepkg-stage
+        run: sudo -u builder env HOME=/home/builder makepkg --printsrcinfo > .SRCINFO
+      - name: Collect package + SRCINFO
+        run: |
+          mkdir -p dist
+          cp /tmp/makepkg-stage/*.pkg.tar.zst dist/
+          cp /tmp/makepkg-stage/.SRCINFO dist/
+      - name: Upload package + SRCINFO
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-arch-pkg
+          path: |
+            dist/*.pkg.tar.zst
+            dist/.SRCINFO
+          if-no-files-found: error
+
+  # ============================================== B) tag -> GH release =====
+  publish:
+    name: publish (GitHub Release)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, arch-pkg]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write   # attach assets to the tag's release
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          merge-multiple: true
+          path: dist
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/handfast-*.tar.zst
+            dist/handfast-*.tar.zst.sha256
+            dist/*.pkg.tar.zst
+            dist/.SRCINFO
+          generate_release_notes: true
+          body: |
+            ## Packages
+
+            - Tarballs (`x86_64` / `aarch64`, sha256-checksums included) for manual installs.
+            - Arch Linux `.pkg.tar.zst` + `.SRCINFO`.
+
+            > **Arch Linux users:** the AUR package [`handfast`](https://aur.archlinux.org/packages/handfast)
+            > is updated automatically shortly after this release — no manual action required.
+
+  # =================================================== B) tag -> AUR sync ==
+  aur-publish:
+    name: aur-publish (handfast)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Container so makepkg --printsrcinfo is available for .SRCINFO generation.
+    container:
+      image: archlinux:base-devel
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+    steps:
+      - name: Check for AUR_SSH_KEY secret
+        id: keycheck
+        env:
+          KEY_B64: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          if [ -n "$KEY_B64" ]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Skip notice
+        if: steps.keycheck.outputs.has_key != 'true'
+        run: echo "::notice::AUR_SSH_KEY not configured — skipping AUR publication."
+      - name: Install git / openssh / curl
+        if: steps.keycheck.outputs.has_key == 'true'
+        run: pacman -Syu --noconfirm git openssh curl
+      - uses: actions/checkout@v4   # template PKGBUILD lives here
+        if: steps.keycheck.outputs.has_key == 'true'
+      - name: Configure SSH auth for AUR
+        if: steps.keycheck.outputs.has_key == 'true'
+        env:
+          KEY_B64: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$KEY_B64" | base64 -d > ~/.ssh/aur_key
+          chmod 600 ~/.ssh/aur_key
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          tee ~/.ssh/config >/dev/null <<'SSHCFG'
+          Host aur.archlinux.org
+            User aur
+            IdentityFile ~/.ssh/aur_key
+            StrictHostKeyChecking yes
+          SSHCFG
+      - name: Clone AUR repository
+        if: steps.keycheck.outputs.has_key == 'true'
+        run: git clone ssh://aur@aur.archlinux.org/handfast.git aur-work
+      - name: Regenerate PKGBUILD + .SRCINFO from template
+        if: steps.keycheck.outputs.has_key == 'true'
+        working-directory: aur-work
+        run: |
+          set -euo pipefail
+          VER="${TAG_NAME#v}"
+          TARBALL_URL="https://github.com/handfast-rs/handfast/archive/refs/tags/${TAG_NAME}.tar.gz"
+          SUM="$(curl -fsSL "$TARBALL_URL" | sha256sum | cut -d' ' -f1)"
+          test -n "$SUM"
+          cp "$GITHUB_WORKSPACE/packaging/arch/PKGBUILD" ./PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=${VER}/"     PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/"          PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${SUM}')/" PKGBUILD
+          grep -F "sha256sums=('${SUM}')" PKGBUILD >/dev/null \
+            || { echo "::error::sha256sum substitution failed"; exit 1; }
+          makepkg --printsrcinfo > .SRCINFO
+      - name: Commit + push AUR update
+        if: steps.keycheck.outputs.has_key == 'true'
+        working-directory: aur-work
+        run: |
+          set -euo pipefail
+          git config user.name  "handfast-bot"
+          git config user.email "bot@handfast.dev"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "::notice::AUR already up to date for ${TAG_NAME}."
+          else
+            git commit -m "upstream release ${TAG_NAME}" \
+              --author="handfast-bot <bot@handfast.dev>"
+            git push origin HEAD
+          fi

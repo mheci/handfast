@@ -1,0 +1,253 @@
+# CI for Handfast — Linux-targeted Rust workspace.
+#
+# Stages: fmt, clippy, test, audit (RustSec), cargo-deny, release-build,
+#         arch-build (makepkg), fuzz-smoke (tolerated), wayland-smoke (tolerated).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ------------------------------------------------------------------ fmt --
+  fmt:
+    name: fmt (rustfmt)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # --------------------------------------------------------------- clippy --
+  clippy:
+    name: clippy (-D warnings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Needed by the wayland/xkbcommon crates at build time (pkg-config probes).
+      - name: Install system deps (wayland / xkbcommon)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # ----------------------------------------------------------------- test --
+  test:
+    name: test (--workspace --all-features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps (wayland / xkbcommon)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev
+      - name: Run tests
+        run: cargo test --workspace --all-features
+
+  # ---------------------------------------------------------------- audit --
+  audit:
+    name: audit (RustSec)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # Simpler/robust choice over installing cargo-audit via taiki-e/install-action:
+      # prebuilt binary, no toolchain bootstrap, fails on vulnerable deps.
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ----------------------------------------------------------------- deny --
+  deny:
+    name: deny (cargo-deny)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # Uses the committed deny.toml (licenses / bans / sources / advisories).
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # -------------------------------------------------------- release-build --
+  release-build:
+    name: release-build (linux-x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps (wayland / xkbcommon)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev
+      - name: Build optimized binaries
+        run: cargo build --release --workspace --all-features
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-x86_64
+          path: |
+            target/release/handfastd
+            target/release/hfctl
+            target/release/handfast-gui
+          if-no-files-found: error
+
+  # ----------------------------------------------------------- arch-build --
+  arch-build:
+    name: arch-build (makepkg)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: false
+    container:
+      image: archlinux:base-devel
+    steps:
+      # NOTE for packaging/arch/PKGBUILD authors: the PKGBUILD must support
+      # env HF_LOCAL_SRC=1 — i.e. build from a local copy of the repo staged at
+      # $srcdir/handfast instead of downloading a release tarball. This job
+      # stages exactly that layout before invoking makepkg.
+      - name: Install toolchain + package deps
+        # sudo is needed to drop privileges to the unprivileged builder below.
+        run: pacman -Syu --noconfirm git rust pkg-config libxkbcommon wayland sudo
+      - uses: actions/checkout@v4   # lands root-owned under /__w/...
+      - name: Create unprivileged builder user
+        run: |
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
+      - name: Stage repo into makepkg srcdir layout
+        run: |
+          STAGE=/tmp/makepkg-stage
+          mkdir -p "$STAGE/src"
+          cp -a "$GITHUB_WORKSPACE" "$STAGE/src/handfast"
+          cp "$GITHUB_WORKSPACE/packaging/arch/PKGBUILD" "$STAGE/PKGBUILD"
+          chown -R builder:builder "$STAGE"
+      - name: Build package as builder (HF_LOCAL_SRC=1)
+        working-directory: /tmp/makepkg-stage
+        run: sudo -u builder env HOME=/home/builder HF_LOCAL_SRC=1 makepkg -f --nodeps
+      - name: Collect built package
+        run: |
+          mkdir -p dist
+          cp /tmp/makepkg-stage/*.pkg.tar.zst dist/
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: handfast-arch-pkg
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+
+  # ----------------------------------------------------------- fuzz-smoke --
+  fuzz-smoke:
+    # Smoke-only fuzzing; corpus flakiness tolerated early on.
+    continue-on-error: true
+    name: fuzz-smoke (nightly, 20s/target)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps (wayland / xkbcommon)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@cargo-fuzz
+      - name: Build fuzz targets (optimized)
+        run: cargo fuzz build -O
+      - name: Smoke-run every fuzz target (20s each)
+        run: |
+          set -u
+          shopt -s nullglob
+          targets=(fuzz/fuzz_targets/*.rs)
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "No targets in fuzz/fuzz_targets — nothing to smoke."
+            exit 0
+          fi
+          status=0
+          for f in "${targets[@]}"; do
+            t="$(basename "$f" .rs)"
+            echo "::group::cargo fuzz run ${t} (20s)"
+            cargo fuzz run "$t" -- -max_total_time=20 || status=1
+            echo "::endgroup::"
+          done
+          exit "$status"
+
+  # --------------------------------------------------------- wayland-smoke --
+  # Phase-4 hardening target: tolerated until compositor integration matures.
+  wayland-smoke:
+    continue-on-error: true
+    name: wayland-smoke (headless sway)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # sway pulls wlroots; deliberately NO xwayland package.
+      - name: Install sway + system deps (no xwayland)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev sway
+      - name: Start headless sway session
+        run: |
+          export XDG_RUNTIME_DIR=/tmp/runtime
+          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          tee /tmp/sway.cfg >/dev/null <<'EOF'
+          # minimal config for headless smoke session
+          output HEADLESS-1 resolution 1280x720 position 0,0
+          EOF
+          env WLR_BACKENDS=headless \
+              WLR_RENDERER=pixman \
+              WLR_LIBINPUT_NO_DEVICES=1 \
+              XDG_RUNTIME_DIR=/tmp/runtime \
+              WAYLAND_DISPLAY=hf-smoke \
+              sway -c /tmp/sway.cfg > /tmp/sway.log 2>&1 &
+          echo $! > /tmp/sway.pid
+      - name: Wait for Wayland socket (max ~10s)
+        run: |
+          ok=0
+          for i in $(seq 1 10); do
+            if [ -S "/tmp/runtime/hf-smoke" ]; then
+              echo "sway socket ready after ${i}s"
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" != "1" ]; then
+            echo "sway did not create WAYLAND_DISPLAY socket 'hf-smoke'; log follows:" >&2
+            cat /tmp/sway.log >&2 || true
+            exit 1
+          fi
+      - name: Exercise handfast against live session
+        env:
+          XDG_RUNTIME_DIR: /tmp/runtime
+          WAYLAND_DISPLAY: hf-smoke
+        run: |
+          cargo test -p handfast-wayland --lib detect_session -- --exact --nocapture
+          cargo run --bin handfastd --version

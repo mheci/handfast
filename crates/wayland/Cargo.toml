@@ -1,0 +1,81 @@
+[package]
+name = "handfast-wayland"
+description = "Handfast Wayland bridge: virtual input, clipboard, idle inhibit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# Handfast is strictly Wayland-first: no X11/XWayland/XTEST dependencies are
+# permitted anywhere in this crate (see CONTRIBUTING.md ground rule 3).
+[lints]
+workspace = true
+
+[features]
+default = ["zwp-input", "zwp-clipboard"]
+# Native Wayland virtual input injection. Speaks:
+#   * zwp_virtual_keyboard_manager_v1        (keyboard)
+#   * zwlr_virtual_pointer_manager_v1 (wlr)  (pointer)
+zwp-input = [
+    "dep:wayland-client",
+    "dep:wayland-protocols",
+    "dep:wayland-protocols-misc",
+    "dep:wayland-protocols-wlr",
+    "dep:xkbcommon",
+    "dep:tempfile",
+]
+# Clipboard access over data-control protocols (wl-clipboard-rs implements
+# ext_data_control_v1 AND zwlr_data_control_device_manager_v1 automatically);
+# the change watcher additionally listens to data-control selection events.
+zwp-clipboard = [
+    "dep:wl-clipboard-rs",
+    "dep:wayland-client",
+    "dep:wayland-protocols",
+    "dep:wayland-protocols-wlr",
+    "dep:tempfile",
+]
+# Idle inhibition via org.freedesktop.ScreenSaver on the session bus.
+dbus-idle = ["dep:zbus"]
+# RemoteDesktop portal / libei-style mediated input (preferred under GNOME).
+# Skeleton this phase: probes portal availability, injection lands in Phase-4.
+portal-ei = ["dep:ashpd"]
+
+[dependencies]
+handfast-core = { path = "../core" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+# Wayland client stack (all optional; enabled by the features above).
+wayland-client = { version = "0.31", optional = true }
+wayland-protocols = { version = "0.32", optional = true, default-features = false, features = [
+    "client",
+    "unstable",
+    "staging",
+] }
+wayland-protocols-misc = { version = "0.3", optional = true, default-features = false, features = [
+    "client",
+] }
+wayland-protocols-wlr = { version = "0.3", optional = true, default-features = false, features = [
+    "client",
+] }
+xkbcommon = { version = "0.8", optional = true }
+wl-clipboard-rs = { version = "0.9", optional = true }
+
+# Anonymous temp files double as memfd substitutes (keymap/shm fds) because the
+# workspace denies `unsafe`, which rules out direct memfd_create syscalls.
+tempfile = { workspace = true, optional = true }
+
+# Desktop bus stacks.
+zbus = { version = "5", optional = true }
+# NOTE: pinned to 0.13 (not 0.11): the RemoteDesktop surface switched to
+# options-builder style in this line and every signature used by portal_ei is
+# verified against 0.13 docs. `remote_desktop` gates that module in 0.13+.
+ashpd = { version = "0.13", optional = true, default-features = false, features = [
+    "tokio",
+    "remote_desktop",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

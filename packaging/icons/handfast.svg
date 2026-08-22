@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img">
+  <title>Handfast</title>
+  <desc>Two interlocking rings forming a handfast knot: two devices bound together.</desc>
+  <!-- Teal ring (left): the desktop. -->
+  <circle cx="24" cy="32" r="15" fill="none" stroke="#0F766E" stroke-width="7"/>
+  <!-- Amber ring (right): the phone; slightly translucent for a subtle
+       overlap blend where the two rings cross. -->
+  <circle cx="40" cy="32" r="15" fill="none" stroke="#F59E0B" stroke-width="7" opacity="0.92"/>
+  <!-- Weave pass 1: amber crosses OVER teal at the top intersection. -->
+  <path d="M 27.72 23.40 A 15 15 0 0 1 37.39 17.23"
+        fill="none" stroke="#F59E0B" stroke-width="7" stroke-linecap="round"/>
+  <!-- Weave pass 2: teal crosses OVER amber at the bottom intersection,
+       completing the alternating over-under knot. -->
+  <path d="M 36.29 40.61 A 15 15 0 0 1 26.60 46.77"
+        fill="none" stroke="#0F766E" stroke-width="7" stroke-linecap="round"/>
+</svg>

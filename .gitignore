@@ -1,0 +1,11 @@
+/target
+/fuzz/target
+/fuzz/artifacts
+**/*.rs.bk
+*.db3
+*.db3-journal
+*.sock
+.DS_Store
+Thumbs.db
+dist/
+aur-work/
