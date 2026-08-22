@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install system deps (wayland / xkbcommon)
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Simpler/robust choice over installing cargo-audit via taiki-e/install-action:
       # prebuilt binary, no toolchain bootstrap, fails on vulnerable deps.
       - uses: rustsec/audit-check@v2
@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Uses the committed deny.toml (licenses / bans / sources / advisories).
       - uses: EmbarkStudios/cargo-deny-action@v2
 
@@ -99,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install system deps (wayland / xkbcommon)
@@ -134,7 +134,7 @@ jobs:
       - name: Install toolchain + package deps
         # sudo is needed to drop privileges to the unprivileged builder below.
         run: pacman -Syu --noconfirm git rust pkg-config libxkbcommon wayland sudo
-      - uses: actions/checkout@v4   # lands root-owned under /__w/...
+      - uses: actions/checkout@v7   # lands root-owned under /__w/...
       - name: Create unprivileged builder user
         run: |
           useradd -m builder
@@ -168,7 +168,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - name: Install system deps (wayland / xkbcommon)
@@ -205,7 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # sway pulls wlroots; deliberately NO xwayland package.
