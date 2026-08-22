@@ -60,7 +60,7 @@ wayland-protocols-misc = { version = "0.3", optional = true, default-features = 
 wayland-protocols-wlr = { version = "0.3", optional = true, default-features = false, features = [
     "client",
 ] }
-xkbcommon = { version = "0.8", optional = true }
+xkbcommon = { version = "0.9", optional = true }
 wl-clipboard-rs = { version = "0.9", optional = true }
 
 # Anonymous temp files double as memfd substitutes (keymap/shm fds) because the

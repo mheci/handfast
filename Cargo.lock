@@ -1714,9 +1714,11 @@ dependencies = [
  "handfast-protocol",
  "handfast-wayland",
  "mimalloc",
+ "rustls",
  "serde_json",
  "tikv-jemallocator",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -3510,12 +3512,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls"
+version = "0.23.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
+dependencies = [
+ "once_cell",
+ "ring",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "rustls-pki-types"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
  "zeroize",
+]
+
+[[package]]
+name = "rustls-webpki"
+version = "0.103.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+dependencies = [
+ "ring",
+ "rustls-pki-types",
+ "untrusted",
 ]
 
 [[package]]
@@ -3919,6 +3946,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
 name = "svg_fmt"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4198,6 +4231,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "tokio-rustls"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+dependencies = [
+ "rustls",
+ "tokio",
 ]
 
 [[package]]
@@ -5292,9 +5335,9 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
 name = "xkbcommon"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d66ca9352cbd4eecbbc40871d8a11b4ac8107cfc528a6e14d7c19c69d0e1ac9"
+checksum = "a7a974f48060a14e95705c01f24ad9c3345022f4d97441b8a36beb7ed5c4a02d"
 dependencies = [
  "libc",
  "memmap2",
