@@ -109,7 +109,7 @@ jobs:
       - name: Build optimized binaries
         run: cargo build --release --workspace --all-features
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-linux-x86_64
           path: |
@@ -154,7 +154,7 @@ jobs:
           mkdir -p dist
           cp /tmp/makepkg-stage/*.pkg.tar.zst dist/
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: handfast-arch-pkg
           path: dist/*.pkg.tar.zst

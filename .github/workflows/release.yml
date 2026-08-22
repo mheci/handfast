@@ -100,7 +100,7 @@ jobs:
           rm -rf "${STAGE}"
           ( cd dist && sha256sum "${NAME}.tar.zst" > "${NAME}.tar.zst.sha256" )
       - name: Upload tarball + checksum
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}
           path: |
@@ -145,7 +145,7 @@ jobs:
           cp /tmp/makepkg-stage/*.pkg.tar.zst dist/
           cp /tmp/makepkg-stage/.SRCINFO dist/
       - name: Upload package + SRCINFO
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-arch-pkg
           path: |
