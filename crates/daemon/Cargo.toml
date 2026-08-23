@@ -1,0 +1,47 @@
+[package]
+name = "handfastd"
+description = "Handfast device-pairing daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "handfastd"
+path = "src/main.rs"
+
+[features]
+default = []
+# Allocators: jemalloc (linux-gnu) and mimalloc are opt-in; default = system.
+jemalloc = []
+# Opt-in portable allocator; when neither feature is set the standard system
+# allocator is used (preferred for distro packaging).
+mimalloc = ["dep:mimalloc"]
+
+[dependencies]
+handfast-core = { path = "../core" }
+handfast-ipc = { path = "../ipc" }
+handfast-plugins = { path = "../plugins" }
+handfast-protocol = { path = "../protocol" }
+handfast-wayland = { path = "../wayland" }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+futures-util = { workspace = true }
+rustls = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+# Optional allocators; system allocator is the zero-dependency default.
+mimalloc = { workspace = true, optional = true }
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+
+[lints]
+workspace = true

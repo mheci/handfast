@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F766E"/>
+      <stop offset="55%" stop-color="#115E59"/>
+      <stop offset="100%" stop-color="#134E4A"/>
+    </linearGradient>
+    <linearGradient id="ringAmber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE68A"/>
+      <stop offset="45%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#D97706"/>
+    </linearGradient>
+    <linearGradient id="ringTeal" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#99F6E4"/>
+      <stop offset="45%" stop-color="#2DD4BF"/>
+      <stop offset="100%" stop-color="#0D9488"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="45%" stop-color="#FFFFFF" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <clipPath id="tile">
+      <rect x="16" y="16" width="480" height="480" rx="108" ry="108"/>
+    </clipPath>
+  </defs>
+
+  <!-- app tile -->
+  <rect x="16" y="16" width="480" height="480" rx="108" ry="108" fill="url(#bg)"/>
+
+  <!-- faint knot guide texture -->
+  <g clip-path="url(#tile)" opacity="0.07" stroke="#FFFFFF" stroke-width="10" fill="none">
+    <circle cx="256" cy="256" r="190"/>
+    <circle cx="130" cy="256" r="150"/>
+    <circle cx="382" cy="256" r="150"/>
+  </g>
+
+  <!-- interlocking rings: the bound pair -->
+  <g filter="url(#softShadow)" stroke-linecap="round">
+    <!-- amber ring -->
+    <circle cx="196" cy="256" r="118" fill="none"
+            stroke="url(#ringAmber)" stroke-width="34"/>
+    <!-- teal ring -->
+    <circle cx="316" cy="256" r="118" fill="none"
+            stroke="url(#ringTeal)" stroke-width="34"/>
+    <!-- weave illusion: amber over-under-over across the teal ring -->
+    <path d="M 236 148 A 118 118 0 0 1 296 152" fill="none"
+          stroke="url(#ringAmber)" stroke-width="38" stroke-linecap="round"/>
+    <path d="M 216 364 A 118 118 0 0 1 176 350" fill="none"
+          stroke="url(#ringAmber)" stroke-width="38" stroke-linecap="round"/>
+  </g>
+
+  <!-- binding node: small diamond where the rings meet -->
+  <g transform="translate(256,256) rotate(45)">
+    <rect x="-17" y="-17" width="34" height="34" rx="7"
+          fill="#FFF7ED" opacity="0.95"/>
+  </g>
+  <circle cx="256" cy="256" r="7" fill="#0F766E"/>
+
+  <!-- glass sheen -->
+  <rect x="16" y="16" width="480" height="240" rx="108" ry="108" fill="url(#sheen)" clip-path="url(#tile)"/>
+</svg>

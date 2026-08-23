@@ -1,0 +1,223 @@
+# Maintainer: mheci <274998646+mheci@users.noreply.github.com>
+# Contributor: mheci <274998646+mheci@users.noreply.github.com>
+
+pkgname=handfast
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Wayland-first KDE Connect-compatible device pairing daemon"
+url=https://github.com/mheci/handfast
+arch=('x86_64' 'aarch64')
+license=('MIT')
+depends=(gcc-libs glibc wayland libxkbcommon)
+optdepends=('xdg-desktop-portal: portal-mediated input/clipboard fallback')
+makedepends=(cargo git)
+checkdepends=()
+# Stripping/LTO left at makepkg defaults on purpose.
+
+# Release mode (default): fetch the signed-off tag tarball produced by CI.
+# Local/CI validation mode: HF_LOCAL_SRC=1 builds from the current checkout
+# instead of downloading anything, so makepkg can be exercised in an Arch
+# container against uncommitted working-tree state.
+#
+#   HF_LOCAL_SRC=1 makepkg -f
+#
+# In local mode prepare() materializes a pristine copy of $startdir (git and
+# build artifacts excluded) under the canonical $pkgname-$pkgver directory,
+# so every later step is byte-identical between modes.
+if [[ -n ${HF_LOCAL_SRC:-} ]]; then
+  source=()
+  sha256sums=()
+else
+  source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+  sha256sums=('SKIP') # replaced by release automation
+fi
+
+prepare() {
+  if [[ -n ${HF_LOCAL_SRC:-} ]]; then
+    rm -rf "$srcdir/$pkgname-$pkgver"
+    if [[ -d "$srcdir/$pkgname" ]]; then
+      # CI layout: the checkout is pre-staged at $srcdir/$pkgname.
+      cp -a "$srcdir/$pkgname" "$srcdir/$pkgname-$pkgver"
+    else
+      # Direct local run: $startdir IS the checkout.
+      tar --exclude-vcs --exclude='./target' --exclude='./fuzz/target' \
+        -cf - -C "$startdir" . \
+        | tar -xf - -C "$srcdir/$pkgname-$pkgver"
+    fi
+  fi
+
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export CARGO_TARGET_DIR=target
+  export RUSTUP_TOOLCHAIN=stable
+  # lld + fat-LTO + --gc-sections drops members of native static archives
+  # (ring / libsqlite3-sys / allocator sys crates all failed identically):
+  # force the classic GNU ld and keep every section during packaging.
+  mkdir -p .cargo
+  cat > .cargo/config.toml <<'EOF'
+[target.x86_64-unknown-linux-gnu]
+# Self-contained mode routes through rust-lld, which silently drops members
+# of the native static archives (ring/sqlite sys crates) under fat LTO.
+# Use the system toolchain (cc -> GNU ld) like every other distro build.
+rustflags = [
+  "-C", "link-self-contained=off",
+  "-C", "link-arg=-fuse-ld=bfd",
+  "-C", "link-arg=-Wl,--no-gc-sections",
+]
+EOF
+
+  # Some containerized cargo/rustc combos additionally drop build-script `-l`
+  # directives at final link time (observed with ring). First pass builds all
+  # but the failing link; on undefined-symbol failure, retry ONCE appending
+  # every produced native archive explicitly — toolchain-independent.
+  local _pkgs=(-p handfastd -p handfast-tui -p handfast-gui)
+  local _feats=(--features handfast-core/sqlite-bundled)
+  if ! cargo build --release --locked "${_feats[@]}" "${_pkgs[@]}"; then
+    echo "::warning::initial link failed; retrying with explicit native archives" >&2
+    local extra=()
+    shopt -s nullglob
+    for a in target/release/build/*/out/lib*.a; do
+      extra+=("-C" "link-arg=$(readlink -f "$a")")
+    done
+    shopt -u nullglob
+    if [ "${#extra[@]}" -eq 0 ]; then
+      echo "no native archives found to append" >&2
+      return 1
+    fi
+    export RUSTFLAGS="${RUSTFLAGS:-} ${extra[*]}"
+    cargo build --release --locked "${_pkgs[@]}"
+  fi
+}
+
+# Headless-safe test subset only: no display, no D-Bus session, no network
+# devices required. GUI/TUI/daemon integration suites run in upstream CI.
+check() {
+  cd "$pkgname-$pkgver"
+  export CARGO_TARGET_DIR=target
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --locked --all-features \
+    -p handfast-core -p handfast-protocol -p handfast-ipc -p handfast-plugins
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+
+  # Binaries.
+  install -Dm755 target/release/handfastd    "$pkgdir/usr/bin/handfastd"
+  install -Dm755 target/release/hfctl        "$pkgdir/usr/bin/hfctl"
+  install -Dm755 target/release/handfast-gui "$pkgdir/usr/bin/handfast-gui"
+
+  # License text (license=('MIT')).
+  install -Dm644 LICENSE-MIT \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+
+  # systemd user unit.
+  install -Dm644 packaging/systemd/handfast.service \
+    "$pkgdir/usr/lib/systemd/user/handfast.service"
+
+  # Desktop entry and icon.
+  install -Dm644 packaging/desktop/dev.handfast.Gui.desktop \
+    "$pkgdir/usr/share/applications/dev.handfast.Gui.desktop"
+  install -Dm644 packaging/icons/handfast.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/handfast.svg"
+
+  # Shell completions generated at build time by hfctl itself.
+  local _gen="$srcdir/completions"
+  mkdir -p "$_gen"
+  ./target/release/hfctl completions bash > "$_gen/hfctl.bash"
+  ./target/release/hfctl completions zsh  > "$_gen/_hfctl"
+  ./target/release/hfctl completions fish > "$_gen/hfctl.fish"
+  install -Dm644 "$_gen/hfctl.bash" \
+    "$pkgdir/usr/share/bash-completion/completions/hfctl"
+  install -Dm644 "$_gen/_hfctl" \
+    "$pkgdir/usr/share/zsh/site-functions/_hfctl"
+  install -Dm644 "$_gen/hfctl.fish" \
+    "$pkgdir/usr/share/fish/vendor_completions.d/hfctl.fish"
+
+  # Man pages: prefer docs-generated pages when present; otherwise fall back
+  # to minimal inline troff stubs so every package ships handfastd(1) and
+  # hfctl(1). The stubs document the two paths users actually touch:
+  # config at $XDG_CONFIG_HOME/handfast/config.toml and the control socket at
+  # $XDG_RUNTIME_DIR/handfast.sock.
+  local _man="$srcdir/man"
+  mkdir -p "$_man"
+  if [[ -f docs/man/handfastd.1 && -f docs/man/hfctl.1 ]]; then
+    install -m644 docs/man/handfastd.1 "$_man/handfastd.1"
+    install -m644 docs/man/hfctl.1     "$_man/hfctl.1"
+  else
+    cat > "$_man/handfastd.1" <<'EOF'
+.TH HANDFASTD 1 "2026-08-22" "handfast 0.1.0" "User Commands"
+.SH NAME
+handfastd \- Handfast device\-pairing daemon (KDE Connect compatible)
+.SH SYNOPSIS
+.B handfastd
+.RI [ options ]
+.SH DESCRIPTION
+.B handfastd
+is the single long-running service of the Handfast suite. It performs LAN
+discovery, TLS pairing with KDE Connect peers, runs plugins (notifications,
+input, clipboard, media, share), owns all Wayland interaction for the
+session, and exposes a JSON-over-unix-socket IPC interface to local clients
+such as
+.BR hfctl (1)
+and
+.BR handfast-gui (1).
+Start it as a user service:
+.PP
+.RS
+systemctl --user enable --now handfast.service
+.RE
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/handfast/config.toml
+User configuration (default ~/.config/handfast/config.toml). Device
+certificates and private keys are also stored under this directory with
+mode 0600.
+.TP
+.I $XDG_RUNTIME_DIR/handfast.sock
+Unix domain control socket used by all local clients; created at startup,
+removed at shutdown, permissions 0600.
+.SH SEE ALSO
+.BR hfctl (1),
+.BR handfast-gui (1)
+EOF
+    cat > "$_man/hfctl.1" <<'EOF'
+.TH HFCTL 1 "2026-08-22" "handfast 0.1.0" "User Commands"
+.SH NAME
+hfctl \- control the Handfast daemon from the command line or terminal
+.SH SYNOPSIS
+.B hfctl
+.I COMMAND
+.RI [ args ]
+.SH DESCRIPTION
+.B hfctl
+is the CLI and TUI front end for
+.BR handfastd (1).
+It speaks the same local IPC contract as the GUI over
+.IR $XDG_RUNTIME_DIR/handfast.sock .
+Typical commands include listing discovered devices, pairing and unpairing,
+toggling plugins per device, sending files, reading logs via
+.B hfctl tui
+(full terminal UI), and generating shell completions with
+.BR "hfctl completions" .
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/handfast/config.toml
+User configuration read and written through the daemon (default
+~/.config/handfast/config.toml).
+.TP
+.I $XDG_RUNTIME_DIR/handfast.sock
+Unix domain control socket; same uid required.
+.SH SEE ALSO
+.BR handfastd (1),
+.BR handfast-gui (1)
+EOF
+  fi
+  install -Dm644 "$_man/handfastd.1" "$pkgdir/usr/share/man/man1/handfastd.1"
+  install -Dm644 "$_man/hfctl.1"     "$pkgdir/usr/share/man/man1/hfctl.1"
+}

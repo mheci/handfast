@@ -1,0 +1,25 @@
+[package]
+name = "handfast-ipc"
+description = "Handfast local IPC: typed JSON frames over a Unix domain socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+futures-util = { workspace = true }
+handfast-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

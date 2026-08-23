@@ -1,0 +1,184 @@
+# Self-healing CI watcher for Handfast.
+#
+# ── Autonomous-fix contract ────────────────────────────────────────────────
+# This workflow NEVER attempts repairs itself. It only opens/updates tracking
+# issues titled `[ci-failure] <workflow> @ <short-sha>` (label `ci-failure`)
+# whenever a CI/Release run fails on `main`, or the hourly scan finds red
+# runs that lack a tracking issue.
+#
+# Any agent or human fixing a tracked failure MUST reference the issue number
+# in a commit trailer of the fixing change so the fix loop stays auditable:
+#
+#     Fixes: https://github.com/mheci/handfast/issues/<n>
+#
+# Pushing such a fix re-triggers CI on main; once green, close the issue.
+# ───────────────────────────────────────────────────────────────────────────
+
+name: Monitor
+
+on:
+  workflow_run:
+    workflows: ["CI", "Release"]
+    types: [completed]
+  schedule:
+    - cron: "0 * * * *"   # hourly safety-net scan
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: write
+
+jobs:
+  # ------------------------------------------------------------- triage ----
+  # Immediate reaction to a just-failed run on main.
+  triage:
+    name: triage failed run on main
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # workflow_run jobs have no git checkout; point gh at the repo explicitly.
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      WF_NAME: ${{ github.event.workflow_run.name }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+    steps:
+      - name: Collect failed jobs + log tail
+        id: collect
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${SHA:0:7}"
+          TITLE="[ci-failure] ${WF_NAME} @ ${SHORT_SHA}"
+
+          FAILED_JOBS="$(gh run view "$RUN_ID" --json jobs \
+            --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')"
+          LOG_TAIL="$(gh run view "$RUN_ID" --log-failed 2>/dev/null | tail -n 200 || true)"
+          [ -n "$LOG_TAIL" ] || LOG_TAIL="(failed-log unavailable)"
+
+          {
+            echo "## CI failure report"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| Workflow | ${WF_NAME} |"
+            echo "| Run | ${RUN_URL} |"
+            echo "| Commit | \`${SHA}\` |"
+            echo "| Failed jobs | ${FAILED_JOBS} |"
+            echo ""
+            echo "### Failed log tail (last 200 lines)"
+            echo ""
+            echo '```text'
+            printf '%s\n' "$LOG_TAIL"
+            echo '```'
+            echo ""
+            echo "---"
+            echo ""
+            echo "### Autonomous-fix contract"
+            echo ""
+            echo "Any fix MUST reference this issue in a commit trailer:"
+            echo ""
+            echo '```'
+            echo "Fixes: <this-issue-url>"
+            echo '```'
+          } > /tmp/body.md
+
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure ci-failure label exists
+        run: |
+          gh label create ci-failure --color D73A4A \
+            --description "CI/Release failure on main" >/dev/null 2>&1 || true
+
+      - name: Create or update tracking issue
+        env:
+          TITLE: ${{ steps.collect.outputs.title }}
+        run: |
+          set -euo pipefail
+          EXISTING_URL="$(gh issue list --state open --label ci-failure \
+            --search "\"${TITLE}\" in:title" --json url --jq '.[0].url // empty')"
+
+          if [ -n "$EXISTING_URL" ]; then
+            # Comment-dedup: same failing commit already tracked -> append.
+            {
+              echo "_Re-reported at $(date -u '+%Y-%m-%dT%H:%M:%SZ')_"
+              echo ""
+              cat /tmp/body.md
+            } > /tmp/comment.md
+            gh issue comment "$EXISTING_URL" --body-file /tmp/comment.md
+          else
+            gh issue create --title "$TITLE" --label ci-failure --body-file /tmp/body.md
+          fi
+
+  # -------------------------------------------------------- scan-red-main --
+  # Hourly sweep: any recent red run on main without an open tracking issue
+  # gets one. Purely informational; fixing happens via humans/agents whose
+  # commits retrigger CI (see contract at top).
+  scan-red-main:
+    name: hourly scan for untracked red runs
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Find red runs on main lacking a tracking issue
+        run: |
+          set -euo pipefail
+          gh label create ci-failure --color D73A4A \
+            --description "CI/Release failure on main" >/dev/null 2>&1 || true
+
+          gh run list --branch main --limit 20 --status failure \
+            --json databaseId,workflowName,headSha,url \
+            --jq '.[] | [.databaseId, .workflowName, .headSha, .url] | @tsv' |
+          while IFS=$'\t' read -r RID WF SHA URL; do
+            if [ "$WF" = "Monitor" ]; then
+              continue   # never track ourselves
+            fi
+
+            TITLE="[ci-failure] ${WF} @ ${SHA:0:7}"
+            COUNT="$(gh issue list --state open --label ci-failure \
+              --search "\"${TITLE}\" in:title" --json number --jq 'length')"
+            if [ "$COUNT" -ne 0 ]; then
+              continue
+            fi
+
+            LOG_TAIL="$(gh run view "$RID" --log-failed 2>/dev/null | tail -n 200 || true)"
+            [ -n "$LOG_TAIL" ] || LOG_TAIL="(failed-log unavailable)"
+
+            {
+              echo "## CI failure report"
+              echo ""
+              echo "_Discovered by hourly scan._"
+              echo ""
+              echo "| field | value |"
+              echo "| --- | --- |"
+              echo "| Workflow | ${WF} |"
+              echo "| Run | ${URL} |"
+              echo "| Commit | \`${SHA}\` |"
+              echo ""
+              echo "### Failed log tail (last 200 lines)"
+              echo ""
+              echo '```text'
+              printf '%s\n' "$LOG_TAIL"
+              echo '```'
+              echo ""
+              echo "---"
+              echo ""
+              echo "### Autonomous-fix contract"
+              echo ""
+              echo "Any fix MUST reference this issue in a commit trailer:"
+              echo ""
+              echo '```'
+              echo "Fixes: <this-issue-url>"
+              echo '```'
+            } > /tmp/body-scan.md
+
+            gh issue create --title "$TITLE" --label ci-failure --body-file /tmp/body-scan.md
+          done
