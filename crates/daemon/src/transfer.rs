@@ -366,7 +366,7 @@ mod tests {
                                                       // ...and nothing leaked next to the save dir.
         let leaked = std::fs::read_dir(&parent)
             .unwrap()
-            .filter_map(Result::ok)
+            .filter_map(|entry| entry.ok())
             .any(|entry| entry.file_name().to_string_lossy().contains("escape"));
         assert!(!leaked);
         cleanup(&dir);
