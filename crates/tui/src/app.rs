@@ -280,6 +280,12 @@ fn perform(
                 }
             });
         }
+        Action::ReplyToNotification {
+            notification_id: _,
+            text: _,
+        } => {
+            // Reply is dispatched via the bridge; state already cleared the modal.
+        }
     }
 }
 
