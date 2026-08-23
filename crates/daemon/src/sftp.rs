@@ -22,11 +22,12 @@
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::Duration;
 
 use handfast_core::error::{Error, Result};
-use tokio::process::{Child, Command, Stdio};
+use tokio::process::{Child, Command};
 use tracing::{debug, info, warn};
 
 /// Environment variable overriding the resolved `sftp-server` binary.
@@ -234,7 +235,7 @@ fn home_dir() -> Option<OsString> {
 
 /// Sanity-check helper used by tests to build an executable stub.
 #[cfg(all(test, unix))]
-fn write_executable(path: &Path, contents: &str) {
+fn write_executable(path: &std::path::Path, contents: &str) {
     use std::fs;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;

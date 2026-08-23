@@ -114,7 +114,7 @@ async fn run() -> anyhow::Result<ExitCode> {
         Command::Completions { .. } => {}
         Command::Transfers => {
             let resp = client.request(Request::TransferList).await?;
-            cmd::print_transfers(&resp)?;
+            cmd::print_transfers(&resp);
         }
         Command::TransferCancel { transfer_id } => {
             let resp = client

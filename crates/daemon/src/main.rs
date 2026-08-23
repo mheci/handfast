@@ -446,6 +446,46 @@ async fn handle_request(
                 Err(err) => Response::err(5000, err.to_string()),
             }
         }
+        Request::TransferList => Response::ok_json(serde_json::Value::Array(vec![])),
+        Request::TransferCancel { transfer_id } => {
+            tracing::debug!(%transfer_id, "transfer cancellation not wired yet");
+            Response::err(4001, "transfer cancellation arrives in Phase 4")
+        }
+        Request::RunCommandList { device_id } => {
+            tracing::debug!(%device_id, "run-command listing not wired yet");
+            Response::ok_json(serde_json::Value::Array(vec![]))
+        }
+        Request::RunCommand {
+            device_id,
+            command_name,
+        } => {
+            tracing::debug!(%device_id, %command_name, "remote command execution not wired");
+            Response::err(
+                6000,
+                format!("remote command '{command_name}' arrives in Phase 4"),
+            )
+        }
+        Request::SetVolume { percent } => {
+            tracing::debug!(percent, "volume control not wired yet");
+            Response::err(7000, "volume control arrives in Phase 4")
+        }
+        Request::GetVolume => Response::err(7001, "volume queries arrive in Phase 4"),
+        Request::ShareText { device_id, .. } => {
+            tracing::debug!(%device_id, "text sharing not wired yet");
+            Response::err(8000, "text sharing arrives in Phase 4")
+        }
+        Request::ShareUrl { device_id, .. } => {
+            tracing::debug!(%device_id, "URL sharing not wired yet");
+            Response::err(8001, "URL sharing arrives in Phase 4")
+        }
+        Request::RequestBattery { device_id } => {
+            tracing::debug!(%device_id, "battery requests not wired yet");
+            Response::err(9000, "battery requests arrive in Phase 4")
+        }
+        Request::SendSms { device_id, .. } => {
+            tracing::debug!(%device_id, "SMS sending not wired yet");
+            Response::err(9001, "SMS sending arrives in Phase 4")
+        }
     }
 }
 

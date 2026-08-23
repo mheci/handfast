@@ -173,10 +173,8 @@ impl TransferRow {
                     self.total = *bytes_total;
                 }
             }
-            ServerEvent::TransferFinished { .. } => {
-                if self.total > 0 {
-                    self.done = self.total;
-                }
+            ServerEvent::TransferFinished { .. } if self.total > 0 => {
+                self.done = self.total;
             }
             _ => {}
         }
