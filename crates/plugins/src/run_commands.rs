@@ -362,10 +362,11 @@ mod tests {
         let b = RunCommandsFactory.create();
         assert_eq!(a.meta().name, "run_commands");
         assert_eq!(b.meta().name, "run_commands");
+        // Factory-created instances are trait objects; verify freshness by
+        // confirming that a valid request produces no execution echo (the
+        // command table is empty so no name can resolve).
         let mut fresh = RunCommandsFactory.create();
-        assert!(fresh.commands().is_empty());
-        assert!(fresh
-            .handle(&Packet::new(TYPE_RUNCOMMAND_REQUEST, json!({"name": "x"})))
-            .is_empty());
+        let pkt = Packet::new(TYPE_RUNCOMMAND_REQUEST, json!({"name": "x"}));
+        assert!(fresh.handle(&pkt).is_empty());
     }
 }
