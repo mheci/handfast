@@ -77,7 +77,6 @@ Need help reading logs? Set `RUST_LOG=debug` before starting the daemon.
 
 ## Documentation
 
-Deep dives live in [docs/](docs/) — architecture, wire protocol, IPC contract,
 testing guide.
 
 ## Contributing
