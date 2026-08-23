@@ -26,7 +26,9 @@ pub mod pause_music;
 pub mod ping;
 pub mod run_commands;
 pub mod share;
-#[allow(dead_code)] // some stub factories kept alongside real implementations`npub mod stubs;
+// Some stub factories kept alongside real implementations.
+#[allow(dead_code)]
+pub mod stubs;
 pub mod system_volume;
 pub mod telephony;
 
