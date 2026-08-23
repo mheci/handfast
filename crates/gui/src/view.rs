@@ -11,7 +11,7 @@ use iced::widget::{
 use iced::{Alignment, Element, Length};
 
 use crate::app::{HandfastApp, Message};
-use crate::model::{ConnState, DeviceCard, Tab};
+use crate::model::{split_toggle_key, toggle_key, ConnState, DeviceCard, Tab, TransferRow};
 
 /// Root layout: banner, tabbed work area, status footer.
 pub(crate) fn root(app: &HandfastApp) -> Element<'_, Message> {
@@ -69,7 +69,7 @@ fn sidebar(app: &HandfastApp) -> Element<'_, Message> {
     }
 
     let can_refresh = app.conn == ConnState::Connected;
-    column![
+    let mut rail = column![
         tabs,
         rule::horizontal(2),
         text(format!("ipc: {}", app.conn.label())).size(12),
@@ -79,8 +79,19 @@ fn sidebar(app: &HandfastApp) -> Element<'_, Message> {
         button("refresh devices").on_press_maybe(can_refresh.then_some(Message::RefreshPressed)),
     ]
     .width(Length::Fixed(240.0))
-    .spacing(8)
-    .into()
+    .spacing(8);
+
+    rail = rail.push(rule::horizontal(2));
+    let settings_label = if app.settings_open {
+        "close settings"
+    } else {
+        "settings"
+    };
+    rail = rail.push(button(text(settings_label).width(Length::Fill)).width(Length::Fill));
+    if app.settings_open {
+        rail = rail.push(settings_panel(app));
+    }
+    rail.into()
 }
 
 /// Clipboard-to-daemon sender panel.
@@ -121,13 +132,23 @@ fn devices_pane(app: &HandfastApp) -> Element<'_, Message> {
             ConnState::Connected => "discovering devices...",
             _ => "waiting for the daemon...",
         };
-        return text(hint).size(12).into();
+        return column![
+            text(hint).size(12),
+            rule::horizontal(2),
+            transfers_section(app),
+        ]
+        .spacing(4)
+        .into();
     }
 
     let mut cards = column![].spacing(4);
     for (index, device) in app.devices.iter().enumerate() {
         cards = cards.push(device_row(app, index, device));
     }
+    // The transfer strip scrolls together with the device list so progress
+    // stays visible on the default tab without switching panes.
+    cards = cards.push(rule::horizontal(2));
+    cards = cards.push(transfers_section(app));
 
     let list: Element<'_, Message> = scrollable(cards)
         .height(Length::Fill)
@@ -232,22 +253,41 @@ fn transfers_pane(app: &HandfastApp) -> Element<'_, Message> {
 
     let mut rows = column![].spacing(4);
     for transfer in &app.transfers {
-        rows = rows.push(
-            row![
-                text(transfer.id.clone())
-                    .size(11)
-                    .width(Length::Fixed(160.0)),
-                progress_bar(0.0..=100.0, transfer.percent()),
-                text(format!("{}/{} B", transfer.done, transfer.total)).size(11),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
+        rows = rows.push(transfer_bar(transfer));
     }
     scrollable(rows.padding(4.0))
         .height(Length::Fill)
         .width(Length::Fill)
         .into()
+}
+
+/// Compact transfer strip shown inside the main scrollable area.
+fn transfers_section(app: &HandfastApp) -> Element<'_, Message> {
+    let mut section = column![text("transfers").size(12)].spacing(2);
+    if app.transfers.is_empty() {
+        section = section.push(text("none").size(11));
+    }
+    for transfer in &app.transfers {
+        section = section.push(transfer_bar(transfer));
+    }
+    section.into()
+}
+
+/// One progress row: label, bar and byte counters.
+fn transfer_bar<'a>(transfer: &'a TransferRow) -> Element<'a, Message> {
+    let label = if transfer.name.is_empty() {
+        transfer.id.clone()
+    } else {
+        transfer.name.clone()
+    };
+    row![
+        text(label).size(11).width(Length::Fixed(160.0)),
+        progress_bar(0.0..=100.0, transfer.percent()),
+        text(format!("{}/{} B", transfer.done, transfer.total)).size(11),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// Notification rows with per-row dismissal.
@@ -312,6 +352,78 @@ fn footer(app: &HandfastApp) -> Element<'_, Message> {
 /// Selected device lookup shared by the devices pane.
 fn selected_card(app: &HandfastApp) -> Option<&DeviceCard> {
     app.selected.and_then(|index| app.devices.get(index))
+}
+
+/// Collapsible settings panel: persisted, device-scoped plugin toggles.
+///
+/// Each known device gets a group; checkbox state comes from the persisted
+/// map first, falling back to the live plugin snapshot of the selected
+/// device. Toggling dispatches [`Message::ToggleSavedPlugin`].
+fn settings_panel(app: &HandfastApp) -> Element<'_, Message> {
+    let mut panel = column![text("plugin toggles").size(12)].spacing(6);
+
+    if app.devices.is_empty() {
+        panel = panel.push(text("pair a device to configure plugins").size(11));
+        return panel.into();
+    }
+
+    for device in &app.devices {
+        let entries = settings_entries(app, &device.id);
+        let mut group =
+            column![text(format!("{} ({})", device.name, device.id)).size(11)].spacing(2);
+        if entries.is_empty() {
+            group = group.push(text("no plugin state yet").size(10));
+        }
+        for (plugin_name, enabled) in entries {
+            let key = toggle_key(&device.id, &plugin_name);
+            group = group.push(
+                checkbox(enabled)
+                    .label(plugin_name)
+                    .on_toggle(move |checked| Message::ToggleSavedPlugin(key.clone(), checked)),
+            );
+        }
+        panel = panel.push(group);
+    }
+
+    scrollable(panel.padding(4.0))
+        .height(Length::Fixed(200.0))
+        .width(Length::Fill)
+        .into()
+}
+
+/// Ordered `(plugin_name, enabled)` pairs backing one device's settings
+/// group. Live plugin rows win for ordering when this device is selected;
+/// persisted-only entries (from previous sessions) fill in afterwards.
+fn settings_entries(app: &HandfastApp, device_id: &str) -> Vec<(String, bool)> {
+    let selected_here = selected_card(app).is_some_and(|card| card.id == device_id);
+    let mut names: Vec<String> = Vec::new();
+    if selected_here {
+        names.extend(app.plugins.iter().map(|plugin| plugin.name.clone()));
+    }
+    for key in app.plugin_toggles.keys() {
+        if let Some((owner, plugin)) = split_toggle_key(key) {
+            if owner == device_id && !names.iter().any(|name| name == plugin) {
+                names.push(plugin.to_owned());
+            }
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let persisted = app
+                .plugin_toggles
+                .get(&toggle_key(device_id, &name))
+                .copied();
+            let enabled = persisted.unwrap_or_else(|| {
+                app.plugins
+                    .iter()
+                    .find(|plugin| plugin.name == name)
+                    .map(|plugin| plugin.enabled)
+                    .unwrap_or(false)
+            });
+            (name, enabled)
+        })
+        .collect()
 }
 
 /// Human-readable daemon identity line.

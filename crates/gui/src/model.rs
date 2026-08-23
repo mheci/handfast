@@ -6,7 +6,13 @@
 //! fields are matched by several likely keys with sensible defaults, and
 //! malformed entries are skipped instead of failing the whole list.
 
+use std::collections::HashMap;
+
+use handfast_ipc::ServerEvent;
 use serde_json::{Map, Value};
+
+#[cfg(not(test))]
+use std::path::PathBuf;
 
 /// Connection status of the IPC bridge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +135,8 @@ pub(crate) struct PluginRow {
 pub(crate) struct TransferRow {
     /// Transfer identifier.
     pub(crate) id: String,
+    /// File name as announced by the daemon; empty until `TransferAdded`.
+    pub(crate) name: String,
     /// Bytes transferred so far.
     pub(crate) done: u64,
     /// Total transfer size in bytes.
@@ -145,6 +153,33 @@ impl TransferRow {
         }
         let done = self.done.min(self.total);
         (done as f32 / self.total as f32) * 100.0
+    }
+
+    /// Fold a [`ServerEvent::TransferProgress`] or
+    /// [`ServerEvent::TransferFinished`] frame into this row.
+    ///
+    /// Progress overwrites the counters, but a zero reported total never
+    /// clobbers a size learned earlier; completion snaps `done` up to a
+    /// known `total` so the bar reads 100%.
+    pub(crate) fn update(&mut self, event: &ServerEvent) {
+        match event {
+            ServerEvent::TransferProgress {
+                bytes_done,
+                bytes_total,
+                ..
+            } => {
+                self.done = *bytes_done;
+                if *bytes_total > 0 || self.total == 0 {
+                    self.total = *bytes_total;
+                }
+            }
+            ServerEvent::TransferFinished { .. } => {
+                if self.total > 0 {
+                    self.done = self.total;
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Insert-or-replace by id.
@@ -261,6 +296,117 @@ pub(crate) fn parse_notifications(value: &Value) -> Vec<NotifRow> {
         .collect()
 }
 
+/// Device-scoped plugin enable flags, keyed by `"device_id:plugin_name"`.
+///
+/// The GUI remembers manual toggles across restarts so a freshly parsed
+/// plugin snapshot does not visually reset choices the daemon has not yet
+/// echoed back.
+pub(crate) type PluginToggles = HashMap<String, bool>;
+
+/// Composite persistence key for one device-scoped plugin toggle.
+#[must_use]
+pub(crate) fn toggle_key(device_id: &str, plugin: &str) -> String {
+    format!("{device_id}:{plugin}")
+}
+
+/// Split a composite key back into `(device_id, plugin_name)`; everything
+/// after the first colon belongs to the plugin name.
+#[must_use]
+pub(crate) fn split_toggle_key(key: &str) -> Option<(&str, &str)> {
+    key.split_once(':')
+}
+
+/// Overlay persisted toggles onto freshly parsed plugin rows of `device_id`;
+/// rows without a persisted entry keep their parsed state.
+pub(crate) fn apply_persisted_toggles(
+    rows: &mut [PluginRow],
+    device_id: &str,
+    toggles: &PluginToggles,
+) {
+    for row in rows.iter_mut() {
+        if let Some(enabled) = toggles.get(&toggle_key(device_id, &row.name)) {
+            row.enabled = *enabled;
+        }
+    }
+}
+
+/// Config directory holding GUI-side settings.
+#[cfg(not(test))]
+fn settings_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|home| !home.is_empty())?;
+    let mut dir = PathBuf::from(home);
+    dir.push(".config");
+    Some(dir)
+}
+
+/// File the plugin-toggle map persists to.
+#[cfg(not(test))]
+fn toggles_path() -> Option<PathBuf> {
+    settings_dir().map(|dir| dir.join("handfast").join("gui-plugin-toggles.json"))
+}
+
+/// Load the persisted toggle map; any absence or corruption reads as empty,
+/// mirroring the defensive parsing of every other payload in this module.
+///
+/// Unit tests only exercise pure map transitions and never touch the
+/// developer's real configuration, so tests get an in-memory stub.
+#[cfg(not(test))]
+#[must_use]
+pub(crate) fn load_plugin_toggles() -> PluginToggles {
+    let Some(path) = toggles_path() else {
+        return HashMap::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return HashMap::new();
+    };
+    let Some(entries) = value.as_object() else {
+        return HashMap::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(key, entry)| entry.as_bool().map(|enabled| (key.clone(), enabled)))
+        .collect()
+}
+
+/// Test stub: never read real configuration from unit tests.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn load_plugin_toggles() -> PluginToggles {
+    HashMap::new()
+}
+
+/// Persist the toggle map as a flat JSON object; best-effort with the error
+/// surfaced to the caller for logging.
+///
+/// Test stub mirrors [`load_plugin_toggles`].
+#[cfg(not(test))]
+pub(crate) fn save_plugin_toggles(toggles: &PluginToggles) -> Result<(), String> {
+    let Some(path) = toggles_path() else {
+        return Err("no config directory found".to_owned());
+    };
+    let serialized = serde_json::to_string(toggles).map_err(|err| err.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    std::fs::write(path, serialized).map_err(|err| err.to_string())
+}
+
+/// Test stub: never write real configuration from unit tests.
+#[cfg(test)]
+pub(crate) fn save_plugin_toggles(_toggles: &PluginToggles) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,18 +487,21 @@ mod tests {
     fn transfer_percent_clamps() {
         let row = TransferRow {
             id: "t".into(),
+            name: "f.bin".into(),
             done: 50,
             total: 100,
         };
         assert_eq!(row.percent(), 50.0);
         let zero = TransferRow {
             id: "t".into(),
+            name: String::new(),
             done: 10,
             total: 0,
         };
         assert_eq!(zero.percent(), 0.0);
         let over = TransferRow {
             id: "t".into(),
+            name: String::new(),
             done: 150,
             total: 100,
         };
@@ -373,6 +522,7 @@ mod tests {
             &mut rows,
             TransferRow {
                 id: "t".into(),
+                name: String::new(),
                 done: 1,
                 total: 2,
             },
@@ -381,12 +531,97 @@ mod tests {
             &mut rows,
             TransferRow {
                 id: "t".into(),
+                name: "f.bin".into(),
                 done: 3,
                 total: 4,
             },
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].done, 3);
+        assert_eq!(rows[0].name, "f.bin");
+    }
+
+    #[test]
+    fn transfer_update_applies_progress_then_finish() {
+        let mut row = TransferRow {
+            id: "t".into(),
+            name: "movie.mkv".into(),
+            done: 0,
+            total: 0,
+        };
+        row.update(&ServerEvent::TransferProgress {
+            id: "t".into(),
+            bytes_done: 30,
+            bytes_total: 120,
+        });
+        assert_eq!((row.done, row.total), (30, 120));
+
+        // A zero reported total never clobbers a size learned earlier.
+        row.update(&ServerEvent::TransferProgress {
+            id: "t".into(),
+            bytes_done: 60,
+            bytes_total: 0,
+        });
+        assert_eq!((row.done, row.total), (60, 120));
+
+        row.update(&ServerEvent::TransferFinished { id: "t".into() });
+        assert_eq!(row.done, 120);
+        assert_eq!(row.percent(), 100.0);
+    }
+
+    #[test]
+    fn transfer_update_ignores_unrelated_events() {
+        let mut row = TransferRow {
+            id: "t".into(),
+            name: "movie.mkv".into(),
+            done: 7,
+            total: 9,
+        };
+        row.update(&ServerEvent::Hello {
+            version: 1,
+            app: "daemon".into(),
+            pid: 7,
+        });
+        assert_eq!((row.done, row.total), (7, 9));
+        assert_eq!(row.name, "movie.mkv");
+    }
+
+    #[test]
+    fn toggle_keys_round_trip_and_reject_garbage() {
+        assert_eq!(toggle_key("dev1", "sms"), "dev1:sms");
+        assert_eq!(split_toggle_key("dev1:sms"), Some(("dev1", "sms")));
+        assert_eq!(split_toggle_key("nocolon"), None);
+        // Everything after the first colon belongs to the plugin name.
+        assert_eq!(split_toggle_key("dev:odd:name"), Some(("dev", "odd:name")));
+    }
+
+    #[test]
+    fn persisted_toggles_overlay_only_their_device() {
+        let mut toggles = HashMap::new();
+        toggles.insert("d:sms".to_owned(), false);
+        toggles.insert("d:ping".to_owned(), true);
+        toggles.insert("other:ping".to_owned(), true);
+
+        let mut rows = vec![
+            PluginRow {
+                name: "sms".into(),
+                title: "SMS".into(),
+                enabled: true,
+            },
+            PluginRow {
+                name: "ping".into(),
+                title: "Ping".into(),
+                enabled: false,
+            },
+        ];
+        apply_persisted_toggles(&mut rows, "d", &toggles);
+        assert!(!rows[0].enabled); // persisted false beats parsed true
+        assert!(rows[1].enabled); // persisted true beats parsed false
+
+        // Another device's entries never leak across.
+        apply_persisted_toggles(&mut rows, "other", &toggles);
+        assert!(!rows[0].enabled);
+        assert!(rows[1].enabled);
     }
 
     #[test]

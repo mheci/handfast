@@ -59,6 +59,60 @@ pub enum Request {
     },
     /// Liveness probe; answers with [`Response::ok_json`] and no payload.
     Ping,
+    /// List all transfers (active and finished).
+    TransferList,
+    /// Cancel an ongoing transfer.
+    TransferCancel {
+        /// Transfer identifier.
+        transfer_id: String,
+    },
+    /// List commands available for a device.
+    RunCommandList {
+        /// Target device identifier.
+        device_id: String,
+    },
+    /// Run one named command on a device.
+    RunCommand {
+        /// Target device identifier.
+        device_id: String,
+        /// Command identifier from [`Request::RunCommandList`].
+        command_name: String,
+    },
+    /// Set the local output volume.
+    SetVolume {
+        /// Desired volume percentage (0-100).
+        percent: u8,
+    },
+    /// Query the local output volume.
+    GetVolume,
+    /// Share local text with a device.
+    ShareText {
+        /// Target device identifier.
+        device_id: String,
+        /// Text payload.
+        text: String,
+    },
+    /// Open a URL on a device.
+    ShareUrl {
+        /// Target device identifier.
+        device_id: String,
+        /// URL to open.
+        url: String,
+    },
+    /// Ask a device for its current battery state.
+    RequestBattery {
+        /// Target device identifier.
+        device_id: String,
+    },
+    /// Send an SMS from a paired phone.
+    SendSms {
+        /// Target device identifier.
+        device_id: String,
+        /// Recipient phone number.
+        number: String,
+        /// Message body text.
+        text: String,
+    },
 }
 
 /// Replies sent by the daemon for every [`Request`].
@@ -137,6 +191,31 @@ pub enum ServerEvent {
         /// Total transfer size in bytes.
         bytes_total: u64,
     },
+    /// A new transfer was registered.
+    TransferAdded {
+        /// Transfer identifier.
+        id: String,
+        /// Peer device identifier.
+        device_id: String,
+        /// Direction label (`"outgoing"` or `"incoming"`).
+        direction: String,
+        /// Name of the transferred file.
+        file_name: String,
+        /// Total transfer size in bytes.
+        total: u64,
+    },
+    /// A transfer completed successfully.
+    TransferFinished {
+        /// Transfer identifier.
+        id: String,
+    },
+    /// A transfer failed or was cancelled.
+    TransferFailed {
+        /// Transfer identifier.
+        id: String,
+        /// Human-readable failure reason.
+        reason: String,
+    },
     /// An incoming notification arrived on a paired device.
     NotificationReceived {
         /// Notification identifier.
@@ -159,6 +238,42 @@ pub enum ServerEvent {
         level: String,
         /// Rendered message.
         msg: String,
+    },
+    /// A paired device reported new battery state.
+    BatteryChanged {
+        /// Device identifier.
+        device_id: String,
+        /// Battery percentage (0-100).
+        level: u8,
+        /// Whether the device is currently charging.
+        charging: bool,
+    },
+    /// A paired phone reported a telephony state change.
+    TelephonyEvent {
+        /// Device identifier.
+        device_id: String,
+        /// New state label (`"ringing"`, `"talking"`, …).
+        state: String,
+        /// Remote number when known.
+        number: Option<String>,
+    },
+    /// Local output volume changed.
+    VolumeChanged {
+        /// Volume percentage (0-100).
+        percent: u8,
+        /// Whether output is muted.
+        muted: bool,
+    },
+    /// Result of a remotely executed command.
+    CommandResult {
+        /// Device identifier.
+        device_id: String,
+        /// Command identifier from [`Request::RunCommandList`].
+        name: String,
+        /// Whether execution succeeded.
+        success: bool,
+        /// Captured command output.
+        output: String,
     },
     /// The daemon is shutting down.
     DaemonShutdown,

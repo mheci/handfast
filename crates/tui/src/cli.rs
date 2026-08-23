@@ -82,6 +82,61 @@ pub enum Command {
         action: ClipboardAction,
     },
 
+    /// Print a table of known transfers (active and finished).
+    Transfers,
+
+    /// Cancel one ongoing transfer by id.
+    TransferCancel {
+        /// Transfer identifier.
+        transfer_id: String,
+    },
+
+    /// Read or change the local output volume.
+    Volume {
+        /// Volume sub-action; omit to read the current volume.
+        #[command(subcommand)]
+        action: Option<VolumeAction>,
+    },
+
+    /// Send an SMS from a paired phone.
+    Sms {
+        /// Target device identifier.
+        device_id: String,
+        /// Recipient phone number.
+        number: String,
+        /// Message body text.
+        text: String,
+    },
+
+    /// Ask a device for its current battery state.
+    Battery {
+        /// Target device identifier.
+        device_id: String,
+    },
+
+    /// Inspect commands executable on a device.
+    RunCommand {
+        /// Run-command sub-action.
+        #[command(subcommand)]
+        action: RunCommandAction,
+    },
+
+    /// Share local text with a device.
+    ShareText {
+        /// Target device identifier.
+        device_id: String,
+        /// Text payload.
+        text: String,
+    },
+
+    /// Open a URL on a device.
+    ShareUrl {
+        /// Target device identifier.
+        device_id: String,
+        /// URL to open.
+        url: String,
+    },
+
     /// Listen on the event stream for a 2-second window, then print the last
     /// N log records received during that window and exit. No request is
     /// sent: only passively broadcast `LogRecord` events are captured.
@@ -144,6 +199,29 @@ pub enum ClipboardAction {
     Set {
         /// New clipboard content.
         text: String,
+    },
+}
+
+/// Sub-actions of `hfctl volume`.
+#[derive(Debug, Subcommand)]
+pub enum VolumeAction {
+    /// Print the current output volume.
+    Get,
+    /// Set the output volume percentage.
+    Set {
+        /// Desired volume percentage (0-100).
+        #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
+        percent: u8,
+    },
+}
+
+/// Sub-actions of `hfctl runcommand`.
+#[derive(Debug, Subcommand)]
+pub enum RunCommandAction {
+    /// List commands available for a device.
+    List {
+        /// Target device identifier.
+        device_id: String,
     },
 }
 
@@ -306,6 +384,129 @@ mod tests {
     #[test]
     fn unknown_subcommands_are_rejected() {
         assert!(parse(&["frobnicate"]).is_err());
+    }
+
+    #[test]
+    fn transfers_parses() {
+        assert!(matches!(
+            parse(&["transfers"]).unwrap().command,
+            Some(Command::Transfers)
+        ));
+    }
+
+    #[test]
+    fn transfer_cancel_requires_transfer_id() {
+        assert!(parse(&["transfer-cancel"]).is_err());
+        let cli = parse(&["transfer-cancel", "t-9"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::TransferCancel { ref transfer_id }) if transfer_id == "t-9"
+        ));
+    }
+
+    #[test]
+    fn volume_bare_form_defaults_to_get() {
+        let cli = parse(&["volume"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Volume { action: None })
+        ));
+    }
+
+    #[test]
+    fn volume_get_and_set_round_trip() {
+        assert!(matches!(
+            parse(&["volume", "get"]).unwrap().command,
+            Some(Command::Volume {
+                action: Some(VolumeAction::Get)
+            })
+        ));
+        let cli = parse(&["volume", "set", "42"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Volume {
+                action: Some(VolumeAction::Set { percent: 42 })
+            })
+        ));
+    }
+
+    #[test]
+    fn volume_set_rejects_missing_nonnumeric_and_out_of_range() {
+        assert!(parse(&["volume", "set"]).is_err());
+        assert!(parse(&["volume", "set", "loud"]).is_err());
+        assert!(parse(&["volume", "set", "101"]).is_err());
+        assert!(parse(&["volume", "shout"]).is_err());
+        // Boundary values are accepted.
+        assert!(parse(&["volume", "set", "0"]).is_ok());
+        assert!(parse(&["volume", "set", "100"]).is_ok());
+    }
+
+    #[test]
+    fn sms_requires_device_number_and_text() {
+        assert!(parse(&["sms"]).is_err());
+        assert!(parse(&["sms", "dev"]).is_err());
+        assert!(parse(&["sms", "dev", "+15550100"]).is_err());
+        let cli = parse(&["sms", "dev", "+15550100", "see you later"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Sms {
+                ref device_id,
+                ref number,
+                ref text
+            }) if device_id == "dev" && number == "+15550100" && text == "see you later"
+        ));
+    }
+
+    #[test]
+    fn battery_requires_device_id() {
+        assert!(parse(&["battery"]).is_err());
+        let cli = parse(&["battery", "dev"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Battery { ref device_id }) if device_id == "dev"
+        ));
+    }
+
+    #[test]
+    fn runcommand_only_supports_list() {
+        assert!(parse(&["runcommand"]).is_err());
+        assert!(parse(&["runcommand", "list"]).is_err());
+        assert!(parse(&["runcommand", "run", "dev"]).is_err());
+        let cli = parse(&["runcommand", "list", "dev"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::RunCommand {
+                action: RunCommandAction::List { ref device_id }
+            }) if device_id == "dev"
+        ));
+    }
+
+    #[test]
+    fn share_text_keeps_spaces() {
+        assert!(parse(&["share-text"]).is_err());
+        assert!(parse(&["share-text", "only-device"]).is_err());
+        let cli = parse(&["share-text", "dev", "a bit of text"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::ShareText {
+                ref device_id,
+                ref text
+            }) if device_id == "dev" && text == "a bit of text"
+        ));
+    }
+
+    #[test]
+    fn share_url_requires_device_and_url() {
+        assert!(parse(&["share-url"]).is_err());
+        assert!(parse(&["share-url", "only-device"]).is_err());
+        let cli = parse(&["share-url", "dev", "https://example.net/x?y=1"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::ShareUrl {
+                ref device_id,
+                ref url
+            }) if device_id == "dev" && url == "https://example.net/x?y=1"
+        ));
     }
 
     #[test]

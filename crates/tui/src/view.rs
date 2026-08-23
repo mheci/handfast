@@ -12,8 +12,11 @@ use ratatui::{
     Frame,
 };
 
-use crate::model::{human_bytes, short_hash};
+use crate::model::{ellipsize, human_bytes, short_hash};
 use crate::state::{State, Tab, LOG_CAP, NOTIFICATION_CAP};
+
+/// Width of the fixed file-name column on the Transfers tab.
+const TRANSFER_NAME_WIDTH: usize = 22;
 
 /// Render the whole interface for one frame.
 pub(crate) fn draw(f: &mut Frame<'_>, state: &State) {
@@ -41,6 +44,11 @@ pub(crate) fn draw(f: &mut Frame<'_>, state: &State) {
 
     if state.help_overlay {
         draw_help_overlay(f, full);
+    }
+    // The reply modal sits on top of everything (help cannot be open while
+    // composing: `?` types into the draft).
+    if state.reply_open {
+        draw_reply_modal(f, full, state);
     }
 }
 
@@ -197,34 +205,47 @@ fn draw_transfers(f: &mut Frame<'_>, area: Rect, state: &State) {
         return;
     }
 
-    let bar_width = (area.width as usize).saturating_sub(26).clamp(8, 40);
-    let items =
-        state
-            .transfer_rows()
-            .into_iter()
-            .enumerate()
-            .map(|(index, (id, (done, total)))| {
-                let finished = *total > 0 && done >= total;
-                let bar_style =
-                    Style::default().fg(if finished { Color::Green } else { Color::Cyan });
-                let line = Line::from(vec![
-                    Span::raw(short_hash(id)),
-                    Span::raw("  "),
-                    Span::styled(progress_bar(*done, *total, bar_width), bar_style),
-                    Span::raw(format!(
-                        " {:>3}%  {} / {}",
-                        percent_of(*done, *total),
-                        human_bytes(*done),
-                        human_bytes(*total),
-                    )),
-                ]);
-                let style = if index == state.transfer_cursor {
-                    row_selected_style()
-                } else {
-                    Style::default()
-                };
-                ListItem::new(line).style(style)
+    // Fixed overhead: id column (short hash) + gaps + name column +
+    // percent/byte stats.
+    const ID_WIDTH: usize = 8;
+    let overhead = ID_WIDTH + 2 + TRANSFER_NAME_WIDTH + 2 + " 100%".len() + "  0 B / 0 B".len();
+    let bar_width = usize::from(area.width)
+        .saturating_sub(overhead)
+        .clamp(4, 40);
+
+    let items = state
+        .transfer_rows()
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, entry))| {
+            let bar_style = Style::default().fg(if entry.is_finished() {
+                Color::Green
+            } else {
+                Color::Cyan
             });
+            let line = Line::from(vec![
+                Span::styled(short_hash(id), Style::default().fg(Color::DarkGray)),
+                Span::raw("  "),
+                Span::raw(format!(
+                    "{name:<width$}",
+                    name = ellipsize(entry.display_name(), TRANSFER_NAME_WIDTH),
+                    width = TRANSFER_NAME_WIDTH,
+                )),
+                Span::styled(progress_bar(entry.done, entry.total, bar_width), bar_style),
+                Span::raw(format!(
+                    " {:>3}%  {} / {}",
+                    percent_of(entry.done, entry.total),
+                    human_bytes(entry.done),
+                    human_bytes(entry.total),
+                )),
+            ]);
+            let style = if index == state.transfer_cursor {
+                row_selected_style()
+            } else {
+                Style::default()
+            };
+            ListItem::new(line).style(style)
+        });
 
     let list = List::new(items).block(
         Block::default()
@@ -317,6 +338,43 @@ fn draw_help_overlay(f: &mut Frame<'_>, full: Rect) {
     f.render_widget(page, popup);
 }
 
+/// Reply modal: one-line editor for the notification reply draft.
+///
+/// The underscore is a stand-in caret; Enter submits via the
+/// `ReplyToNotification` action and Esc cancels (see `state.rs`).
+fn draw_reply_modal(f: &mut Frame<'_>, full: Rect, state: &State) {
+    let popup = centered_rect(60, 25, full);
+    f.render_widget(Clear, popup);
+
+    let subject = state.reply_subject();
+    let title = match subject {
+        Some(row) if row.title.is_empty() => format!(" Reply — {} ", short_hash(&row.id)),
+        Some(row) => format!(" Reply — {}: {} ", row.app, ellipsize(&row.title, 32)),
+        None => " Reply ".to_owned(),
+    };
+
+    let page = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(Color::Magenta)),
+            Span::raw(state.reply_draft.clone()),
+            Span::styled("_", Style::default().fg(Color::Magenta)),
+        ]),
+        Line::default(),
+        Line::from(Span::styled(
+            "Enter send · Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ])
+    .wrap(Wrap { trim: false })
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Magenta)),
+    );
+    f.render_widget(page, popup);
+}
+
 /// Footer: transient feedback chip plus the static key hints.
 fn draw_footer(f: &mut Frame<'_>, area: Rect, state: &State) {
     let mut spans = Vec::with_capacity(4);
@@ -327,7 +385,7 @@ fn draw_footer(f: &mut Frame<'_>, area: Rect, state: &State) {
         ));
     }
     spans.push(Span::styled(
-        " Tab switch · j/k move · p pair · u unpair · Enter detail · Space toggle · ? help · q quit",
+        " Tab switch · j/k move · p pair · u unpair · r reply · Enter detail · Space toggle · ? help · q quit",
         Style::default().fg(Color::DarkGray),
     ));
     if let Some(clip) = &state.clipboard {
@@ -360,7 +418,7 @@ fn row_selected_style() -> Style {
 /// Keybinding reference shared by the Help tab and the `?` overlay.
 #[must_use]
 pub(crate) fn help_lines() -> Vec<Line<'static>> {
-    const ROWS: [(&str, &str); 10] = [
+    const ROWS: [(&str, &str); 12] = [
         (
             "Tab / Shift+Tab",
             "switch tabs (Devices/Transfers/Notifications/Logs/Help)",
@@ -369,10 +427,21 @@ pub(crate) fn help_lines() -> Vec<Line<'static>> {
         ("g / Home, G / End", "jump to the first / last row"),
         ("p", "pair the selected device"),
         ("u", "unpair the selected device"),
-        ("Enter", "open/close the selected device's plugin detail"),
+        ("r", "reply to the selected notification (opens a modal)"),
+        (
+            "Enter",
+            "open/close device detail · send the reply draft in the modal",
+        ),
         ("Space", "toggle the focused plugin in the detail panel"),
+        (
+            "printable keys",
+            "type into the reply modal; Backspace deletes",
+        ),
         ("?", "toggle this help overlay"),
-        ("Esc", "close overlay, then close the detail panel"),
+        (
+            "Esc",
+            "cancel/close: reply modal, help overlay, then detail panel",
+        ),
         ("q / Ctrl+C", "quit hfctl"),
     ];
 
@@ -508,5 +577,81 @@ mod tests {
         assert!(rendered.contains("q / Ctrl+C"));
         assert!(rendered.contains("Space"));
         assert!(!rendered.is_empty());
+    }
+
+    #[test]
+    fn help_lines_document_the_new_bindings() {
+        let rendered = help_lines()
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Reply modal.
+        assert!(rendered.contains('r'));
+        assert!(rendered.contains("reply to the selected notification"));
+        assert!(rendered.contains("send the reply draft"));
+        // Esc priority now mentions the reply modal first.
+        assert!(rendered.contains("reply modal, help overlay, then detail panel"));
+    }
+
+    #[test]
+    fn transfers_tab_renders_name_bar_and_percent() {
+        use crate::model::TransferEntry;
+        let mut state = State::new();
+        state.tab = Tab::Transfers;
+        state.transfers.insert(
+            "t-123456789".to_owned(),
+            TransferEntry::from_added("t-123456789", "holiday photo.jpg", 100),
+        );
+
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 8))
+            .expect("test backend");
+        terminal.draw(|frame| draw(frame, &state)).expect("draw");
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("holiday photo.jpg"));
+        assert!(screen.contains('░'));
+        assert!(screen.contains('%'));
+        assert!(!state.help_overlay);
+    }
+
+    #[test]
+    fn finished_transfer_shows_full_bar_and_100_percent() {
+        use crate::model::TransferEntry;
+        let mut state = State::new();
+        state.tab = Tab::Transfers;
+        let mut entry = TransferEntry::from_added("t1", "done.bin", 10);
+        entry.apply_progress(10, 10);
+        assert!(entry.is_finished());
+        state.transfers.insert(entry.id.clone(), entry);
+
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 8))
+            .expect("test backend");
+        terminal.draw(|frame| draw(frame, &state)).expect("draw");
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("100%"));
+        assert!(!screen.contains("░"));
+    }
+
+    #[test]
+    fn reply_modal_draws_draft_and_subject() {
+        use crate::model::NotifRow;
+        let mut state = State::new();
+        state.notifications.push_back(NotifRow {
+            id: "n1".to_owned(),
+            app: "kmail".to_owned(),
+            title: "Meeting".to_owned(),
+            body: String::new(),
+        });
+        state.reply_open = true;
+        state.reply_target = Some("n1".to_owned());
+        state.reply_draft = "see you".to_owned();
+
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .expect("test backend");
+        terminal.draw(|frame| draw(frame, &state)).expect("draw");
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Reply — kmail: Meeting"));
+        assert!(screen.contains("> see you_"));
+        assert!(screen.contains("Enter send · Esc cancel"));
     }
 }
