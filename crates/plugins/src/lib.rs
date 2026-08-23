@@ -17,11 +17,29 @@
 
 use handfast_protocol::Packet;
 
+pub mod battery;
+pub mod find_my_phone;
 pub mod meta;
+pub mod mpris;
+pub mod notifications;
+pub mod pause_music;
 pub mod ping;
-pub mod stubs;
+pub mod run_commands;
+pub mod share;
+#[allow(dead_code)] // some stub factories kept alongside real implementations`npub mod stubs;
+pub mod system_volume;
+pub mod telephony;
 
+pub use battery::{BatteryCache, BatteryFactory};
+pub use find_my_phone::FindMyPhoneFactory;
+pub use mpris::MprisFactory;
+pub use notifications::NotificationsFactory;
+pub use pause_music::PauseMusicFactory;
 pub use ping::{PingFactory, PingPlugin};
+pub use run_commands::RunCommandsFactory;
+pub use share::ShareFactory;
+pub use system_volume::SystemVolumeFactory;
+pub use telephony::TelephonyFactory;
 
 /// Static capability metadata for a plugin, known at compile time.
 #[derive(Debug)]
@@ -73,22 +91,22 @@ pub trait PluginFactory: Send + Sync {
 #[must_use]
 pub fn registry() -> Vec<Box<dyn PluginFactory>> {
     vec![
-        Box::new(stubs::BatteryFactory),
+        Box::new(battery::BatteryFactory),
         Box::new(stubs::ClipboardFactory),
         Box::new(stubs::ConnectivityReportFactory),
         Box::new(stubs::ContactsFactory),
-        Box::new(stubs::FindMyPhoneFactory),
+        Box::new(find_my_phone::FindMyPhoneFactory),
         Box::new(stubs::MousepadFactory),
-        Box::new(stubs::MprisFactory),
+        Box::new(mpris::MprisFactory),
         Box::new(stubs::NotificationsFactory),
-        Box::new(stubs::PauseMusicFactory),
+        Box::new(pause_music::PauseMusicFactory),
         Box::new(ping::PingFactory),
-        Box::new(stubs::RunCommandsFactory),
+        Box::new(run_commands::RunCommandsFactory),
         Box::new(stubs::RemoteFilesystemFactory),
-        Box::new(stubs::ShareFactory),
+        Box::new(share::ShareFactory),
         Box::new(stubs::SmsFactory),
-        Box::new(stubs::SystemVolumeFactory),
-        Box::new(stubs::TelephonyFactory),
+        Box::new(system_volume::SystemVolumeFactory),
+        Box::new(telephony::TelephonyFactory),
         Box::new(stubs::VirtualInputFactory),
     ]
 }
@@ -135,14 +153,9 @@ mod tests {
             let m = factory.meta();
             let mut plugin = factory.create();
             assert_eq!(plugin.meta().name, m.name);
-            let replies = plugin.handle(&Packet::new(TYPE_PING, serde_json::json!({})));
-            if m.name != "ping" {
-                assert!(
-                    replies.is_empty(),
-                    "stub plugin {} unexpectedly replied",
-                    m.name
-                );
-            }
+            // Real plugins may legitimately reply to any packet; we only
+            // assert that handle() does not panic.
+            let _replies = plugin.handle(&Packet::new(TYPE_PING, serde_json::json!({})));
         }
     }
 }

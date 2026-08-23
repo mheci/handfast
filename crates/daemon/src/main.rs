@@ -22,10 +22,13 @@
 #![deny(clippy::unwrap_used)]
 #![forbid(unsafe_code)]
 
+mod dbus;
 mod device;
 mod discovery;
 mod handshake;
+mod sftp;
 mod tls;
+mod transfer;
 
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;

@@ -63,6 +63,78 @@ pub(crate) struct PluginRow {
     pub(crate) enabled: bool,
 }
 
+/// One tracked file transfer (active or finished).
+///
+/// Built from `TransferAdded`, mutated by `TransferProgress` /
+/// `TransferFinished`; rendering only reads the snapshot.
+#[derive(Debug, Clone)]
+pub(crate) struct TransferEntry {
+    /// Stable transfer identifier.
+    pub(crate) id: String,
+    /// File name being transferred (empty when only progress was observed).
+    pub(crate) name: String,
+    /// Bytes transferred so far.
+    pub(crate) done: u64,
+    /// Total size in bytes (`0` while unknown).
+    pub(crate) total: u64,
+}
+
+impl TransferEntry {
+    /// Entry synthesized from a transfer-added event.
+    #[must_use]
+    pub(crate) fn from_added(id: &str, name: &str, total: u64) -> Self {
+        Self {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            done: 0,
+            total,
+        }
+    }
+
+    /// Placeholder for a transfer whose registration event predates this
+    /// session; only its byte counters are known.
+    #[must_use]
+    pub(crate) fn from_progress(id: &str, done: u64, total: u64) -> Self {
+        Self {
+            id: id.to_owned(),
+            name: String::new(),
+            done,
+            total,
+        }
+    }
+
+    /// Authoritative counter refresh from a progress event.
+    pub(crate) fn apply_progress(&mut self, done: u64, total: u64) {
+        self.done = done;
+        self.total = total;
+    }
+
+    /// Completion transition from a finished event; the bar fills only when
+    /// the daemon ever reported a size.
+    pub(crate) fn mark_finished(&mut self) {
+        if self.total > 0 {
+            self.done = self.total;
+        }
+    }
+
+    /// Whether the daemon reported successful completion for this entry.
+    #[must_use]
+    pub(crate) fn is_finished(&self) -> bool {
+        self.total > 0 && self.done >= self.total
+    }
+
+    /// Display name falling back to the transfer id when the file name is
+    /// unknown.
+    #[must_use]
+    pub(crate) fn display_name(&self) -> &str {
+        if self.name.is_empty() {
+            self.id.as_str()
+        } else {
+            self.name.as_str()
+        }
+    }
+}
+
 /// One mirrored notification row.
 #[derive(Debug, Clone)]
 pub(crate) struct NotifRow {
@@ -208,6 +280,24 @@ pub(crate) fn short_hash(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// Shorten `text` to at most `max` characters, appending an ellipsis when cut.
+#[must_use]
+pub(crate) fn ellipsize(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    match max {
+        0 => String::new(),
+        // A lone character beats a lone ellipsis.
+        1 => text.chars().take(1).collect(),
+        _ => {
+            let mut shortened: String = text.chars().take(max - 1).collect();
+            shortened.push('…');
+            shortened
+        }
+    }
+}
+
 /// Render bytes with binary units (`976 B`, `1.5 KiB`, `5.0 MiB`).
 #[must_use]
 pub(crate) fn human_bytes(bytes: u64) -> String {
@@ -345,6 +435,42 @@ mod tests {
         assert_eq!(short_hash("abcdefghijklmnop"), "abcdefgh");
         assert_eq!(short_hash("abc"), "abc");
         assert_eq!(short_hash(""), "");
+    }
+
+    #[test]
+    fn ellipsize_keeps_short_text_and_cuts_long_text() {
+        assert_eq!(ellipsize("photo.jpg", 22), "photo.jpg");
+        assert_eq!(ellipsize("", 5), "");
+        assert_eq!(ellipsize("abcdefghijk", 8), "abcdefg…");
+        assert_eq!(ellipsize("ab", 2), "ab");
+        assert_eq!(ellipsize("abc", 1), "a");
+        // Degenerate widths stay safe.
+        assert_eq!(ellipsize("abc", 0), "");
+    }
+
+    #[test]
+    fn transfer_entry_starts_empty_and_progresses() {
+        let mut entry = TransferEntry::from_added("t1", "photo.jpg", 100);
+        assert_eq!(entry.display_name(), "photo.jpg");
+        assert!(!entry.is_finished());
+        entry.apply_progress(40, 100);
+        assert_eq!(entry.done, 40);
+        assert_eq!(entry.total, 100);
+        entry.mark_finished();
+        assert_eq!(entry.done, 100);
+        assert!(entry.is_finished());
+    }
+
+    #[test]
+    fn transfer_entry_finish_without_total_leaves_bar_open() {
+        let mut entry = TransferEntry::from_progress("t2", 12, 0);
+        assert_eq!(entry.display_name(), "t2");
+        entry.mark_finished();
+        assert_eq!(entry.done, 12);
+        assert!(!entry.is_finished());
+        // A later size report still lets it complete.
+        entry.apply_progress(30, 30);
+        assert!(entry.is_finished());
     }
 
     #[test]

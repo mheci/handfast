@@ -55,6 +55,7 @@ pub mod error;
 pub mod identity;
 pub mod packet;
 pub mod tls;
+pub mod transfer;
 
 pub use error::{Error, Result};
 pub use identity::Identity;

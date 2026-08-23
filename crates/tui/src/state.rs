@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use handfast_ipc::ServerEvent;
 
-use crate::model::{DeviceEntry, NotifRow, PluginRow};
+use crate::model::{DeviceEntry, NotifRow, PluginRow, TransferEntry};
 
 /// Maximum notifications kept by the ring buffer.
 pub(crate) const NOTIFICATION_CAP: usize = 200;
@@ -102,6 +102,14 @@ pub(crate) enum Action {
         plugin: String,
         enabled: bool,
     },
+    /// Send a composed reply to the originator of a mirrored notification
+    /// (reply modal confirmed with Enter).
+    ReplyToNotification {
+        /// Notification being answered.
+        notification_id: String,
+        /// Reply body as typed in the modal (trimmed, non-empty).
+        text: String,
+    },
 }
 
 /// Result of an asynchronous IPC action spawned by the event loop, funneled
@@ -152,8 +160,8 @@ pub(crate) struct State {
     pub(crate) plugins: Vec<PluginRow>,
     /// Cursor into `plugins`.
     pub(crate) plugin_cursor: usize,
-    /// Transfer id → (bytes done, bytes total).
-    pub(crate) transfers: HashMap<String, (u64, u64)>,
+    /// Transfer id → tracked entry (name plus byte counters).
+    pub(crate) transfers: HashMap<String, TransferEntry>,
     /// Cursor into the sorted transfer ids.
     pub(crate) transfer_cursor: usize,
     /// Notification ring buffer (oldest first), capped at
@@ -161,6 +169,14 @@ pub(crate) struct State {
     pub(crate) notifications: VecDeque<NotifRow>,
     /// Cursor into `notifications`.
     pub(crate) notification_cursor: usize,
+    /// Reply modal open on the Notifications tab; captures all keys while
+    /// set.
+    pub(crate) reply_open: bool,
+    /// Draft text being composed in the reply modal.
+    pub(crate) reply_draft: String,
+    /// Id of the notification the draft answers, captured when the modal
+    /// opened so ring-buffer churn cannot retarget it.
+    pub(crate) reply_target: Option<String>,
     /// Rolling log lines (oldest first), capped at [`LOG_CAP`].
     pub(crate) logs: VecDeque<String>,
 }
@@ -188,6 +204,9 @@ impl State {
             transfer_cursor: 0,
             notifications: VecDeque::new(),
             notification_cursor: 0,
+            reply_open: false,
+            reply_draft: String::new(),
+            reply_target: None,
             logs: VecDeque::new(),
         }
     }
@@ -218,13 +237,32 @@ impl State {
                     device.apply_state(state);
                 }
             }
+            ServerEvent::TransferAdded {
+                id,
+                file_name,
+                total,
+                ..
+            } => {
+                self.transfers
+                    .insert(id.clone(), TransferEntry::from_added(id, file_name, *total));
+            }
             ServerEvent::TransferProgress {
                 id,
                 bytes_done,
                 bytes_total,
-            } => {
-                self.transfers
-                    .insert(id.clone(), (*bytes_done, *bytes_total));
+            } => match self.transfers.entry(id.clone()) {
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    slot.get_mut().apply_progress(*bytes_done, *bytes_total);
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    // Registration predates this session; track by counters.
+                    slot.insert(TransferEntry::from_progress(id, *bytes_done, *bytes_total));
+                }
+            },
+            ServerEvent::TransferFinished { id } => {
+                if let Some(entry) = self.transfers.get_mut(id) {
+                    entry.mark_finished();
+                }
             }
             ServerEvent::NotificationReceived {
                 id,
@@ -249,6 +287,8 @@ impl State {
                 self.shutdown = true;
                 self.flash = Some("daemon is shutting down".to_owned());
             }
+            // Events without UI impact (battery, volume, telephony, …).
+            _ => {}
         }
         self.clamp_cursors();
         self.dirty = true;
@@ -287,6 +327,11 @@ impl State {
                 KeyCode::Char('c') => Some(Action::Quit),
                 _ => None,
             };
+        }
+        // The reply modal captures every key while open so composing text
+        // never triggers navigation, tab switches, or a premature quit.
+        if self.reply_open {
+            return self.handle_reply_key(key);
         }
         match key.code {
             KeyCode::Char('q') => Some(Action::Quit),
@@ -352,6 +397,7 @@ impl State {
                     None
                 }
             }
+            KeyCode::Char('r') => self.open_reply(),
             KeyCode::Char(' ') => {
                 let device = self.detail_device.clone();
                 let target = self.selected_plugin_index().and_then(|index| {
@@ -404,6 +450,84 @@ impl State {
         self.plugin_cursor = 0;
     }
 
+    // ---- reply modal -------------------------------------------------------
+
+    /// Open the reply modal for the notification under the cursor; inert
+    /// outside the Notifications tab or without a selection.
+    fn open_reply(&mut self) -> Option<Action> {
+        let target = if self.tab == Tab::Notifications && !self.notifications.is_empty() {
+            self.selected_notification_id().map(str::to_owned)
+        } else {
+            None
+        };
+        match target {
+            Some(id) => {
+                self.reply_open = true;
+                self.reply_target = Some(id);
+                self.reply_draft.clear();
+                self.dirty = true;
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Route a key press into the reply-modal text editor.
+    ///
+    /// Editing is append-only with `Backspace` delete; a trimmed-empty draft
+    /// confirmed with Enter cancels instead of sending an empty reply.
+    fn handle_reply_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Enter => self.submit_reply(),
+            KeyCode::Esc => {
+                self.cancel_reply();
+                self.dirty = true;
+                None
+            }
+            KeyCode::Backspace => {
+                self.reply_draft.pop();
+                self.dirty = true;
+                None
+            }
+            KeyCode::Char(ch) => {
+                self.reply_draft.push(ch);
+                self.dirty = true;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Confirm the draft: emit [`Action::ReplyToNotification`] for non-empty
+    /// text and close the modal either way.
+    fn submit_reply(&mut self) -> Option<Action> {
+        let target = self.reply_target.clone();
+        let text = self.reply_draft.trim().to_owned();
+        self.cancel_reply();
+        self.dirty = true;
+        match (target, text.is_empty()) {
+            (Some(notification_id), false) => Some(Action::ReplyToNotification {
+                notification_id,
+                text,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Drop the modal together with its draft and target.
+    pub(crate) fn cancel_reply(&mut self) {
+        self.reply_open = false;
+        self.reply_target = None;
+        self.reply_draft.clear();
+    }
+
+    /// Notification row the open draft answers, if still buffered.
+    #[must_use]
+    pub(crate) fn reply_subject(&self) -> Option<&NotifRow> {
+        let id = self.reply_target.as_deref()?;
+        self.notifications.iter().find(|row| row.id == id)
+    }
+
     /// Record a status/feedback message for the footer.
     pub(crate) fn set_flash(&mut self, message: impl Into<String>) {
         self.flash = Some(message.into());
@@ -418,6 +542,14 @@ impl State {
         self.devices
             .get(self.device_cursor)
             .map(|device| device.id.as_str())
+    }
+
+    /// Id of the notification under the cursor.
+    #[must_use]
+    pub(crate) fn selected_notification_id(&self) -> Option<&str> {
+        self.notifications
+            .get(self.notification_cursor)
+            .map(|row| row.id.as_str())
     }
 
     /// Index of the focused plugin row, if the detail panel is active.
@@ -435,8 +567,8 @@ impl State {
     /// Transfer rows in stable (id-sorted) order — shared by the renderer and
     /// the cursor logic so highlights always line up.
     #[must_use]
-    pub(crate) fn transfer_rows(&self) -> Vec<(&String, &(u64, u64))> {
-        let mut rows: Vec<(&String, &(u64, u64))> = self.transfers.iter().collect();
+    pub(crate) fn transfer_rows(&self) -> Vec<(&String, &TransferEntry)> {
+        let mut rows: Vec<(&String, &TransferEntry)> = self.transfers.iter().collect();
         rows.sort_unstable_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         rows
     }
@@ -656,6 +788,24 @@ mod tests {
     }
 
     #[test]
+    fn transfer_added_registers_named_entry() {
+        let mut state = State::new();
+        state.apply_event(&ServerEvent::TransferAdded {
+            id: "t1".to_owned(),
+            device_id: "d1".to_owned(),
+            direction: "outgoing".to_owned(),
+            file_name: "photo.jpg".to_owned(),
+            total: 100,
+        });
+        assert_eq!(state.transfers.len(), 1);
+        let entry = &state.transfers["t1"];
+        assert_eq!(entry.name, "photo.jpg");
+        assert_eq!(entry.done, 0);
+        assert_eq!(entry.total, 100);
+        assert!(!entry.is_finished());
+    }
+
+    #[test]
     fn transfer_progress_upserts_by_id() {
         let mut state = State::new();
         state.apply_event(&ServerEvent::TransferProgress {
@@ -674,8 +824,61 @@ mod tests {
             bytes_total: 4,
         });
         assert_eq!(state.transfers.len(), 2);
-        assert_eq!(state.transfers["t1"], (50, 100));
+        assert_eq!(state.transfers["t1"].done, 50);
+        assert_eq!(state.transfers["t1"].total, 100);
+        // Rows render in id order for cursor alignment.
         assert_eq!(state.transfer_rows()[0].0, "t1");
+    }
+
+    #[test]
+    fn added_then_progress_then_finished_is_the_happy_path() {
+        let mut state = State::new();
+        state.apply_event(&ServerEvent::TransferAdded {
+            id: "t1".to_owned(),
+            device_id: "d1".to_owned(),
+            direction: "incoming".to_owned(),
+            file_name: "movie.mkv".to_owned(),
+            total: 1000,
+        });
+        state.apply_event(&ServerEvent::TransferProgress {
+            id: "t1".to_owned(),
+            bytes_done: 250,
+            bytes_total: 1000,
+        });
+        let entry = &state.transfers["t1"];
+        assert_eq!(entry.name, "movie.mkv");
+        assert_eq!(entry.done, 250);
+        state.apply_event(&ServerEvent::TransferFinished {
+            id: "t1".to_owned(),
+        });
+        let entry = &state.transfers["t1"];
+        // Finished transfers stay listed with a full bar.
+        assert_eq!(entry.done, 1000);
+        assert!(entry.is_finished());
+        assert_eq!(state.transfers.len(), 1);
+    }
+
+    #[test]
+    fn finished_without_known_size_keeps_counters() {
+        let mut state = State::new();
+        state.apply_event(&ServerEvent::TransferAdded {
+            id: "t9".to_owned(),
+            device_id: "d".to_owned(),
+            direction: "incoming".to_owned(),
+            file_name: "blob.bin".to_owned(),
+            total: 0,
+        });
+        state.apply_event(&ServerEvent::TransferProgress {
+            id: "t9".to_owned(),
+            bytes_done: 4096,
+            bytes_total: 0,
+        });
+        state.apply_event(&ServerEvent::TransferFinished {
+            id: "t9".to_owned(),
+        });
+        let entry = &state.transfers["t9"];
+        assert_eq!(entry.done, 4096);
+        assert!(!entry.is_finished());
     }
 
     #[test]
@@ -836,6 +1039,127 @@ mod tests {
         // Detail closed: space does nothing.
         state.close_detail();
         assert_eq!(state.handle_key(key(KeyCode::Char(' '))), None);
+    }
+
+    #[test]
+    fn r_opens_reply_modal_only_on_notifications_tab() {
+        let mut state = State::new();
+        state.apply_event(&found("dev", "Device"));
+        assert_eq!(state.handle_key(key(KeyCode::Char('r'))), None);
+        assert!(!state.reply_open);
+
+        state.apply_event(&notif("n1"));
+        state.handle_key(key(KeyCode::Tab));
+        state.handle_key(key(KeyCode::Tab));
+        assert_eq!(state.tab, Tab::Notifications);
+        assert_eq!(state.handle_key(key(KeyCode::Char('r'))), None);
+        assert!(state.reply_open);
+        assert_eq!(state.reply_target.as_deref(), Some("n1"));
+        assert!(state.reply_draft.is_empty());
+    }
+
+    #[test]
+    fn reply_modal_types_edits_and_sends_on_enter() {
+        let mut state = State::new();
+        state.apply_event(&notif("n1"));
+        state.handle_key(key(KeyCode::Tab));
+        state.handle_key(key(KeyCode::Tab));
+        let _ = state.handle_key(key(KeyCode::Char('r')));
+        for ch in "hey!".chars() {
+            let _ = state.handle_key(key(KeyCode::Char(ch)));
+        }
+        let _ = state.handle_key(key(KeyCode::Backspace));
+        assert_eq!(state.reply_draft, "hey");
+        let action = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Some(Action::ReplyToNotification {
+                notification_id: "n1".to_owned(),
+                text: "hey".to_owned(),
+            })
+        );
+        assert!(!state.reply_open);
+        assert_eq!(state.reply_target, None);
+        assert!(state.reply_draft.is_empty());
+    }
+
+    #[test]
+    fn blank_reply_confirms_as_cancel_without_action() {
+        let mut state = State::new();
+        state.apply_event(&notif("n1"));
+        state.handle_key(key(KeyCode::Tab));
+        state.handle_key(key(KeyCode::Tab));
+        let _ = state.handle_key(key(KeyCode::Char('r')));
+        for ch in "   ".chars() {
+            let _ = state.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(state.handle_key(key(KeyCode::Enter)), None);
+        assert!(!state.reply_open);
+        // Esc also cancels and drops the draft.
+        let _ = state.handle_key(key(KeyCode::Char('r')));
+        let _ = state.handle_key(key(KeyCode::Char('x')));
+        let _ = state.handle_key(key(KeyCode::Esc));
+        assert!(!state.reply_open);
+        assert!(state.reply_draft.is_empty());
+        assert_eq!(state.reply_target, None);
+    }
+
+    #[test]
+    fn reply_modal_captures_all_other_keys() {
+        let mut state = State::new();
+        state.apply_event(&notif("n1"));
+        // Devices → Transfers → Notifications.
+        state.handle_key(key(KeyCode::Tab));
+        state.handle_key(key(KeyCode::Tab));
+        assert_eq!(state.tab, Tab::Notifications);
+        let _ = state.handle_key(key(KeyCode::Char('r')));
+
+        // While composing: quit, help, tab switch, navigation are swallowed…
+        for code in [
+            KeyCode::Char('q'),
+            KeyCode::Char('?'),
+            KeyCode::Tab,
+            KeyCode::Char('j'),
+            KeyCode::Char('p'),
+        ] {
+            assert_eq!(state.handle_key(key(code)), None, "swallowed {code:?}");
+        }
+        // …and none of them mutated the surrounding UI.
+        assert!(!state.help_overlay);
+        assert_eq!(state.tab, Tab::Notifications);
+        assert_eq!(state.notification_cursor, 0);
+        assert_eq!(state.reply_draft, "q?jp"); // only printable chars landed
+
+        // Ctrl+C still quits from inside the modal.
+        assert_eq!(
+            state.handle_key(ctrl(KeyCode::Char('c'))),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn reply_target_is_pinned_against_ring_buffer_churn() {
+        let mut state = State::new();
+        for i in 0..(NOTIFICATION_CAP + 1) {
+            state.apply_event(&notif(&format!("n{i}")));
+        }
+        state.handle_key(key(KeyCode::End));
+        let first_visible = state.selected_notification_id().map(str::to_owned);
+        let _ = state.handle_key(key(KeyCode::Char('r')));
+        // Overflow the ring buffer while the modal is open.
+        state.apply_event(&notif("late"));
+        for ch in "on my way".chars() {
+            let _ = state.handle_key(key(KeyCode::Char(ch)));
+        }
+        let action = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Some(Action::ReplyToNotification {
+                notification_id: first_visible.expect("selection existed"),
+                text: "on my way".to_owned(),
+            }),
+            "the target is pinned at modal-open time"
+        );
     }
 
     #[test]

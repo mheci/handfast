@@ -13,7 +13,10 @@ use iced::futures::channel::mpsc;
 use iced::{Subscription, Task};
 
 use crate::bridge::{self, BridgeIn};
-use crate::model::{ConnState, DeviceCard, NotifRow, PluginRow, Tab, TransferRow};
+use crate::model::{
+    apply_persisted_toggles, load_plugin_toggles, save_plugin_toggles, split_toggle_key,
+    toggle_key, ConnState, DeviceCard, NotifRow, PluginRow, PluginToggles, Tab, TransferRow,
+};
 
 /// Maximum number of retained log lines.
 const LOG_CAP: usize = 300;
@@ -85,6 +88,11 @@ pub(crate) enum Message {
     UnpairPressed(String),
     /// Plugin checkbox toggled (name, desired state).
     TogglePlugin(String, bool),
+    /// Settings gear pressed; flips the collapsible settings panel.
+    SettingsPressed,
+    /// A device-scoped checkbox in the settings panel flipped
+    /// (`"device_id:plugin_name"` key, desired state).
+    ToggleSavedPlugin(String, bool),
     /// Queue-file button pressed.
     QueueFilePressed,
     /// File-path input changed.
@@ -135,6 +143,10 @@ pub(crate) struct HandfastApp {
     pub(crate) file_path_draft: String,
     /// Wire protocol version reported by the daemon's Hello.
     pub(crate) daemon_version: Option<String>,
+    /// Whether the collapsible settings panel is expanded.
+    pub(crate) settings_open: bool,
+    /// Persisted plugin-enable flags keyed by `"device_id:plugin_name"`.
+    pub(crate) plugin_toggles: PluginToggles,
 }
 
 impl HandfastApp {
@@ -161,6 +173,8 @@ impl HandfastApp {
             clipboard_status: None,
             file_path_draft: String::new(),
             daemon_version: None,
+            settings_open: false,
+            plugin_toggles: load_plugin_toggles(),
         }
     }
 
@@ -197,6 +211,11 @@ impl HandfastApp {
             Message::PluginsLoaded(rows) => {
                 let count = rows.len();
                 app.plugins = rows;
+                // Re-apply persisted device-scoped toggles over the fresh
+                // snapshot so restarts and reselections keep manual choices.
+                if let Some(device_id) = app.selected_device_id() {
+                    apply_persisted_toggles(&mut app.plugins, &device_id, &app.plugin_toggles);
+                }
                 app.push_log(format!("loaded {count} plugin(s)"));
             }
             Message::NotificationsLoaded(rows) => app.notifications = rows,
@@ -261,6 +280,7 @@ impl HandfastApp {
                     row.enabled = enabled;
                 }
                 if let Some(device_id) = app.selected_device_id() {
+                    record_plugin_toggle(app, &device_id, &name, enabled);
                     if !app.dispatch(BridgeIn::SetPlugin {
                         device_id,
                         plugin: name,
@@ -270,6 +290,20 @@ impl HandfastApp {
                     }
                 }
             }
+            Message::SettingsPressed => app.settings_open = !app.settings_open,
+            Message::ToggleSavedPlugin(key, enabled) => match split_toggle_key(&key) {
+                Some((device_id, plugin)) => {
+                    record_plugin_toggle(app, device_id, plugin, enabled);
+                    if !app.dispatch(BridgeIn::SetPlugin {
+                        device_id: device_id.to_owned(),
+                        plugin: plugin.to_owned(),
+                        enabled,
+                    }) {
+                        app.set_banner("not connected");
+                    }
+                }
+                None => app.set_banner(format!("malformed plugin toggle key: {key}")),
+            },
             Message::QueueFilePressed => {
                 let Some(device_id) = app.selected_device_id() else {
                     app.set_banner("select a device first");
@@ -355,6 +389,16 @@ impl HandfastApp {
 impl Default for HandfastApp {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Record and flush one device-scoped plugin toggle; persistence failures
+/// degrade to a log line so toggling stays usable offline.
+fn record_plugin_toggle(app: &mut HandfastApp, device_id: &str, plugin: &str, enabled: bool) {
+    app.plugin_toggles
+        .insert(toggle_key(device_id, plugin), enabled);
+    if let Err(err) = save_plugin_toggles(&app.plugin_toggles) {
+        app.push_log(format!("[warn] persisting plugin toggles failed: {err}"));
     }
 }
 
@@ -451,18 +495,49 @@ fn handle_event(app: &mut HandfastApp, event: ServerEvent) {
                 card.apply_state(&state);
             }
         }
-        ServerEvent::TransferProgress {
+        ServerEvent::TransferAdded {
             id,
-            bytes_done,
-            bytes_total,
-        } => TransferRow::upsert(
-            &mut app.transfers,
-            TransferRow {
-                id,
-                done: bytes_done,
-                total: bytes_total,
-            },
-        ),
+            direction,
+            file_name,
+            total,
+            ..
+        } => {
+            TransferRow::upsert(
+                &mut app.transfers,
+                TransferRow {
+                    id,
+                    name: file_name.clone(),
+                    done: 0,
+                    total,
+                },
+            );
+            app.push_log(format!("transfer {direction}: {file_name}"));
+        }
+        ServerEvent::TransferProgress { ref id, .. } => {
+            // Progress may arrive without a prior Added frame; synthesize a
+            // placeholder row so the bar still appears.
+            if !app.transfers.iter().any(|row| row.id == *id) {
+                app.transfers.push(TransferRow {
+                    id: id.clone(),
+                    name: id.clone(),
+                    done: 0,
+                    total: 0,
+                });
+            }
+            if let Some(row) = app.transfers.iter_mut().find(|row| row.id == *id) {
+                row.update(&event);
+            }
+        }
+        ServerEvent::TransferFinished { ref id } => {
+            if let Some(row) = app.transfers.iter_mut().find(|row| row.id == *id) {
+                row.update(&event);
+            }
+            app.push_log(format!("transfer finished: {id}"));
+        }
+        ServerEvent::TransferFailed { id, reason } => {
+            app.transfers.retain(|row| row.id != id);
+            app.push_log(format!("[error] transfer failed: {reason}"));
+        }
         ServerEvent::NotificationReceived {
             id,
             app: source,
@@ -492,6 +567,9 @@ fn handle_event(app: &mut HandfastApp, event: ServerEvent) {
             app.push_log("daemon shut down");
             app.set_banner("daemon shut down; waiting for it to come back");
         }
+        // Battery, telephony, volume and command-result events carry no GUI
+        // state today.
+        _ => {}
     }
 }
 
@@ -595,6 +673,161 @@ mod tests {
             .find(|transfer| transfer.id == "t2")
             .map(|transfer| transfer.done);
         assert_eq!(t2, Some(25));
+    }
+
+    #[test]
+    fn transfer_added_seeds_row_and_finish_snaps_it() {
+        let mut app = HandfastApp::new();
+        reduce(
+            &mut app,
+            &[Message::Event(Ev::TransferAdded {
+                id: "t9".into(),
+                device_id: "d1".into(),
+                direction: "incoming".into(),
+                file_name: "report.pdf".into(),
+                total: 500,
+            })],
+        );
+        assert_eq!(app.transfers.len(), 1);
+        assert_eq!(app.transfers[0].name, "report.pdf");
+        assert_eq!(app.transfers[0].done, 0);
+
+        reduce(
+            &mut app,
+            &[Message::Event(Ev::TransferProgress {
+                id: "t9".into(),
+                bytes_done: 200,
+                bytes_total: 500,
+            })],
+        );
+        // A duplicate Added frame must not duplicate rows.
+        reduce(
+            &mut app,
+            &[Message::Event(Ev::TransferAdded {
+                id: "t9".into(),
+                device_id: "d1".into(),
+                direction: "incoming".into(),
+                file_name: "report.pdf".into(),
+                total: 500,
+            })],
+        );
+        assert_eq!(app.transfers.len(), 1);
+
+        reduce(
+            &mut app,
+            &[Message::Event(Ev::TransferFinished { id: "t9".into() })],
+        );
+        assert_eq!(app.transfers[0].done, 500);
+        assert_eq!(app.transfers[0].percent(), 100.0);
+    }
+
+    #[test]
+    fn transfer_failed_drops_the_row() {
+        let mut app = HandfastApp::new();
+        reduce(
+            &mut app,
+            &[
+                Message::Event(Ev::TransferProgress {
+                    id: "t1".into(),
+                    bytes_done: 10,
+                    bytes_total: 100,
+                }),
+                Message::Event(Ev::TransferFailed {
+                    id: "t1".into(),
+                    reason: "peer reset".into(),
+                }),
+            ],
+        );
+        assert!(app.transfers.is_empty());
+    }
+
+    #[test]
+    fn settings_button_flips_panel_visibility() {
+        let mut app = HandfastApp::new();
+        assert!(!app.settings_open);
+        reduce(&mut app, &[Message::SettingsPressed]);
+        assert!(app.settings_open);
+        reduce(&mut app, &[Message::SettingsPressed]);
+        assert!(!app.settings_open);
+    }
+
+    #[test]
+    fn saved_plugin_toggles_persist_and_dispatch() {
+        let (mut app, mut receiver) = app_with_bridge();
+        reduce(
+            &mut app,
+            &[Message::Event(Ev::DeviceFound {
+                id: "a".into(),
+                name: "A".into(),
+            })],
+        );
+
+        reduce(
+            &mut app,
+            &[Message::ToggleSavedPlugin("a:ping".into(), true)],
+        );
+        assert_eq!(app.plugin_toggles.get("a:ping"), Some(&true));
+        assert!(matches!(
+            drained(&mut receiver).first(),
+            Some(BridgeIn::SetPlugin { device_id, plugin, enabled: true })
+                if device_id == "a" && plugin == "ping"
+        ));
+
+        // Malformed keys neither persist nor dispatch.
+        reduce(
+            &mut app,
+            &[Message::ToggleSavedPlugin("broken".into(), true)],
+        );
+        assert!(!app.plugin_toggles.contains_key("broken"));
+        assert!(drained(&mut receiver).is_empty());
+        assert!(matches!(&app.banner, Some(text) if text.contains("malformed")));
+    }
+
+    #[test]
+    fn plugins_loaded_overlays_persisted_state() {
+        let mut app = HandfastApp::new();
+        app.plugin_toggles.insert("a:sms".into(), false);
+        reduce(
+            &mut app,
+            &[Message::Event(Ev::DeviceFound {
+                id: "a".into(),
+                name: "A".into(),
+            })],
+        );
+        reduce(&mut app, &[Message::DeviceSelected(0)]);
+        reduce(
+            &mut app,
+            &[Message::PluginsLoaded(vec![PluginRow {
+                name: "sms".into(),
+                title: "SMS".into(),
+                enabled: true,
+            }])],
+        );
+        // The daemon said enabled=true but the user persisted enabled=false.
+        assert!(!app.plugins[0].enabled);
+    }
+
+    #[test]
+    fn toggling_a_plugin_records_its_persistence_key() {
+        let (mut app, mut receiver) = app_with_bridge();
+        reduce(
+            &mut app,
+            &[
+                Message::Event(Ev::DeviceFound {
+                    id: "a".into(),
+                    name: "A".into(),
+                }),
+                Message::DeviceSelected(0),
+            ],
+        );
+        let _ = receiver.try_recv(); // consume the ListPlugins command
+
+        reduce(&mut app, &[Message::TogglePlugin("ping".into(), true)]);
+        assert_eq!(app.plugin_toggles.get("a:ping"), Some(&true));
+        assert!(matches!(
+            drained(&mut receiver).first(),
+            Some(BridgeIn::SetPlugin { plugin, enabled: true, .. }) if plugin == "ping"
+        ));
     }
 
     #[test]
