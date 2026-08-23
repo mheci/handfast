@@ -76,7 +76,7 @@ jobs:
           cp target/release/handfastd target/release/hfctl target/release/handfast-gui "${STAGE}/"
           cp README.md LICENSE-MIT "${STAGE}/"
           for d in systemd desktop icons; do cp -r "packaging/${d}" "${STAGE}/packaging/"; done
-          tar -cJf "dist/${NAME}.tar.zst" -C dist "${NAME}"
+          tar --zstd -cf "dist/${NAME}.tar.zst" -C dist "${NAME}"
           rm -rf "${STAGE}"
           ( cd dist && sha256sum "${NAME}.tar.zst" > "${NAME}.tar.zst.sha256" )
       - uses: actions/upload-artifact@v4
