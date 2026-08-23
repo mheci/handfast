@@ -210,13 +210,10 @@ fn publish_notification_signal(bus: &Bus, message: &zbus::Message) {
     let header = message.header();
     let member = header
         .member()
-        .ok()
         .map(|name| name.to_string())
         .unwrap_or_else(|| "Unknown".to_string());
     let sender = header
         .sender()
-        .ok()
-        .flatten()
         .map(|name| name.to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -268,8 +265,10 @@ async fn run_upower_battery(bus: &Bus) -> Result<()> {
         }
     };
 
-    let mut percentage_changes = proxy.receive_property_changed::<f64>(PERCENTAGE_PROPERTY);
-    let mut state_changes = proxy.receive_property_changed::<u32>(STATE_PROPERTY);
+    let mut percentage_changes = proxy
+        .receive_property_changed::<f64>(PERCENTAGE_PROPERTY)
+        .await;
+    let mut state_changes = proxy.receive_property_changed::<u32>(STATE_PROPERTY).await;
     tokio::pin!(percentage_changes, state_changes);
 
     loop {
@@ -293,7 +292,7 @@ async fn run_upower_battery(bus: &Bus) -> Result<()> {
                 });
                 last = Some(snapshot);
             }
-            Ok(()) => {}
+            Ok(_) => {}
             Err(err) => {
                 tracing::debug!(target: TARGET, %err, "UPower refresh failed; keeping previous level")
             }

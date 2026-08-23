@@ -29,6 +29,7 @@ const MAX_FILE_NAME_LEN: usize = 240;
 const MAX_NAME_COLLISIONS: u32 = 10_000;
 
 /// Bookkeeping for one in-flight inbound transfer.
+#[derive(Debug)]
 struct IncomingTransfer {
     meta: TransferMeta,
     /// Sanitized bare file name used for the final destination.

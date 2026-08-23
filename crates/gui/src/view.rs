@@ -87,7 +87,11 @@ fn sidebar(app: &HandfastApp) -> Element<'_, Message> {
     } else {
         "settings"
     };
-    rail = rail.push(button(text(settings_label).width(Length::Fill)).width(Length::Fill));
+    rail = rail.push(
+        button(text(settings_label).width(Length::Fill))
+            .width(Length::Fill)
+            .on_press(Message::SettingsPressed),
+    );
     if app.settings_open {
         rail = rail.push(settings_panel(app));
     }
