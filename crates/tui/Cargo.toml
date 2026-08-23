@@ -1,0 +1,27 @@
+[package]
+name = "handfast-tui"
+description = "Handfast terminal control: hfctl CLI + ratatui TUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hfctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures-util = { workspace = true }
+handfast-ipc = { path = "../ipc" }
+ratatui = "0.29"
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "xtask"
+description = "Handfast release tooling (dist packaging, completions)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

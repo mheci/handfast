@@ -1,0 +1,37 @@
+{
+  "id": 1724160000000,
+  "type": "kdeconnect.identity",
+  "body": {
+    "deviceId": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    "name": "Pixel 9",
+    "deviceType": "phone",
+    "ProtocolVersion": 8,
+    "incomingCapabilities": [
+      "kdeconnect.ping",
+      "kdeconnect.mousepad.request",
+      "kdeconnect.mpris",
+      "kdeconnect.mpris.request",
+      "kdeconnect.clipboard",
+      "kdeconnect.clipboard.connect",
+      "kdeconnect.share.request",
+      "kdeconnect.runcommand",
+      "kdeconnect.notification.request",
+      "kdeconnect.battery.request",
+      "kdeconnect.systemvolume",
+      "kdeconnect.findmyphone.request"
+    ],
+    "outgoingCapabilities": [
+      "kdeconnect.ping",
+      "kdeconnect.notification",
+      "kdeconnect.telephony",
+      "kdeconnect.battery",
+      "kdeconnect.clipboard",
+      "kdeconnect.clipboard.connect",
+      "kdeconnect.mpris",
+      "kdeconnect.share.request",
+      "kdeconnect.runcommand",
+      "kdeconnect.sftp"
+    ],
+    "tcpSourcePort": 17431
+  }
+}

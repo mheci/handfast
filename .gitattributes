@@ -1,0 +1,18 @@
+# Normalize line endings: repo stores LF; Windows working copies may convert.
+* text=auto
+
+# Files consumed by bash/systemd/desktop tools must never gain CR bytes.
+*.sh         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+PKGBUILD     text eol=lf
+*.service    text eol=lf
+*.desktop    text eol=lf
+*.svg        text eol=lf
+Cargo.toml   text eol=lf
+Cargo.lock   text eol=lf -diff
+
+# Binaries
+*.png binary
+*.jpg binary
+*.ico binary

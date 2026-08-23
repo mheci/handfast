@@ -1,0 +1,28 @@
+[package]
+name = "handfast-core"
+description = "Handfast core: event bus, paths, SQLite state store, supervision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+# Link the vendored sqlite C archive instead of the system library
+# (used by cross-compiled release artifacts and containerized packaging).
+sqlite-bundled = ["rusqlite/bundled"]
+
+[dependencies]
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

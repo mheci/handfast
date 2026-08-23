@@ -1,0 +1,26 @@
+[Unit]
+Description=Handfast device-pairing daemon
+Documentation=https://github.com/handfast-rs/handfast
+After=network-online.target
+Wants=network-online.target
+# PartOf ties the daemon to the graphical session so it stops (and restarts)
+# with login/logout on desktop systems. It is optional: headless users who
+# enable the unit directly under default.target are unaffected, since a unit
+# that is not pulled in by graphical-session.target simply keeps running.
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/handfastd
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/handfast %h/.config/handfast %h/.cache/handfast
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=default.target

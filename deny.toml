@@ -1,0 +1,42 @@
+# cargo-deny configuration — Handfast
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+# Path deps inside this workspace are declared without versions by design;
+# flagging them as errors would break every internal dependency edge.
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+    # paste — unmaintained; transitive via ratatui/cassowary. No vulnerability,
+    # upstream replacement pending. Revisit when ratatui drops it.
+    "RUSTSEC-2024-0436",
+    # ttf-parser — unmaintained advisory; transitive via iced/cosmic-text.
+    # Functional for our use; revisit when iced updates its text stack.
+    "RUSTSEC-2026-0192",
+]

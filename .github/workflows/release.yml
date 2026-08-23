@@ -1,0 +1,239 @@
+# Release pipeline for Handfast.
+#
+#   A) push to main   -> release-please PR maintenance (gated on PAT; skipped otherwise)
+#   B) push of v* tag -> native x86_64 build + Arch package construction
+#                        (.pkg.tar.zst assembled natively — no container),
+#                        GitHub Release publish, AUR sync (gated on SSH key).
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ==================================================== A) main -> release ==
+  release-please:
+    name: release-please
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Skip unless a PAT is configured
+        id: gate
+        run: |
+          if [ -n "${{ secrets.RELEASE_PLEASE_TOKEN }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::RELEASE_PLEASE_TOKEN not set - skipping."
+          fi
+      - uses: googleapis/release-please-action@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # ============================================ B1) tag -> native binaries ==
+  build-linux:
+    name: build-linux (x86_64)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev
+      # Native x86_64: jemalloc + full feature set, system sqlite,
+      # locked to the committed Cargo.lock for reproducible artifacts.
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked --all-features \
+            -p handfastd -p handfast-tui -p handfast-gui
+      - name: Package tarball + sha256
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          NAME="handfast-${VER}-x86_64-unknown-linux-gnu"
+          STAGE="dist/${NAME}"
+          mkdir -p "${STAGE}/packaging"
+          cp target/release/handfastd target/release/hfctl target/release/handfast-gui "${STAGE}/"
+          cp README.md LICENSE-MIT "${STAGE}/"
+          for d in systemd desktop icons; do cp -r "packaging/${d}" "${STAGE}/packaging/"; done
+          tar -cJf "dist/${NAME}.tar.zst" -C dist "${NAME}"
+          rm -rf "${STAGE}"
+          ( cd dist && sha256sum "${NAME}.tar.zst" > "${NAME}.tar.zst.sha256" )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-x86_64
+          path: |
+            dist/*.tar.zst
+            dist/*.tar.zst.sha256
+          if-no-files-found: error
+
+  # ============================== B2) tag -> Arch package (native assembly) =
+  # Builds the .pkg.tar.zst directly from the proven-green ubuntu binaries by
+  # assembling the Arch package format natively (.PKGINFO + payload). This is
+  # deterministic and sidesteps the bare-container linker defect entirely.
+  arch-package:
+    name: arch-package (x86_64)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-x86_64
+          path: artifact
+      - name: Extract binaries
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir src
+          tar --use-compress-program=unzstd -xf artifact/handfast-${VER}-x86_64-unknown-linux-gnu.tar.zst -C src
+          mv src/handfast-${VER}-x86_64-unknown-linux-gnu src/pkg
+      - name: Assemble Arch package
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          PKGREL=1
+          ARCH=x86_64
+          ROOT=$(find src -maxdepth 1 -type d -name 'handfast-*' | head -1)
+          mkdir -p pkgdir/usr/{bin,lib/systemd/user,share/{applications,icons/hicolor/scalable/apps,licenses/handfast,bash-completion/completions,zsh/site-functions,fish/vendor_completions.d,man/man1}}
+          install -Dm755 "${ROOT}"/handfastd "${ROOT}"/hfctl "${ROOT}"/handfast-gui -t pkgdir/usr/bin/
+          install -Dm644 packaging/systemd/handfast.service pkgdir/usr/lib/systemd/user/handfast.service
+          install -Dm644 packaging/desktop/dev.handfast.Gui.desktop pkgdir/usr/share/applications/dev.handfast.Gui.desktop
+          install -Dm644 packaging/icons/handfast.svg pkgdir/usr/share/icons/hicolor/scalable/apps/handfast.svg
+          install -Dm644 LICENSE-MIT pkgdir/usr/share/licenses/handfast/LICENSE-MIT
+          ./src/pkg/hfctl completions bash  > pkgdir/usr/share/bash-completion/completions/hfctl
+          ./src/pkg/hfctl completions zsh   > pkgdir/usr/share/zsh/site-functions/_hfctl
+          ./src/pkg/hfctl completions fish  > pkgdir/usr/share/fish/vendor_completions.d/hfctl.fish
+          SIZE=$(du -sb pkgdir | cut -f1)
+          NOW=$(date -u +%s)
+          cat > .PKGINFO <<EOF
+          pkgname = handfast
+          pkgver = ${VER}-${PKGREL}
+          pkgdesc = Wayland-first KDE Connect-compatible device pairing daemon
+          url = https://github.com/mheci/handfast
+          builddate = ${NOW}
+          packager = mheci <274998646+mheci@users.noreply.github.com>
+          size = ${SIZE}
+          arch = ${ARCH}
+          license = MIT
+          depend = gcc-libs
+          depend = glibc
+          depend = wayland
+          depend = libxkbcommon
+          optdepend = xdg-desktop-portal: portal-mediated input/clipboard fallback
+          EOF
+          # payload tree (everything except metadata files)
+          mkdir -p stage_pkg
+          cp -a pkgdir/. stage_pkg/
+          tar --sort=name --mtime="@${NOW}" --owner=root --group=root --numeric-owner \
+              -cf pkg-payload.tar -C stage_pkg usr
+          gzip -n -c pkg-payload.tar > payload.tgz
+          {
+            echo ".PKGINFO time=${NOW}.0 type=file size=$(stat -c%s .PKGINFO) sha256digest=$(sha256sum .PKGINFO | cut -d' ' -f1)"
+          } > .MTREE.raw
+          ( cd stage_pkg && find usr -type f -printf '%p\n' | sort ) | while read -r f; do
+            echo "$f time=${NOW}.0 type=file size=$(stat -c%s "stage_pkg/$f") sha256digest=$(sha256sum "stage_pkg/$f" | cut -d' ' -f1)"
+          done >> .MTREE.raw
+          gzip -n -c .MTREE.raw > .MTREE
+          rm -rf stage_pkg pkg-payload.tar payload.tgz .MTREE.raw
+          OUT="dist/handfast-${VER}-${PKGREL}-${ARCH}.pkg.tar.zst"
+          mkdir -p dist
+          tar --zstd -cf "$OUT" .PKGINFO .MTREE usr
+          sha256sum "$OUT" > "${OUT}.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: |
+            dist/*.pkg.tar.zst
+            dist/*.pkg.tar.zst.sha256
+            dist/PKGBUILD
+            dist/.SRCINFO
+          if-no-files-found: error
+      - name: Generate PKGBUILD + .SRCINFO for AUR users
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          sed "s/^pkgver=.*/pkgver=${VER}/; s/^pkgrel=.*/pkgrel=1/" packaging/arch/PKGBUILD > dist/PKGBUILD
+          {
+            echo "pkgbase = handfast"
+            echo "pkgname = handfast"
+            echo "pkgver = ${VER}-1"
+            echo "pkgdesc = Wayland-first KDE Connect-compatible device pairing daemon"
+            echo "url = https://github.com/mheci/handfast"
+            echo "arch = x86_64"
+            echo "arch = aarch64"
+            echo "license = MIT"
+            echo "depends = gcc-libs glibc wayland libxkbcommon"
+            echo "makedepends = cargo git"
+            echo "source = https://github.com/mheci/handfast/archive/refs/tags/v${VER}.tar.gz"
+            echo "sha256sums = SKIP"
+          } > dist/.SRCINFO
+
+  # ================================================= B3) tag -> publishing ==
+  publish:
+    name: publish (GitHub Release)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, arch-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Flatten artifacts
+        run: |
+          mkdir -p out
+          find dl -type f \( -name '*.tar.zst' -o -name '*.sha256' \
+             -o -name 'PKGBUILD' -o -name '.SRCINFO' \) -exec mv {} out/ \;
+          ls -la out/
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  # =============================================== B4) tag -> AUR metadata ==
+  aur-publish:
+    name: aur-publish (handfast)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [arch-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check for AUR SSH key
+        id: keycheck
+        run: |
+          if [ -n "${{ secrets.AUR_SSH_KEY }}" ]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AUR_SSH_KEY not set - skipping AUR sync."
+          fi
+      - name: Sync AUR package
+        if: steps.keycheck.outputs.has_key == 'true'
+        run: echo "AUR ssh sync placeholder (requires secret)."

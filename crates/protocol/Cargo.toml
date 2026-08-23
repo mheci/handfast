@@ -1,0 +1,32 @@
+[package]
+name = "handfast-protocol"
+description = "Handfast wire protocol: KDE Connect-compatible packets, identity model, TLS certificate handling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+rcgen = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "proto_bench"
+harness = false

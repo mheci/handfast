@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Handfast
+GenericName=Device Connectivity
+Comment=Pair your phone with your Wayland desktop
+Exec=handfast-gui
+TryExec=handfast-gui
+Icon=handfast
+Terminal=false
+Categories=Network;Utility;
+Keywords=phone;kdeconnect;pair;transfer;
+StartupWMClass=handfast-gui
+SingleMainWindow=true
+X-GNOME-UsesNotifications=true

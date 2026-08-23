@@ -1,0 +1,21 @@
+[package]
+name = "handfast-gui"
+description = "Handfast Iced GUI (Wayland-native)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "handfast-gui"
+path = "src/main.rs"
+
+[dependencies]
+handfast-ipc = { path = "../ipc" }
+iced = { version = "0.14" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
