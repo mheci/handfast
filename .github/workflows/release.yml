@@ -108,7 +108,7 @@ jobs:
           set -euo pipefail
           VER="${GITHUB_REF_NAME#v}"
           mkdir src
-          tar --use-compress-program=unzstd -xf artifact/handfast-${VER}-x86_64-unknown-linux-gnu.tar.zst -C src
+          tar --zstd -xf artifact/handfast-${VER}-x86_64-unknown-linux-gnu.tar.zst -C src
           mv src/handfast-${VER}-x86_64-unknown-linux-gnu src/pkg
       - name: Assemble Arch package
         run: |
