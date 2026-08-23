@@ -27,6 +27,7 @@ mod view;
 use std::process::ExitCode;
 
 use clap::Parser as _;
+use handfast_ipc::Request;
 
 use crate::cli::{Cli, Command};
 
@@ -123,7 +124,7 @@ async fn run() -> anyhow::Result<ExitCode> {
         }
         Command::Volume { action } => {
             let req = match action {
-                Some(cli::VolumeAction::Set(v)) => Request::SetVolume { percent: v },
+                Some(cli::VolumeAction::Set { percent }) => Request::SetVolume { percent },
                 _ => Request::GetVolume,
             };
             let resp = client.request(req).await?;

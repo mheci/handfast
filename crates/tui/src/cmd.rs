@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use handfast_ipc::{Client, Request, ServerEvent};
+use handfast_ipc::{Client, Request, Response, ServerEvent};
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 
