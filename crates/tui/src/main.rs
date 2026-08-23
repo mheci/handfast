@@ -111,6 +111,62 @@ async fn run() -> anyhow::Result<ExitCode> {
         Command::Logs { number } => cmd::print_logs(&mut client, number).await?,
         // Already handled above, before opening a connection.
         Command::Completions { .. } => {}
+        Command::Transfers => {
+            let resp = client.request(Request::TransferList).await?;
+            cmd::print_transfers(&resp)?;
+        }
+        Command::TransferCancel { transfer_id } => {
+            let resp = client
+                .request(Request::TransferCancel { transfer_id })
+                .await?;
+            println!("{resp:?}");
+        }
+        Command::Volume { action } => {
+            let req = match action {
+                Some(cli::VolumeAction::Set(v)) => Request::SetVolume { percent: v },
+                _ => Request::GetVolume,
+            };
+            let resp = client.request(req).await?;
+            println!("{resp:?}");
+        }
+        Command::Sms {
+            device_id,
+            number,
+            text,
+        } => {
+            let resp = client
+                .request(Request::SendSms {
+                    device_id,
+                    number,
+                    text,
+                })
+                .await?;
+            println!("{resp:?}");
+        }
+        Command::Battery { device_id } => {
+            let resp = client
+                .request(Request::RequestBattery { device_id })
+                .await?;
+            println!("{resp:?}");
+        }
+        Command::RunCommand { action } => match action {
+            cli::RunCommandAction::List { device_id } => {
+                let resp = client
+                    .request(Request::RunCommandList { device_id })
+                    .await?;
+                println!("{resp:?}");
+            }
+        },
+        Command::ShareText { device_id, text } => {
+            let resp = client
+                .request(Request::ShareText { device_id, text })
+                .await?;
+            println!("{resp:?}");
+        }
+        Command::ShareUrl { device_id, url } => {
+            let resp = client.request(Request::ShareUrl { device_id, url }).await?;
+            println!("{resp:?}");
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

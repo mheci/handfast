@@ -266,7 +266,7 @@ mod imp {
             // runtime the portal reaps the session once our bus connection
             // disappears anyway.
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                let _ = runtime.spawn(async move {
+                runtime.spawn(async move {
                     if let Err(e) = session.close().await {
                         tracing::debug!(error = %e, "remote-desktop session close failed");
                     }

@@ -384,3 +384,25 @@ pub(crate) fn print_table(headers: &[&str], rows: &[Vec<String>]) -> Result<()> 
     }
     Ok(())
 }
+
+/// Pretty-print a transfer list response.
+pub(crate) fn print_transfers(resp: &Response) {
+    match resp {
+        handfast_ipc::Response::Ok { result } => {
+            if let Some(items) = result.as_array() {
+                if items.is_empty() {
+                    println!("no active transfers");
+                    return;
+                }
+                for t in items {
+                    let id = t.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let name = t.get("file_name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let done = t.get("done").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let total = t.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                    println!("{id}  {name}  {done}/{total}");
+                }
+            }
+        }
+        other => println!("{other:?}"),
+    }
+}
