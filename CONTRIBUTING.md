@@ -26,7 +26,7 @@ cargo xtask dist        # completions + man pages smoke check
 
 CI runs exactly this plus `cargo audit`, `cargo deny`, a release build,
 `makepkg` validation in an Arch container, fuzz smoke tests, and a headless
-sway Wayland smoke test.
+weston Wayland smoke test.
 
 ## Crate boundaries
 

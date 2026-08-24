@@ -48,10 +48,13 @@ impl Server {
     /// Bind a Unix domain socket at `path`, removing any stale socket file
     /// left behind by a previous daemon and restricting permissions to owner
     /// only (`0600`).
-    ///
-    /// Parent directories must already exist.
     #[cfg(unix)]
     pub async fn bind(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+        }
         match tokio::fs::remove_file(path).await {
             Ok(()) => {
                 tracing::debug!(

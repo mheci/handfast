@@ -1,8 +1,22 @@
 version: 2
 updates:
-  # Rust workspace dependencies (all crates live under the workspace root).
+  # Root workspace (handfast workspace crates).
   - package-ecosystem: cargo
     directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Fuzz harness (detached workspace at fuzz/).
+  - package-ecosystem: cargo
+    directory: "/fuzz"
     schedule:
       interval: weekly
       day: monday

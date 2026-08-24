@@ -116,7 +116,10 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           PKGREL=1
           ARCH=x86_64
-          ROOT=$(find src -maxdepth 1 -type d -name 'handfast-*' | head -1)
+          # The tarball extracts to a single handfast-<ver> directory, renamed
+          # to src/pkg during extraction prep; reference it directly instead of
+          # re-globbing (the rename removes every other candidate).
+          ROOT=src/pkg
           mkdir -p pkgdir/usr/{bin,lib/systemd/user,share/{applications,icons/hicolor/scalable/apps,licenses/handfast,bash-completion/completions,zsh/site-functions,fish/vendor_completions.d,man/man1}}
           install -Dm755 "${ROOT}"/handfastd "${ROOT}"/hfctl "${ROOT}"/handfast-gui -t pkgdir/usr/bin/
           install -Dm644 packaging/systemd/handfast.service pkgdir/usr/lib/systemd/user/handfast.service
@@ -128,7 +131,9 @@ jobs:
           ./src/pkg/hfctl completions fish  > pkgdir/usr/share/fish/vendor_completions.d/hfctl.fish
           SIZE=$(du -sb pkgdir | cut -f1)
           NOW=$(date -u +%s)
-          cat > .PKGINFO <<EOF
+          # .PKGINFO lives beside the payload inside pkgdir so the package
+          # tarball can be assembled from a single directory.
+          cat > pkgdir/.PKGINFO <<EOF
           pkgname = handfast
           pkgver = ${VER}-${PKGREL}
           pkgdesc = Wayland-first KDE Connect-compatible device pairing daemon
@@ -144,33 +149,20 @@ jobs:
           depend = libxkbcommon
           optdepend = xdg-desktop-portal: portal-mediated input/clipboard fallback
           EOF
-          # payload tree (everything except metadata files)
-          mkdir -p stage_pkg
-          cp -a pkgdir/. stage_pkg/
-          tar --sort=name --mtime="@${NOW}" --owner=root --group=root --numeric-owner \
-              -cf pkg-payload.tar -C stage_pkg usr
-          gzip -n -c pkg-payload.tar > payload.tgz
+          # .MTREE describes the metadata file itself plus every payload file.
           {
-            echo ".PKGINFO time=${NOW}.0 type=file size=$(stat -c%s .PKGINFO) sha256digest=$(sha256sum .PKGINFO | cut -d' ' -f1)"
+            echo ".PKGINFO time=${NOW}.0 type=file size=$(stat -c%s pkgdir/.PKGINFO) sha256digest=$(sha256sum pkgdir/.PKGINFO | cut -d' ' -f1)"
           } > .MTREE.raw
-          ( cd stage_pkg && find usr -type f -printf '%p\n' | sort ) | while read -r f; do
-            echo "$f time=${NOW}.0 type=file size=$(stat -c%s "stage_pkg/$f") sha256digest=$(sha256sum "stage_pkg/$f" | cut -d' ' -f1)"
+          ( cd pkgdir && find usr -type f -printf '%p\n' | sort ) | while read -r f; do
+            echo "$f time=${NOW}.0 type=file size=$(stat -c%s "pkgdir/$f") sha256digest=$(sha256sum "pkgdir/$f" | cut -d' ' -f1)"
           done >> .MTREE.raw
-          gzip -n -c .MTREE.raw > .MTREE
-          rm -rf stage_pkg pkg-payload.tar payload.tgz .MTREE.raw
-          OUT="dist/handfast-${VER}-${PKGREL}-${ARCH}.pkg.tar.zst"
+          gzip -n -c .MTREE.raw > pkgdir/.MTREE
+          rm .MTREE.raw
           mkdir -p dist
-          tar --zstd -cf "$OUT" .PKGINFO .MTREE usr
+          OUT="dist/handfast-${VER}-${PKGREL}-${ARCH}.pkg.tar.zst"
+          tar --zstd --sort=name --mtime="@${NOW}" --owner=root --group=root --numeric-owner \
+              -cf "$OUT" -C pkgdir .PKGINFO .MTREE usr
           sha256sum "$OUT" > "${OUT}.sha256"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: arch-package
-          path: |
-            dist/*.pkg.tar.zst
-            dist/*.pkg.tar.zst.sha256
-            dist/PKGBUILD
-            dist/.SRCINFO
-          if-no-files-found: error
       - name: Generate PKGBUILD + .SRCINFO for AUR users
         run: |
           set -euo pipefail
@@ -190,6 +182,15 @@ jobs:
             echo "source = https://github.com/mheci/handfast/archive/refs/tags/v${VER}.tar.gz"
             echo "sha256sums = SKIP"
           } > dist/.SRCINFO
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: |
+            dist/*.pkg.tar.zst
+            dist/*.pkg.tar.zst.sha256
+            dist/PKGBUILD
+            dist/.SRCINFO
+          if-no-files-found: error
 
   # ================================================= B3) tag -> publishing ==
   publish:

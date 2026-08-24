@@ -14,7 +14,7 @@ path = "src/main.rs"
 [features]
 default = []
 # Allocators: jemalloc (linux-gnu) and mimalloc are opt-in; default = system.
-jemalloc = []
+jemalloc = ["dep:tikv-jemallocator"]
 # Opt-in portable allocator; when neither feature is set the standard system
 # allocator is used (preferred for distro packaging).
 mimalloc = ["dep:mimalloc"]

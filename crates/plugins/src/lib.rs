@@ -100,7 +100,7 @@ pub fn registry() -> Vec<Box<dyn PluginFactory>> {
         Box::new(find_my_phone::FindMyPhoneFactory),
         Box::new(stubs::MousepadFactory),
         Box::new(mpris::MprisFactory),
-        Box::new(stubs::NotificationsFactory),
+        Box::new(notifications::NotificationsFactory),
         Box::new(pause_music::PauseMusicFactory),
         Box::new(ping::PingFactory),
         Box::new(run_commands::RunCommandsFactory),

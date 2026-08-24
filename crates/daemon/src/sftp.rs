@@ -118,7 +118,12 @@ impl SftpManager {
             ),
         }
 
-        let mut child = command.spawn()?;
+        let mut child = command.spawn().map_err(|err| {
+            Error::Other(format!(
+                "sftp server '{}' failed to spawn: {err}",
+                binary.display()
+            ))
+        })?;
         // Catch "spawned but instantly dead" (bad interpreter, exec format,
         // permissions) now, while we can still blame the binary by name.
         match child.try_wait() {
@@ -235,6 +240,7 @@ fn home_dir() -> Option<OsString> {
 
 /// Sanity-check helper used by tests to build an executable stub.
 #[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
 fn write_executable(path: &std::path::Path, contents: &str) {
     use std::fs;
     use std::io::Write;
@@ -247,6 +253,7 @@ fn write_executable(path: &std::path::Path, contents: &str) {
 }
 
 #[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::fs;
@@ -305,7 +312,7 @@ mod tests {
         write_executable(&mock, "#!/bin/sh\nexec sleep 60\n");
         env::set_var(SFTP_SERVER_OVERRIDE_ENV, &mock);
 
-        let outcome = current_thread_runtime().block_on(async {
+        current_thread_runtime().block_on(async {
             let mut manager = SftpManager::new();
             assert!(!manager.is_active("phone-a"));
 
@@ -335,6 +342,5 @@ mod tests {
 
         env::remove_var(SFTP_SERVER_OVERRIDE_ENV);
         let _ignored = fs::remove_dir_all(&fixture);
-        outcome
     }
 }

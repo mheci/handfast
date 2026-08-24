@@ -60,7 +60,7 @@ jobs:
   # Split so the GUI's heavy wgpu/iced dependency tree cannot starve the rest:
   # parallel jobs, isolated caches, independent timeouts.
   test-core:
-    name: test (workspace minus gui)
+    name: test (workspace minus gui/ipc; ipc runs serially below)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -88,6 +88,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # gui -> ipc -> core -> rusqlite links the system SQLite; wayland/xkbcommon
+      # are needed by handfast-wayland in the dependency graph.
+      - name: Install system deps (wayland / xkbcommon / sqlite)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev
       - name: Run tests
         run: cargo test -p handfast-gui --all-features -- --nocapture
 
@@ -214,8 +220,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      # cargo-fuzz builds against musl by default; the target std must exist.
-      - run: rustup target add x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system deps (wayland / xkbcommon)
@@ -290,5 +294,5 @@ jobs:
             cat /tmp/weston.log >&2 || true
             exit 1
           fi
-          cargo test -p handfast-wayland --lib detect_session -- --exact --nocapture
+          cargo test -p handfast-wayland --lib detect -- --nocapture
           cargo run --bin handfastd -- --version

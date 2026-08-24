@@ -1143,6 +1143,8 @@ mod tests {
         for i in 0..(NOTIFICATION_CAP + 1) {
             state.apply_event(&notif(&format!("n{i}")));
         }
+        state.handle_key(key(KeyCode::Tab));
+        state.handle_key(key(KeyCode::Tab));
         state.handle_key(key(KeyCode::End));
         let first_visible = state.selected_notification_id().map(str::to_owned);
         let _ = state.handle_key(key(KeyCode::Char('r')));

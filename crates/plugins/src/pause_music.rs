@@ -222,17 +222,12 @@ mod tests {
     #[test]
     fn resume_replays_only_previously_paused_and_clears_set() {
         let mut plugin = PauseMusicPlugin::new();
-        plugin.handle(&Packet::new(
-            TYPE_MPRIS,
-            player_list(&["spotify", "vlc", "mpv"]),
-        ));
-
         // Only spotify was known when the call started.
         plugin.handle(&Packet::new(TYPE_MPRIS, player_list(&["spotify"])));
         assert_eq!(plugin.pause_all().len(), 1);
 
-        // mpv shows up mid-call; a resume must not resurrect it.
-        plugin.handle(&Packet::new(TYPE_MPRIS, player_list(&["mpv"])));
+        // mpv/vlc show up mid-call; a resume must not resurrect them.
+        plugin.handle(&Packet::new(TYPE_MPRIS, player_list(&["mpv", "vlc"])));
         let resumed = plugin.resume_all();
         assert_eq!(resumed.len(), 1);
         assert_eq!(resumed[0].ty(), TYPE_MPRIS_REQUEST);

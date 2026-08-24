@@ -265,10 +265,10 @@ async fn run_upower_battery(bus: &Bus) -> Result<()> {
         }
     };
 
-    let mut percentage_changes = proxy
+    let percentage_changes = proxy
         .receive_property_changed::<f64>(PERCENTAGE_PROPERTY)
         .await;
-    let mut state_changes = proxy.receive_property_changed::<u32>(STATE_PROPERTY).await;
+    let state_changes = proxy.receive_property_changed::<u32>(STATE_PROPERTY).await;
     tokio::pin!(percentage_changes, state_changes);
 
     loop {

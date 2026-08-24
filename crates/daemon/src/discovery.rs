@@ -15,7 +15,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use handfast_core::error::Result;
-use handfast_protocol::{Identity, UDP_BROADCAST_PORT};
+use handfast_protocol::{Identity, Packet, TYPE_IDENTITY, UDP_BROADCAST_PORT};
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
@@ -45,8 +45,12 @@ pub async fn bind() -> Result<UdpSocket> {
 }
 
 /// Send one identity announcement to the IPv4 limited broadcast address.
+///
+/// Wraps the identity in a `kdeconnect.identity` packet envelope so peers
+/// (including the Android KDE Connect app) can parse it as a standard packet.
 pub async fn announce(socket: &UdpSocket, identity: &Identity) -> Result<()> {
-    let payload = serde_json::to_vec(identity)
+    let packet = Packet::identity(identity.clone());
+    let payload = serde_json::to_vec(&packet)
         .map_err(|err| handfast_core::error::Error::Other(err.to_string()))?;
     let target = SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), UDP_BROADCAST_PORT);
     // Broadcast sends can fail with EACCES/ECONNRESET on odd interfaces; a
@@ -104,9 +108,21 @@ async fn recv_one(socket: &UdpSocket, self_device_id: &str) -> Option<PeerAnnoun
             debug!(%source, "dropping non-utf8 datagram");
             continue;
         };
-        let parsed = match serde_json::from_str::<Identity>(text) {
-            Ok(parsed) => parsed,
-            Err(_) => {
+        let parsed = {
+            // Primary: KDE Connect packet envelope {id,type,body}.
+            // Fallback: bare Identity (older Handfast instances) for rollout compat.
+            let packet = serde_json::from_str::<Packet>(text).ok();
+            if let Some(packet) = packet.filter(|p| p.ptype == TYPE_IDENTITY) {
+                match serde_json::from_value::<Identity>(packet.body) {
+                    Ok(identity) => identity,
+                    Err(_) => {
+                        debug!(%source, "dropping identity packet with malformed body");
+                        continue;
+                    }
+                }
+            } else if let Ok(identity) = serde_json::from_str::<Identity>(text) {
+                identity
+            } else {
                 debug!(%source, "dropping malformed identity datagram");
                 continue;
             }
