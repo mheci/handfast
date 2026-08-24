@@ -59,17 +59,17 @@ tikv-jemallocator = "0.6"
 mimalloc = "0.1"
 
 # Persistence
-rusqlite = { version = "0.37" } # system sqlite; distro-native linking
+rusqlite = { version = "0.40" } # system sqlite; distro-native linking
 
 # TLS / certificates
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Testing
 proptest = "1"
-criterion = { version = "0.7", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
 
 [workspace.lints.rust]
