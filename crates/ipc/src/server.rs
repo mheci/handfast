@@ -15,7 +15,7 @@ use futures_util::future::BoxFuture;
 use tokio::sync::broadcast;
 
 #[cfg(unix)]
-use crate::codec::{read_frame, write_frame};
+use crate::codec::{write_frame, FrameReader};
 use crate::error::{Error, Result};
 use crate::proto::{Request, Response, ServerEvent};
 #[cfg(unix)]
@@ -241,10 +241,17 @@ async fn handle_connection(
         return Ok(());
     }
 
-    // Read loop: decode requests, dispatch, queue responses.
+    // Read loop: decode requests, dispatch, queue responses. Stateful
+    // decoder so pipelined requests from a client are queued, not dropped.
+    let mut frames = FrameReader::new();
     let read_result: Result<()> = loop {
-        match read_frame::<_, Request>(&mut read_half).await {
-            Ok(request) => {
+        let decoded = frames.next(&mut read_half).await;
+        match decoded {
+            Ok(payload) => {
+                let request: Request = match serde_json::from_slice(&payload) {
+                    Ok(req) => req,
+                    Err(err) => break Err(err.into()),
+                };
                 tracing::info!(target: "handfast::ipc", method = ?request, "request received");
                 let response = (handler)(request).await;
                 tracing::info!(target: "handfast::ipc", "response queued");
