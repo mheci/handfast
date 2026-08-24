@@ -27,7 +27,7 @@ mod imp {
     use tokio::net::UnixStream;
     use tokio::sync::{mpsc, oneshot};
 
-    use crate::codec::{read_raw_frame, write_frame};
+    use crate::codec::{write_frame, FrameReader};
 
     /// Lock a possibly poisoned mutex, recovering the guard regardless of
     /// poison.
@@ -176,8 +176,11 @@ mod imp {
         dead: Arc<AtomicBool>,
         events_tx: mpsc::UnboundedSender<ServerEvent>,
     ) {
+        // Stateful decoder: the daemon pipelines Hello + responses back-to-back,
+        // so coalesced frames must queue, not drop (see codec::FrameReader).
+        let mut frames = FrameReader::new();
         loop {
-            let payload = match read_raw_frame(&mut read_half).await {
+            let payload = match frames.next(&mut read_half).await {
                 Ok(payload) => payload,
                 Err(err) => {
                     tracing::info!(target: "handfast::ipc", %err, "client reader: frame read ended");
