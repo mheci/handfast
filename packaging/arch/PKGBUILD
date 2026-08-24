@@ -58,6 +58,9 @@ build() {
   # lld + fat-LTO + --gc-sections drops members of native static archives
   # (ring / libsqlite3-sys / allocator sys crates all failed identically):
   # force the classic GNU ld and keep every section during packaging.
+  # Export via RUSTFLAGS so cargo honors it regardless of config-file
+  # discovery; the file is kept as a secondary hint for developers.
+  export RUSTFLAGS="-C link-self-contained=off -C link-arg=-fuse-ld=bfd -C link-arg=-Wl,--no-gc-sections ${RUSTFLAGS:-}"
   mkdir -p .cargo
   cat > .cargo/config.toml <<'EOF'
 [target.x86_64-unknown-linux-gnu]
@@ -89,8 +92,8 @@ EOF
       echo "no native archives found to append" >&2
       return 1
     fi
-    export RUSTFLAGS="${RUSTFLAGS:-} ${extra[*]}"
-    cargo build --release --locked "${_pkgs[@]}"
+    export RUSTFLAGS="${RUSTFLAGS} ${extra[*]}"
+    cargo build --release --locked "${_feats[@]}" "${_pkgs[@]}"
   fi
 }
 
