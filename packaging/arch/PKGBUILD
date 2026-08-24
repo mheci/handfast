@@ -2,7 +2,7 @@
 # Contributor: mheci <274998646+mheci@users.noreply.github.com>
 
 pkgname=handfast
-pkgver=0.1.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Wayland-first KDE Connect-compatible device pairing daemon"
 url=https://github.com/mheci/handfast
@@ -151,7 +151,7 @@ package() {
     install -m644 docs/man/hfctl.1     "$_man/hfctl.1"
   else
     cat > "$_man/handfastd.1" <<'EOF'
-.TH HANDFASTD 1 "2026-08-22" "handfast 0.1.0" "User Commands"
+.TH HANDFASTD 1 "2026-08-22" "handfast 1.0.0" "User Commands"
 .SH NAME
 handfastd \- Handfast device\-pairing daemon (KDE Connect compatible)
 .SH SYNOPSIS
@@ -179,7 +179,7 @@ User configuration (default ~/.config/handfast/config.toml). Device
 certificates and private keys are also stored under this directory with
 mode 0600.
 .TP
-.I $XDG_RUNTIME_DIR/handfast.sock
+.I $XDG_RUNTIME_DIR/handfast/handfast.sock
 Unix domain control socket used by all local clients; created at startup,
 removed at shutdown, permissions 0600.
 .SH SEE ALSO
@@ -187,7 +187,7 @@ removed at shutdown, permissions 0600.
 .BR handfast-gui (1)
 EOF
     cat > "$_man/hfctl.1" <<'EOF'
-.TH HFCTL 1 "2026-08-22" "handfast 0.1.0" "User Commands"
+.TH HFCTL 1 "2026-08-22" "handfast 1.0.0" "User Commands"
 .SH NAME
 hfctl \- control the Handfast daemon from the command line or terminal
 .SH SYNOPSIS
@@ -211,7 +211,7 @@ toggling plugins per device, sending files, reading logs via
 User configuration read and written through the daemon (default
 ~/.config/handfast/config.toml).
 .TP
-.I $XDG_RUNTIME_DIR/handfast.sock
+.I $XDG_RUNTIME_DIR/handfast/handfast.sock
 Unix domain control socket; same uid required.
 .SH SEE ALSO
 .BR handfastd (1),

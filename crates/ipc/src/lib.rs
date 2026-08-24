@@ -46,8 +46,12 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// Default location of the daemon's IPC endpoint.
 ///
-/// * Unix: `$XDG_RUNTIME_DIR/handfast.sock`, else `/tmp/handfast-{uid}.sock`
-///   (Linux; other Unix falls back to `/tmp/handfast.sock`).
+/// * Unix: `$XDG_RUNTIME_DIR/handfast/handfast.sock`, else `/tmp/handfast-{uid}.sock`
+///   (Linux; other Unix falls back to `/tmp/handfast.sock`). The `handfast`
+///   subdir is provisioned by systemd `RuntimeDirectory=handfast` when running
+///   under the packaged `handfast.service` (see `packaging/systemd/handfast.service`);
+///   bare `XDG_RUNTIME_DIR` execution still works because the path is created
+///   on demand by the daemon.
 /// * Windows: `\\.\pipe\handfast` — a documented stub for future named-pipe
 ///   transport support.
 #[must_use]
@@ -55,7 +59,9 @@ pub fn default_socket_path() -> std::path::PathBuf {
     #[cfg(unix)]
     {
         if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty()) {
-            return std::path::PathBuf::from(dir).join(format!("{}.sock", handfast_core::APP_NAME));
+            return std::path::PathBuf::from(dir)
+                .join(handfast_core::APP_NAME)
+                .join(format!("{}.sock", handfast_core::APP_NAME));
         }
         #[cfg(target_os = "linux")]
         {

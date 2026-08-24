@@ -26,8 +26,10 @@ mod dbus;
 mod device;
 mod discovery;
 mod handshake;
+#[allow(dead_code)] // wired in Phase 3 (file transfers)
 mod sftp;
 mod tls;
+#[allow(dead_code)] // wired in Phase 3 (transfer engine)
 mod transfer;
 
 use std::collections::BTreeSet;
@@ -66,7 +68,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[derive(Debug, Parser)]
 #[command(name = "handfastd", version, about = "Handfast device-pairing daemon")]
 struct Args {
-    /// Override the IPC socket path (default: $XDG_RUNTIME_DIR/handfast.sock).
+    /// Override the IPC socket path (default: $XDG_RUNTIME_DIR/handfast/handfast.sock).
     #[arg(long)]
     socket: Option<std::path::PathBuf>,
     /// Override the state directory (default: $XDG_DATA_HOME/handfast).
@@ -196,6 +198,27 @@ async fn run(args: Args) -> anyhow::Result<()> {
                     None => CoreResult::Ok(()),
                 }
             }
+        });
+    }
+
+    // Platform listeners: battery and notification feeds publish into the bus.
+    // Each parks harmlessly when its backing service (sysfs/DBus/UPower) is
+    // absent, per the resilience contract in `dbus.rs`.
+    {
+        let bus_battery = bus.clone();
+        supervisor.spawn("battery-sysfs", move || {
+            let bus = bus_battery.clone();
+            async move { dbus::battery_monitor(bus).await }
+        });
+        let bus_upower = bus.clone();
+        supervisor.spawn("battery-upower", move || {
+            let bus = bus_upower.clone();
+            async move { dbus::upower_battery(bus).await }
+        });
+        let bus_notifs = bus.clone();
+        supervisor.spawn("notifications", move || {
+            let bus = bus_notifs.clone();
+            async move { dbus::notifications_listener(bus).await }
         });
     }
 
@@ -436,14 +459,25 @@ async fn handle_request(
             tracing::debug!(%notification_id, "notification dismiss is a no-op until Phase 3");
             Response::ok_json(serde_json::json!({"dismissed": true}))
         }
-        Request::ClipboardGet => match handfast_wayland::clipboard::Clipboard::get_text() {
-            Ok(text) => Response::ok_json(serde_json::json!({ "text": text })),
-            Err(err) => Response::err(5000, err.to_string()),
-        },
+        Request::ClipboardGet => {
+            let result =
+                tokio::task::spawn_blocking(handfast_wayland::clipboard::Clipboard::get_text).await;
+            match result {
+                Ok(Ok(text)) => Response::ok_json(serde_json::json!({ "text": text })),
+                Ok(Err(err)) => Response::err(5000, err.to_string()),
+                Err(join_err) => Response::err(5000, join_err.to_string()),
+            }
+        }
         Request::ClipboardSet { text } => {
-            match handfast_wayland::clipboard::Clipboard::set_text(&text) {
-                Ok(()) => Response::ok_json(serde_json::json!({"set": true})),
-                Err(err) => Response::err(5000, err.to_string()),
+            let owned = text.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                handfast_wayland::clipboard::Clipboard::set_text(&owned)
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => Response::ok_json(serde_json::json!({"set": true})),
+                Ok(Err(err)) => Response::err(5000, err.to_string()),
+                Err(join_err) => Response::err(5000, join_err.to_string()),
             }
         }
         Request::TransferList => Response::ok_json(serde_json::Value::Array(vec![])),

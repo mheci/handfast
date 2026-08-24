@@ -9,7 +9,7 @@ hands: bound, but separable — pairing is reversible by design.
 
 Construction details (for future edits):
 
-- viewBox `0 0 64 64`, transparent background.
+- viewBox `0 0 512 512`, transparent background.
 - Ring radius 15, stroke width 7, centers at (24,32) and (40,32).
 - The base rings are painted first; two short arc segments then repaint the
   crossings in alternating order (amber over teal on top, teal over amber on
@@ -27,7 +27,9 @@ subtle blend before the weave arcs reassert solid color.
 
 ## Bitmap export targets
 
-Export from the SVG (never redraw by hand) for bitmap contexts:
+Export from the SVG (never redraw by hand) for bitmap contexts when needed;
+the shipped package installs only `handfast.svg` (scalable) — raster exports
+are not committed.
 
 | Size    | File name                        | Context                     |
 |---------|----------------------------------|-----------------------------|

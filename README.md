@@ -9,13 +9,13 @@ Android app — install that on your phone and pair.
 
 ## What you can do
 
-- Get phone notifications on your desktop and dismiss/reply to them
-- Share files, links and text between phone and PC
-- Use your PC keyboard and mouse to control your phone
-- Sync clipboard text both ways
+- Get phone notifications on your desktop and dismiss them (reply UI lands in Phase 3)
 - See your phone's battery level
-- Run quick remote commands (ping today; more landing soon)
 - Browse and control everything from a terminal UI (`hfctl tui`) or a desktop app
+- Run quick remote commands (ping today; more landing soon)
+
+_File sharing, link/text sharing, phone input control, two-way clipboard sync
+and notification replies are under active development and arrive in Phases 3-4._
 
 ## Install
 
@@ -77,7 +77,7 @@ Need help reading logs? Set `RUST_LOG=debug` before starting the daemon.
 
 ## Documentation
 
-testing guide.
+See [`docs/perf.md`](docs/perf.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Contributing
 

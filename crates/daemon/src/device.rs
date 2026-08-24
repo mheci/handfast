@@ -94,10 +94,9 @@ impl DeviceState {
 
     fn send_out(&self, packet: Packet) -> Result<()> {
         match &self.outbound {
-            Some(tx) => {
-                let _dropped = tx.try_send(packet);
-                Ok(())
-            }
+            Some(tx) => tx
+                .try_send(packet)
+                .map_err(|err| Error::Other(err.to_string())),
             None => Err(Error::Other("device not connected".into())),
         }
     }

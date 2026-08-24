@@ -259,6 +259,7 @@ fn sanitize_file_name(raw: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -297,7 +298,8 @@ mod tests {
         assert_eq!(sanitize_file_name("...."), FALLBACK_NAME);
         // Windows-hostile characters are replaced, never dropped silently.
         assert_eq!(sanitize_file_name("a:b*c?.txt"), "a_b_c_.txt");
-        let sanitized = sanitize_file_name("../".repeat(64) + &"x".repeat(MAX_FILE_NAME_LEN * 2));
+        let sanitized =
+            sanitize_file_name(&("../".repeat(64) + &"x".repeat(MAX_FILE_NAME_LEN * 2)));
         assert!(!sanitized.contains('/'));
         assert!(sanitized.chars().count() <= MAX_FILE_NAME_LEN);
     }

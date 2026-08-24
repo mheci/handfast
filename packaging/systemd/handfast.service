@@ -1,6 +1,6 @@
 [Unit]
 Description=Handfast device-pairing daemon
-Documentation=https://github.com/handfast-rs/handfast
+Documentation=https://github.com/mheci/handfast
 After=network-online.target
 Wants=network-online.target
 # PartOf ties the daemon to the graphical session so it stops (and restarts)
@@ -19,7 +19,13 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.local/state/handfast %h/.config/handfast %h/.cache/handfast
+# The daemon persists its SQLite database under $XDG_DATA_HOME (~/.local/share)
+# plus configuration under ~/.config and regenerable caches under ~/.cache;
+# ProtectSystem=strict otherwise renders those paths read-only.
+ReadWritePaths=%h/.local/share/handfast %h/.config/handfast %h/.cache/handfast
+# Provisions $XDG_RUNTIME_DIR/handfast (writable inside the sandbox) for the
+# IPC socket; matches handfast_ipc::default_socket_path.
+RuntimeDirectory=handfast
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]

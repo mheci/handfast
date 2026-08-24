@@ -31,6 +31,7 @@ pub struct Cli {
 
 /// Every hfctl subcommand.
 #[derive(Debug, Subcommand)]
+#[allow(clippy::enum_variant_names)]
 pub enum Command {
     /// Launch the interactive terminal interface (the default).
     Tui,
@@ -115,6 +116,7 @@ pub enum Command {
     },
 
     /// Inspect commands executable on a device.
+    #[command(name = "runcommand")]
     RunCommand {
         /// Run-command sub-action.
         #[command(subcommand)]

@@ -284,7 +284,9 @@ fn perform(
             notification_id: _,
             text: _,
         } => {
-            // Reply is dispatched via the bridge; state already cleared the modal.
+            let _ = outcomes.send(Outcome::Flash(
+                "notification replies arrive in Phase 3".to_string(),
+            ));
         }
     }
 }
