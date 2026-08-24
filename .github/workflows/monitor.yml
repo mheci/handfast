@@ -134,12 +134,27 @@ jobs:
           gh label create ci-failure --color D73A4A \
             --description "CI/Release failure on main" >/dev/null 2>&1 || true
 
+          # Only track failures that are still at HEAD; old reds that have
+          # been superseded by a later green on main are intentionally
+          # ignored to avoid re-creating stale issues after they have been
+          # fixed (e.g. 310ee8a..faded9b fixed by 9c4b98a/37372ba).
+          HEAD_SHA="$(gh api "repos/${GH_REPO}/git/refs/heads/main" --jq .object.sha 2>/dev/null || echo "")"
+          if [ -n "$HEAD_SHA" ]; then
+            echo "HEAD is ${HEAD_SHA:0:7}"
+          fi
+
           gh run list --branch main --limit 20 --status failure \
             --json databaseId,workflowName,headSha,url \
             --jq '.[] | [.databaseId, .workflowName, .headSha, .url] | @tsv' |
           while IFS=$'\t' read -r RID WF SHA URL; do
             if [ "$WF" = "Monitor" ]; then
               continue   # never track ourselves
+            fi
+
+            # Ignore stale failures not at HEAD; they are superseded.
+            if [ -n "$HEAD_SHA" ] && [ "$SHA" != "$HEAD_SHA" ]; then
+              echo "Skipping stale failure ${WF} @ ${SHA:0:7} (HEAD is ${HEAD_SHA:0:7})"
+              continue
             fi
 
             TITLE="[ci-failure] ${WF} @ ${SHA:0:7}"
