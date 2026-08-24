@@ -59,7 +59,7 @@ tikv-jemallocator = "0.6"
 mimalloc = "0.1"
 
 # Persistence
-rusqlite = { version = "0.37" } # system sqlite; distro-native linking
+rusqlite = { version = "0.40" } # system sqlite; distro-native linking
 
 # TLS / certificates
 rcgen = "0.14"
