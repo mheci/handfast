@@ -19,6 +19,24 @@ use handfast_ipc::{Client, Request, Response, Server, ServerEvent};
 
 const SOCK_NAME: &str = "handfast-test.sock";
 
+/// Upper bound for any single socket round-trip in these tests.
+///
+/// Every network await below is wrapped in this so a wedged server task or
+/// connect fails loudly in seconds instead of hanging the CI job until its
+/// hour-long timeout (observed once on hosted runners).
+const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run `fut` under [`STEP_TIMEOUT`], panicking with `label` if it overruns.
+async fn bounded<F, T>(label: &str, fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    match tokio::time::timeout(STEP_TIMEOUT, fut).await {
+        Ok(value) => value,
+        Err(_) => panic!("{label} did not complete within {STEP_TIMEOUT:?}"),
+    }
+}
+
 /// Install a tracing subscriber exactly once so breadcrumbs reach CI logs.
 fn init_logging() {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -60,16 +78,19 @@ async fn ping_roundtrip_over_real_socket() {
     let _events = spawn_server(&dir).await;
     let sock = dir.path().join(SOCK_NAME);
 
-    let client = Client::connect(&sock).await.expect("connect");
-    let response = client.request(Request::Ping).await.expect("ping");
+    let client = bounded("client connect", Client::connect(&sock))
+        .await
+        .expect("connect");
+    let response = bounded("ping roundtrip", client.request(Request::Ping))
+        .await
+        .expect("ping");
     match response {
         Response::Ok { result } => assert_eq!(result["pong"], serde_json::json!(true)),
         other => panic!("expected Ok response, got {other:?}"),
     }
 
     // Unknown methods come back as structured errors.
-    let err = client
-        .request(Request::DaemonInfo)
+    let err = bounded("daemon_info exchange", client.request(Request::DaemonInfo))
         .await
         .expect("daemon_info exchange");
     match err {
@@ -161,9 +182,10 @@ async fn oversized_frame_gets_connection_dropped_and_server_survives() {
         .expect("read_to_end io");
 
     // And the daemon must still serve well-behaved clients afterwards.
-    let client = Client::connect(&sock).await.expect("reconnect");
-    match client
-        .request(Request::Ping)
+    let client = bounded("reconnect after abuse", Client::connect(&sock))
+        .await
+        .expect("reconnect");
+    match bounded("ping after abuse", client.request(Request::Ping))
         .await
         .expect("ping after abuse")
     {
