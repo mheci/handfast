@@ -8,7 +8,9 @@ pkgdesc="Wayland-first KDE Connect-compatible device pairing daemon"
 url=https://github.com/mheci/handfast
 arch=('x86_64' 'aarch64')
 license=('MIT')
-depends=(gcc-libs glibc wayland libxkbcommon)
+# rusqlite links the system sqlite3 shared library (distro-native linking),
+# so sqlite is both a build-time header dependency and a runtime dependency.
+depends=(gcc-libs glibc sqlite wayland libxkbcommon)
 optdepends=('xdg-desktop-portal: portal-mediated input/clipboard fallback')
 makedepends=(cargo git)
 checkdepends=()
