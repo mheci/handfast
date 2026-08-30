@@ -83,6 +83,18 @@ pub enum Command {
         device_id: String,
     },
 
+    /// Answer a pending incoming pairing request from a device.
+    PairAnswer {
+        /// Device identifier that requested pairing.
+        device_id: String,
+        /// Accept the pairing request.
+        #[arg(long, conflicts_with = "reject")]
+        accept: bool,
+        /// Decline the pairing request.
+        #[arg(long, conflicts_with = "accept")]
+        reject: bool,
+    },
+
     /// Inspect or toggle per-device plugins.
     Plugins {
         /// Plugin sub-action.

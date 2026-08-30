@@ -34,6 +34,15 @@ pub enum Event {
         /// New state label.
         state: String,
     },
+    /// A remote device is asking to pair with us and is waiting for an
+    /// explicit user decision (auto-accept is off). Surface this to the user
+    /// and answer through `Request::PairingAnswer`.
+    PairingRequest {
+        /// Device identifier.
+        id: String,
+        /// Human-readable device name.
+        name: String,
+    },
     /// Progress update for an ongoing file transfer.
     TransferProgress {
         /// Transfer identifier.

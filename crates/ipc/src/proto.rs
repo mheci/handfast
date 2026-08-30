@@ -22,6 +22,15 @@ pub enum Request {
         /// Target device identifier.
         device_id: String,
     },
+    /// Answer a pending incoming pairing request (see
+    /// [`ServerEvent::PairingRequest`]): `accept` stores the peer's
+    /// certificate fingerprint and replies `{"pair": true}` on the wire.
+    PairingAnswer {
+        /// Device identifier whose request is being answered.
+        device_id: String,
+        /// `true` to accept, `false` to decline.
+        accept: bool,
+    },
     /// List plugins available for a device together with their enabled state.
     PluginList {
         /// Target device identifier.
@@ -235,6 +244,15 @@ pub enum ServerEvent {
         /// Peer device identifier.
         device_id: String,
     },
+    /// A remote device is asking to pair with us and waits for an explicit
+    /// answer (auto-accept is off). Respond with
+    /// [`Request::PairingAnswer`].
+    PairingRequest {
+        /// Device identifier.
+        device_id: String,
+        /// Human-readable device name.
+        device_name: String,
+    },
     /// An incoming notification arrived on a paired device.
     NotificationReceived {
         /// Notification identifier.
@@ -307,6 +325,10 @@ impl From<handfast_core::bus::Event> for ServerEvent {
             Event::DeviceStateChanged { id, state } => {
                 ServerEvent::DeviceStateChanged { id, state }
             }
+            Event::PairingRequest { id, name } => ServerEvent::PairingRequest {
+                device_id: id,
+                device_name: name,
+            },
             Event::TransferProgress {
                 id,
                 bytes_done,

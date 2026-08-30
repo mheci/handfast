@@ -67,6 +67,19 @@ pub(crate) async fn pair(client: &Client, device_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Answer a pending incoming pairing request.
+pub(crate) async fn pair_answer(client: &Client, device_id: &str, accept: bool) -> Result<()> {
+    expect_ok(
+        client
+            .request(Request::PairingAnswer {
+                device_id: device_id.to_owned(),
+                accept,
+            })
+            .await?,
+    )?;
+    Ok(())
+}
+
 /// Revoke pairing with a device.
 pub(crate) async fn unpair(client: &Client, device_id: &str) -> Result<()> {
     expect_ok(
