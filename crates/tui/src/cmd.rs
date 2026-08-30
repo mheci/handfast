@@ -148,7 +148,7 @@ pub(crate) async fn store_clipboard(client: &Client, text: &str) -> Result<()> {
 ///
 /// Identity fields are probed defensively under several likely keys; anything
 /// the daemon does not report falls back to placeholders instead of failing.
-pub(crate) async fn print_status(client: &mut Client, socket: &Path) -> Result<()> {
+pub(crate) async fn print_status(client: &mut Client, socket: &Path, json: bool) -> Result<()> {
     let mut events = client.take_event_receiver();
 
     let info = expect_ok(client.request(Request::DaemonInfo).await?)?;
@@ -163,6 +163,21 @@ pub(crate) async fn print_status(client: &mut Client, socket: &Path) -> Result<(
     let version = fields
         .and_then(|obj| field_str(obj, &["version"]))
         .unwrap_or("unknown");
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "socket": socket.display().to_string(),
+                "daemon": { "name": name, "version": version },
+                "ping_ms": ping.as_secs_f64() * 1000.0,
+                "info": info,
+            })
+        );
+        return Ok(());
+    }
+
+    let fields = info.as_object();
     let pid_label = fields
         .and_then(|obj| field_u64(obj, &["pid"]))
         .map_or_else(|| "pid unknown".to_owned(), |pid| format!("pid {pid}"));
@@ -190,8 +205,13 @@ fn drain_hello(receiver: Option<&mut UnboundedReceiver<ServerEvent>>) -> Option<
     None
 }
 
-/// `hfctl devices`: id/name/type/paired/state table.
-pub(crate) async fn print_devices(client: &Client) -> Result<()> {
+/// `hfctl devices`: id/name/type/paired/state table (or raw JSON).
+pub(crate) async fn print_devices(client: &Client, json: bool) -> Result<()> {
+    if json {
+        let payload = expect_ok(client.request(Request::DeviceList).await?)?;
+        println!("{payload}");
+        return Ok(());
+    }
     let entries = fetch_devices(client).await?;
     let rows = entries
         .iter()
@@ -252,15 +272,73 @@ pub(crate) async fn print_plugins_action(client: &Client, action: PluginAction) 
     }
 }
 
-/// `hfctl send <DEVICE_ID> <FILE_PATH>`; pretty-prints any transfer payload.
-pub(crate) async fn print_send(client: &Client, device_id: &str, file_path: &Path) -> Result<()> {
-    let payload = send_file(client, device_id, file_path).await?;
+/// `hfctl send <DEVICE_ID|--pick> <PATH...>`; pretty-prints any transfer
+/// payload. With `--pick`, the target device is chosen interactively from the
+/// discovered list (used by file-manager context menus).
+pub(crate) async fn print_send(
+    client: &Client,
+    device_id: Option<&str>,
+    pick: bool,
+    file_paths: &[std::path::PathBuf],
+) -> Result<()> {
+    if file_paths.is_empty() {
+        return Err(Error::msg(
+            "no files to send: pass one or more PATH arguments",
+        ));
+    }
+    let target = match (device_id, pick) {
+        (Some(id), _) => id.to_string(),
+        (None, true) => pick_device(client).await?,
+        (None, false) => {
+            return Err(Error::msg("no target device: pass DEVICE_ID or use --pick"));
+        }
+    };
+
     let mut out = std::io::stdout();
-    match serde_json::to_string_pretty(&payload) {
-        Ok(text) if text != "null" => writeln!(out, "{text}")?,
-        _ => writeln!(out, "transfer queued")?,
+    for path in file_paths {
+        let payload = send_file(client, &target, path).await?;
+        match serde_json::to_string_pretty(&payload) {
+            Ok(text) if text != "null" => writeln!(out, "{text}")?,
+            _ => writeln!(out, "transfer queued")?,
+        }
     }
     Ok(())
+}
+
+/// Interactive device picker: number the discovered devices and read a choice
+/// from stdin (scripting-friendly: skips prompting when only one is online).
+async fn pick_device(client: &Client) -> Result<String> {
+    let entries = fetch_devices(client).await?;
+    if entries.is_empty() {
+        return Err(Error::msg(
+            "no devices discovered — is the daemon running and on the network?",
+        ));
+    }
+    if entries.len() == 1 {
+        let only = &entries[0];
+        tracing::debug!(device = %only.id, "single device; auto-selecting");
+        return Ok(only.id.clone());
+    }
+    eprintln!("select a device:");
+    for (i, entry) in entries.iter().enumerate() {
+        eprintln!(
+            "  {}) {}  ({} — {})",
+            i + 1,
+            entry.name,
+            entry.kind,
+            entry.id
+        );
+    }
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let choice: usize = input
+        .trim()
+        .parse()
+        .map_err(|_| Error::msg("invalid selection (expected a number)"))?;
+    let entry = entries
+        .get(choice.wrapping_sub(1))
+        .ok_or_else(|| Error::msg("selection out of range"))?;
+    Ok(entry.id.clone())
 }
 
 /// Dispatch `hfctl notifications …`.

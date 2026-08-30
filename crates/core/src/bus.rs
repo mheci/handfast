@@ -43,6 +43,38 @@ pub enum Event {
         /// Total transfer size in bytes.
         bytes_total: u64,
     },
+    /// A file transfer was registered (outgoing or incoming).
+    TransferAdded {
+        /// Transfer identifier.
+        id: String,
+        /// Peer device identifier.
+        device_id: String,
+        /// Direction label (`"outgoing"` or `"incoming"`).
+        direction: String,
+        /// Name of the transferred file.
+        file_name: String,
+        /// Total transfer size in bytes.
+        total: u64,
+    },
+    /// A file transfer completed successfully.
+    TransferFinished {
+        /// Transfer identifier.
+        id: String,
+    },
+    /// A file transfer failed or was cancelled.
+    TransferFailed {
+        /// Transfer identifier.
+        id: String,
+        /// Human-readable failure reason.
+        reason: String,
+    },
+    /// An inbound share (file/text/url) landed and is ready for the user.
+    ShareReceived {
+        /// Local path or URL of the received share.
+        path: String,
+        /// Peer device identifier.
+        device_id: String,
+    },
     /// An incoming notification arrived on a paired device.
     NotificationReceived {
         /// Notification identifier.

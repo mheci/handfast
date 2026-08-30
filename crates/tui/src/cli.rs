@@ -24,9 +24,38 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub socket: Option<PathBuf>,
 
+    /// Emit machine-readable JSON instead of tables (status, devices,
+    /// transfers). Global: may appear before or after the subcommand.
+    #[arg(long, global = true)]
+    pub json: bool,
+
     /// Subcommand to run; when omitted the interactive interface starts.
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+/// File-manager integration sub-actions for [`Command::FileManager`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+pub enum FileManagerAction {
+    /// Install context menus for every supported file manager.
+    Install {
+        /// Install system-wide (`/usr/share`) instead of per-user.
+        /// Requires root privileges.
+        #[arg(long)]
+        system: bool,
+    },
+    /// Regenerate per-device entries (e.g. after pairing changed).
+    Update {
+        /// System-wide scope; requires root.
+        #[arg(long)]
+        system: bool,
+    },
+    /// Remove previously installed context menus.
+    Remove {
+        /// System-wide scope; requires root.
+        #[arg(long)]
+        system: bool,
+    },
 }
 
 /// Every hfctl subcommand.
@@ -61,12 +90,29 @@ pub enum Command {
         action: PluginAction,
     },
 
-    /// Send a local file to a device.
+    /// Send local files (or GVFS/KIO URIs) to a device.
+    ///
+    /// Paths come first so `--pick` can consume every positional without
+    /// ambiguity: `hfctl send -d <DEVICE_ID> <PATH…>` or
+    /// `hfctl send --pick <PATH…>`.
     Send {
-        /// Target device identifier.
-        device_id: String,
-        /// Path of the local file to transfer.
-        file_path: PathBuf,
+        /// Local file paths (or `gvfs://`/`smb://`/… URIs) to transfer.
+        #[arg(required = true, value_name = "PATH")]
+        file_paths: Vec<PathBuf>,
+        /// Target device identifier (required unless `--pick` is used).
+        #[arg(short = 'd', long = "device", value_name = "DEVICE_ID")]
+        device_id: Option<String>,
+        /// Choose the target device interactively from the discovered list.
+        #[arg(long, conflicts_with = "device_id")]
+        pick: bool,
+    },
+
+    /// Install, refresh or remove "Send to device" context-menu entries in
+    /// the installed desktop file managers.
+    FileManager {
+        /// File-manager sub-action.
+        #[command(subcommand)]
+        action: FileManagerAction,
     },
 
     /// Inspect or dismiss mirrored notifications.
@@ -321,12 +367,46 @@ mod tests {
     }
 
     #[test]
-    fn send_requires_device_and_path() {
-        assert!(parse(&["send", "only-device"]).is_err());
-        let cli = parse(&["send", "dev", "/tmp/photo.jpg"]).unwrap();
+    fn send_parses_device_or_pick_with_paths() {
+        // Paths are positional; the target is -d/--device or --pick.
+        let cli = parse(&["send", "only-device"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Command::Send { ref device_id, .. }) if device_id == "dev"
+            Some(Command::Send {
+                device_id: None,
+                pick: false,
+                ref file_paths,
+            }) if file_paths.len() == 1 && file_paths[0].to_string_lossy() == "only-device"
+        ));
+
+        let cli = parse(&["send", "-d", "dev", "/tmp/photo.jpg"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Send {
+                ref device_id,
+                ref file_paths,
+                ..
+            }) if device_id.as_deref() == Some("dev") && file_paths.len() == 1
+        ));
+
+        let cli = parse(&["send", "--device", "dev", "/tmp/photo.jpg", "/tmp/note.txt"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Send {
+                ref device_id,
+                ref file_paths,
+                ..
+            }) if device_id.as_deref() == Some("dev") && file_paths.len() == 2
+        ));
+
+        let cli = parse(&["send", "--pick", "/tmp/photo.jpg", "/tmp/note.txt"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Send {
+                pick: true,
+                ref file_paths,
+                ..
+            }) if file_paths.len() == 2
         ));
     }
 

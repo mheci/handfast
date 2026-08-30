@@ -5,7 +5,7 @@
 //! 1716. A listener that receives such a datagram learns:
 //!
 //! * the sender's IP (from the datagram source),
-//! * the TCP port of its TLS server (`tcpSourcePort`),
+//! * the TCP port of its control listener (`tcpPort`),
 //! * its capabilities.
 //!
 //! and may then open an outgoing TLS connection. This module only transports
@@ -29,7 +29,7 @@ const MAX_DATAGRAM: usize = 4096;
 pub struct PeerAnnouncement {
     /// Source IP of the announcing peer.
     pub ip: IpAddr,
-    /// Identity carried by the datagram (includes `tcpSourcePort`).
+    /// Identity carried by the datagram (includes `tcpPort`).
     pub identity: Identity,
 }
 
@@ -131,7 +131,7 @@ async fn recv_one(socket: &UdpSocket, self_device_id: &str) -> Option<PeerAnnoun
             continue;
         }
         if parsed.tcp_source_port == 0 {
-            debug!(device = %parsed.device_id, "announcement lacks tcpSourcePort");
+            debug!(device = %parsed.device_id, "announcement lacks tcpPort");
             continue;
         }
         return Some(PeerAnnouncement {
