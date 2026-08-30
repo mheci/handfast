@@ -382,3 +382,6 @@ jobs:
 
       - name: Build + run Android interop smoke (dial-out + pairing answer)
         run: bash tools/interop/run_dialout.sh
+
+      - name: Build + run two-daemon full-mesh E2E
+        run: bash tools/interop/run_mesh.sh

@@ -75,8 +75,14 @@ fn install(system: bool) -> Result<()> {
     write_file_if_changed(&dolphin_path, &dolphin_servicemenu(&[]))?;
     installed.push(format!("dolphin: {}", dolphin_path.display()));
 
-    thunar_merge(system, false)?;
-    installed.push(format!("thunar: {}", thunar_path(system).display()));
+    if system {
+        println!(
+            "  thunar: skipped (Thunar reads only ~/.config/Thunar/uca.xml; run without --system)"
+        );
+    } else {
+        thunar_merge(false, false)?;
+        installed.push(format!("thunar: {}", thunar_path(false).display()));
+    }
 
     let pcmanfm_dir = pcmanfm_dir(system);
     std::fs::create_dir_all(&pcmanfm_dir)?;
@@ -112,7 +118,13 @@ async fn update(client: &handfast_ipc::Client, system: bool) -> Result<()> {
         .into_iter()
         .flatten()
         .filter_map(|row| {
-            let id = row.get("id")?.as_str()?.to_string();
+            // The daemon snapshot keys the device by `device_id`; accept the
+            // legacy `id` spelling defensively.
+            let id = row
+                .get("device_id")
+                .or_else(|| row.get("id"))?
+                .as_str()?
+                .to_string();
             let name = row
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -150,7 +162,9 @@ fn remove(system: bool) -> Result<()> {
     }
     let _ = std::fs::remove_file(dolphin_dir(system).join("handfast-send.desktop"));
     let _ = std::fs::remove_file(pcmanfm_dir(system).join("handfast-send.desktop"));
-    thunar_merge(system, true)?;
+    if !system {
+        thunar_merge(false, true)?;
+    }
     println!("removed Handfast file-manager menus");
     Ok(())
 }
@@ -200,7 +214,20 @@ fn home() -> PathBuf {
 // ---- templates ------------------------------------------------------------
 
 /// One shared Python extension for Nautilus/Nemo/Caja (`module` differs).
+/// One shared Python extension for Nautilus/Nemo/Caja (`module` differs).
+///
+/// Signatures verified against the current upstream docs:
+/// - nautilus-python ≥ 4.0 (Nautilus ≥ 43.beta) dropped the `window`
+///   parameter: `get_file_items(self, files)`, `get_background_items(self,
+///   current_folder)` (GNOME nautilus-python "A Simple Extension").
+/// - nemo-python and python-caja still pass the window:
+///   `get_file_items(self, window, files)` (Nemo 3.0 MenuProvider /
+///   python-caja examples).
 fn python_extension(module: &str) -> String {
+    let (file_items_sig, background_items_sig) = match module {
+        "Nautilus" => ("self, files", "self, current_folder"),
+        _ => ("self, window, files", "self, window, current_folder"),
+    };
     let bin = hfctl_bin().display().to_string();
     format!(
         r#"#!/usr/bin/env python3
@@ -276,11 +303,11 @@ class HandfastSendExtension(GObject.GObject, {module}.MenuProvider):
         top.set_submenu(submenu)
         return [top]
 
-    def get_file_items(self, window, files):
+    def get_file_items({file_items_sig}):
         paths = _paths(files)
         return self._build(paths) if paths else []
 
-    def get_background_items(self, window, file):
+    def get_background_items({background_items_sig}):
         return []
 "#
     )
@@ -342,6 +369,12 @@ fn thunar_merge(system: bool, remove: bool) -> Result<()> {
     }
 
     let bin = hfctl_bin().display().to_string();
+    // Modern Thunar (docs.xfce.org "Custom Actions"): the action matches by
+    // `<patterns>` (glob), not the legacy `<match>`/`<extensions>` fields,
+    // and the type toggles are the empty `<directories/>`, `<audio-files/>`,
+    // `<image-files/>`, `<text-files/>`, `<video-files/>`, `<other-files/>`
+    // elements. `<unique-id>` is how Thunar identifies actions (used by our
+    // removal path).
     let block = format!(
         r#"  <action>
     <icon>document-send</icon>
@@ -350,14 +383,13 @@ fn thunar_merge(system: bool, remove: bool) -> Result<()> {
     <unique-id>{MARKER}</unique-id>
     <command>{bin} send --pick %F</command>
     <description>Send the selected files to a paired device</description>
-    <range></range>
-    <match>*</match>
-    <extensions>*</extensions>
+    <patterns>*</patterns>
     <directories/>
     <audio-files/>
     <image-files/>
     <text-files/>
     <video-files/>
+    <other-files/>
   </action>
 "#
     );
@@ -413,4 +445,140 @@ fn write_file_if_changed(path: &Path, content: &str) -> Result<()> {
     }
     std::fs::write(path, content)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn nautilus_uses_the_modern_signatures() {
+        let py = python_extension("Nautilus");
+        assert!(py.contains("from gi.repository import Nautilus"));
+        // nautilus-python >= 4.0 (Nautilus >= 43.beta) dropped `window`.
+        assert!(py.contains("def get_file_items(self, files):"));
+        assert!(py.contains("def get_background_items(self, current_folder):"));
+        assert!(!py.contains("def get_file_items(self, window, files):"));
+    }
+
+    #[test]
+    fn nemo_and_caja_keep_the_window_parameter() {
+        for module in ["Nemo", "Caja"] {
+            let py = python_extension(module);
+            assert!(py.contains(&format!("from gi.repository import {module}")));
+            assert!(py.contains("def get_file_items(self, window, files):"));
+            assert!(py.contains("def get_background_items(self, window, current_folder):"));
+        }
+    }
+
+    #[test]
+    fn dolphin_servicemenu_matches_the_kde_docs() {
+        let bin = hfctl_bin().display().to_string();
+        let menu = dolphin_servicemenu(&[("abc-123".into(), "Pixel".into())]);
+        assert!(menu.contains("Type=Service"));
+        assert!(menu.contains("ServiceTypes=KonqPopupMenu/Plugin"));
+        assert!(menu.contains("MimeType=all/all;"));
+        assert!(menu.contains("X-KDE-Priority=TopLevel"));
+        assert!(menu.contains("Actions=send_to_abc-123;send_pick;"));
+        assert!(menu.contains(&format!(
+            "[Desktop Action send_to_abc-123]\nName=Send to Pixel\nIcon=document-send\nExec={bin} send -d abc-123 %F"
+        )));
+        assert!(menu.contains(&format!(
+            "[Desktop Action send_pick]\nName=Send via Handfast…\nIcon=document-send\nExec={bin} send --pick %F"
+        )));
+    }
+
+    #[test]
+    fn pcmanfm_action_matches_des_ema() {
+        let action = pcmanfm_action();
+        assert!(action.contains("Type=Action"));
+        assert!(action.contains("Profiles=profile-zero;"));
+        assert!(action.contains("[X-Action-Profile profile-zero]"));
+        assert!(action.contains("MimeTypes=all/all;"));
+        assert!(action.contains(&format!("Exec={} send --pick %F", hfctl_bin().display())));
+    }
+
+    #[test]
+    fn thunar_action_uses_the_modern_patterns_schema() {
+        let bin = hfctl_bin().display().to_string();
+        let block = format!(
+            r#"  <action>
+    <icon>document-send</icon>
+    <name>Send via Handfast…</name>
+    <submenu></submenu>
+    <unique-id>{MARKER}</unique-id>
+    <command>{bin} send --pick %F</command>
+    <description>Send the selected files to a paired device</description>
+    <patterns>*</patterns>
+    <directories/>
+    <audio-files/>
+    <image-files/>
+    <text-files/>
+    <video-files/>
+    <other-files/>
+  </action>
+"#
+        );
+        assert!(block.contains("<patterns>*</patterns>"));
+        assert!(block.contains(&format!("<unique-id>{MARKER}</unique-id>")));
+        assert!(!block.contains("<match>") && !block.contains("<extensions>"));
+    }
+
+    #[test]
+    fn strip_action_block_removes_only_our_action() {
+        let foreign = r#"  <action>
+    <unique-id>user-1</unique-id>
+    <name>User action</name>
+  </action>
+"#;
+        let ours = format!(
+            r#"  <action>
+    <unique-id>{MARKER}</unique-id>
+    <name>Send via Handfast…</name>
+  </action>
+"#
+        );
+        let xml = format!("<actions>\n{foreign}{ours}</actions>\n");
+        let stripped = strip_action_block(&xml);
+        assert!(stripped.contains("user-1"));
+        assert!(!stripped.contains(MARKER));
+        assert!(stripped.starts_with("<actions>\n"));
+        assert!(stripped.ends_with("</actions>\n"));
+    }
+
+    #[test]
+    fn thunar_merge_is_idempotent_and_removable() {
+        static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = HOME_LOCK.lock().unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "hfctl-fm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HOME", &dir);
+
+        thunar_merge(false, false).unwrap();
+        let path = thunar_path(false);
+        let once = std::fs::read_to_string(&path).unwrap();
+        assert!(once.contains(&format!("<unique-id>{MARKER}</unique-id>")));
+        assert!(once.contains("<patterns>*</patterns>"));
+
+        thunar_merge(false, false).unwrap(); // second install must not duplicate
+        let twice = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(once, twice);
+
+        thunar_merge(false, true).unwrap();
+        let removed = std::fs::read_to_string(&path).unwrap();
+        assert!(!removed.contains(MARKER));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("HOME");
+    }
 }

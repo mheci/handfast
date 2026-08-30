@@ -82,6 +82,15 @@ async fn run() -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // File-manager install/remove are offline operations: they must work
+    // without a running daemon (only `update` needs the device list).
+    if let Command::FileManager { action } = &command {
+        if !matches!(action, crate::cli::FileManagerAction::Update { .. }) {
+            crate::filemanager::run(*action, None).await?;
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+
     let mut client = cmd::connect(&socket).await?;
     match command {
         Command::Tui => {

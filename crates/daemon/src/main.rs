@@ -75,6 +75,11 @@ struct Args {
     /// Override the state directory (default: $XDG_DATA_HOME/handfast).
     #[arg(long)]
     data_dir: Option<std::path::PathBuf>,
+    /// TCP port of the control listener, advertised as `tcpPort` in the
+    /// identity packet. Upstream peers accept 1716..=1764; multiple daemons
+    /// on one host must each pick a distinct port.
+    #[arg(long, default_value_t = DEFAULT_TCP_PORT)]
+    tcp_port: u16,
     /// Display name advertised to peers.
     #[arg(long, default_value = "Handfast Desktop")]
     name: String,
@@ -143,7 +148,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         "session detected"
     );
 
-    let self_identity = build_self_identity(&device_id, &args.name);
+    let self_identity = build_self_identity(&device_id, &args.name, args.tcp_port);
     let bus = Bus::new();
     let supervisor = Supervisor::new(bus.clone());
 
@@ -261,18 +266,19 @@ async fn run(args: Args) -> anyhow::Result<()> {
         });
     }
 
-    // TCP/TLS listener for inbound connections on the well-known port.
+    // TCP/TLS listener for inbound connections on the advertised port.
     {
         let pair = cert.clone();
         let mine = self_identity.clone();
         let tx = manager_handle.command_sender();
+        let port = args.tcp_port;
         supervisor.spawn("tcp-listener", move || {
             let pair = pair.clone();
             let mine = mine.clone();
             let tx = tx.clone();
             async move {
-                let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, DEFAULT_TCP_PORT)).await?;
-                tracing::info!(port = DEFAULT_TCP_PORT, "tcp/tls listening");
+                let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).await?;
+                tracing::info!(port, "tcp/tls listening");
                 loop {
                     let (tcp, peer) = listener.accept().await?;
                     let pair = pair.clone();
@@ -336,7 +342,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
 }
 
 /// Advertised identity: capabilities aggregated from every registered plugin.
-fn build_self_identity(device_id: &str, name: &str) -> Identity {
+fn build_self_identity(device_id: &str, name: &str, tcp_port: u16) -> Identity {
     let mut incoming: BTreeSet<String> = BTreeSet::new();
     let mut outgoing: BTreeSet<String> = BTreeSet::new();
     for factory in handfast_plugins::registry() {
@@ -351,7 +357,7 @@ fn build_self_identity(device_id: &str, name: &str) -> Identity {
         protocol_version: PROTO_VERSION,
         incoming: incoming.into_iter().collect(),
         outgoing: outgoing.into_iter().collect(),
-        tcp_source_port: DEFAULT_TCP_PORT,
+        tcp_source_port: tcp_port,
     }
 }
 
