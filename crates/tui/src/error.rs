@@ -29,6 +29,15 @@ pub enum Error {
     EventStreamUnavailable,
 }
 
+impl Error {
+    /// Build a plain local error (usage/validation problems detected in hfctl
+    /// itself, before anything reaches the daemon).
+    #[must_use]
+    pub fn msg(message: impl Into<String>) -> Self {
+        Self::Io(std::io::Error::other(message.into()))
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,17 +17,25 @@ use handfast_core::bus::{Bus, Event};
 use handfast_core::error::{Error, Result};
 use handfast_core::store::{DeviceRow, Store};
 use handfast_plugins::{Plugin, PluginFactory};
+use handfast_protocol::transfer::{TransferMeta, CHUNK_SIZE, UNKNOWN_SIZE};
 use handfast_protocol::{
-    Identity, Packet, TYPE_CLIPBOARD, TYPE_IDENTITY, TYPE_NOTIFICATION, TYPE_PAIR,
+    Identity, Packet, TYPE_CLIPBOARD, TYPE_IDENTITY, TYPE_NOTIFICATION, TYPE_PAIR, TYPE_SHARE,
 };
-use tokio::sync::{mpsc, oneshot};
+use serde_json::json;
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, info, warn};
 
+use crate::backends::{SaveTarget, SAVE_DIR_KEY};
 use crate::discovery::PeerAnnouncement;
 use crate::tls::Transport;
+use crate::transfer::TransferEngine;
 
 /// How long an IPC caller waits for a remote pairing decision.
 pub const PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a parked *incoming* pairing request stays pending while the user
+/// decides (mirrors the remote's own wait window).
+pub const INCOMING_PAIR_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Messages driving the device manager actor.
 pub enum Command {
@@ -56,6 +66,44 @@ pub enum Command {
     Unpair {
         device_id: String,
         reply: oneshot::Sender<Result<()>>,
+    },
+    /// IPC: answer a pending *incoming* pairing request.
+    PairingAnswer {
+        device_id: String,
+        accept: bool,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// A parked incoming pairing request expired without an answer.
+    PairingTimeout { device_id: String },
+    /// IPC: send a local file (or GVFS/KIO URI) to a device; the reply
+    /// resolves with the transfer id once the transfer is registered.
+    SendFile {
+        device_id: String,
+        path: String,
+        reply: oneshot::Sender<Result<String>>,
+    },
+    /// IPC: list active and finished transfers.
+    ListTransfers {
+        reply: oneshot::Sender<Vec<serde_json::Value>>,
+    },
+    /// IPC: cancel an ongoing transfer (id from [`Command::SendFile`] /
+    /// [`Command::ListTransfers`]).
+    CancelTransfer {
+        transfer_id: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// A share header announcing a payload arrived on the control link; the
+    /// data connection is already established (or the dial failed, in which
+    /// case `payload` is `Err`).
+    SharePayload {
+        device_id: String,
+        header: Box<Packet>,
+        payload: std::result::Result<Transport, String>,
+    },
+    /// A spawned transfer task finished; update the registry and emit events.
+    TransferOutcome {
+        transfer_id: String,
+        result: std::result::Result<(), String>,
     },
 }
 
@@ -163,9 +211,100 @@ impl ManagerHandle {
         }
     }
 
+    /// Answer a pending incoming pairing request. Fails when no request from
+    /// that device is currently awaiting a decision.
+    pub async fn pairing_answer(&self, device_id: String, accept: bool) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::PairingAnswer {
+                device_id,
+                accept,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err(Error::Other("device manager stopped".into()));
+        }
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(Error::Other("pairing-answer channel dropped".into())),
+        }
+    }
+
+    /// Send a local file (or GVFS/KIO URI) to a device; resolves with the
+    /// transfer id once registered (the stream runs in the background).
+    pub async fn send_file(&self, device_id: String, path: String) -> Result<String> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::SendFile {
+                device_id,
+                path,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err(Error::Other("device manager stopped".into()));
+        }
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(Error::Other("send-file channel dropped".into())),
+        }
+    }
+
+    /// Snapshot of the transfer registry.
+    pub async fn transfer_list(&self) -> Vec<serde_json::Value> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::ListTransfers { reply: tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Cancel an ongoing transfer by id.
+    pub async fn transfer_cancel(&self, transfer_id: String) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::CancelTransfer {
+                transfer_id,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err(Error::Other("device manager stopped".into()));
+        }
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(Error::Other("cancel channel dropped".into())),
+        }
+    }
+
     pub(crate) fn command_sender(&self) -> mpsc::Sender<Command> {
         self.tx.clone()
     }
+}
+
+/// Registry entry for one transfer (active, finished or failed).
+#[derive(Debug)]
+struct TransferRecord {
+    device_id: String,
+    direction: String,
+    file_name: String,
+    total: u64,
+    state: String,
+    done: u64,
+    reason: Option<String>,
+    cancel: Arc<AtomicBool>,
 }
 
 /// The device manager actor.
@@ -177,6 +316,18 @@ pub struct Manager {
     self_identity: Identity,
     pair: Arc<handfast_protocol::tls::CertPair>,
     factories: Vec<Box<dyn PluginFactory>>,
+    /// Where received files land (local dir or GVFS/KIO URI).
+    save_target: SaveTarget,
+    /// Receive-side staging engine; shared with spawned transfer tasks.
+    engine: Arc<Mutex<TransferEngine>>,
+    /// Transfer registry (active + terminal), for `hfctl transfers` / IPC.
+    transfers: HashMap<String, TransferRecord>,
+    /// Monotonic transfer-id counter.
+    next_transfer_seq: u64,
+    /// Pending *incoming* pairing requests awaiting a user decision, keyed by
+    /// device id and valued with the deadline (`Instant`) by which they must
+    /// be answered before the request is declined.
+    incoming_pairs: HashMap<String, std::time::Instant>,
     /// Clone of our own command inbox so spawned helper tasks can report back.
     self_tx: mpsc::Sender<Command>,
     rx: mpsc::Receiver<Command>,
@@ -192,6 +343,22 @@ impl Manager {
         pair: Arc<handfast_protocol::tls::CertPair>,
         factories: Vec<Box<dyn PluginFactory>>,
     ) -> (ManagerHandle, Self) {
+        // Resolve the receive destination once: a plain path (or file://) is
+        // used directly by the engine; a GVFS/KIO URI means the engine stages
+        // in a temp dir and we copy the finished file into the URI.
+        let save_raw = store
+            .kv_get(SAVE_DIR_KEY)
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| crate::backends::DEFAULT_SAVE_DIR.to_string());
+        let save_target = crate::backends::resolve_save_dir(&save_raw);
+        let staging_dir = match &save_target {
+            SaveTarget::Local(dir) => dir.clone(),
+            SaveTarget::Uri(_) => std::env::temp_dir().join("handfast-received"),
+        };
+        let engine = Arc::new(Mutex::new(TransferEngine::new(staging_dir)));
+
         let (tx, rx) = mpsc::channel(256);
         (
             ManagerHandle { tx: tx.clone() },
@@ -203,10 +370,53 @@ impl Manager {
                 self_identity,
                 pair,
                 factories,
+                save_target,
+                engine,
+                transfers: HashMap::new(),
+                next_transfer_seq: 0,
+                incoming_pairs: HashMap::new(),
                 self_tx: tx,
                 rx,
             },
         )
+    }
+
+    /// Allocate a fresh transfer id.
+    fn new_transfer_id(&mut self) -> String {
+        self.next_transfer_seq += 1;
+        format!("t{}", self.next_transfer_seq)
+    }
+
+    /// Register a transfer and publish the IPC-visible `TransferAdded` event.
+    fn register_transfer(
+        &mut self,
+        id: String,
+        device_id: String,
+        direction: String,
+        file_name: String,
+        total: u64,
+        cancel: Arc<AtomicBool>,
+    ) {
+        self.transfers.insert(
+            id.clone(),
+            TransferRecord {
+                device_id: device_id.clone(),
+                direction: direction.clone(),
+                file_name: file_name.clone(),
+                total,
+                state: "active".into(),
+                done: 0,
+                reason: None,
+                cancel,
+            },
+        );
+        self.bus.publish(Event::TransferAdded {
+            id,
+            device_id,
+            direction,
+            file_name,
+            total,
+        });
     }
 
     /// Restore persisted trust rows so pinned fingerprints survive restarts.
@@ -256,10 +466,124 @@ impl Manager {
                 Command::Unpair { device_id, reply } => {
                     let _ = reply.send(self.unpair(&device_id).await);
                 }
+                Command::PairingAnswer {
+                    device_id,
+                    accept,
+                    reply,
+                } => {
+                    let result = self.answer_incoming_pairing(&device_id, accept).await;
+                    let _ = reply.send(result);
+                }
+                Command::PairingTimeout { device_id } => {
+                    if self.incoming_pairs.remove(&device_id).is_some() {
+                        debug!(device = %device_id, "incoming pairing request expired");
+                        let response = Packet::new(TYPE_PAIR, serde_json::json!({ "pair": false }));
+                        if let Some(state) = self.devices.get(&device_id) {
+                            let _ = state.send_out(response);
+                        }
+                    }
+                }
+                Command::SendFile {
+                    device_id,
+                    path,
+                    reply,
+                } => {
+                    let result = self.send_file(&device_id, &path).await;
+                    let _ = reply.send(result);
+                }
+                Command::ListTransfers { reply } => {
+                    let _ = reply.send(self.transfer_snapshot());
+                }
+                Command::CancelTransfer { transfer_id, reply } => {
+                    let _ = reply.send(self.cancel_transfer(&transfer_id));
+                }
+                Command::SharePayload {
+                    device_id,
+                    header,
+                    payload,
+                } => {
+                    self.on_share_payload(&device_id, *header, payload);
+                }
+                Command::TransferOutcome {
+                    transfer_id,
+                    result,
+                } => {
+                    self.on_transfer_outcome(&transfer_id, result).await;
+                }
             }
         }
         info!("device manager stopped");
         Ok(())
+    }
+
+    /// IPC-visible transfer registry (active + finished + failed).
+    fn transfer_snapshot(&self) -> Vec<serde_json::Value> {
+        let mut rows: Vec<serde_json::Value> = self
+            .transfers
+            .iter()
+            .map(|(id, record)| {
+                json!({
+                    "id": id,
+                    "device_id": record.device_id,
+                    "direction": record.direction,
+                    "file_name": record.file_name,
+                    "total": record.total,
+                    "state": record.state,
+                    "done": record.done,
+                    "reason": record.reason,
+                })
+            })
+            .collect();
+        rows.sort_by_key(|row| row["id"].as_str().unwrap_or("").to_string());
+        rows
+    }
+
+    /// Cancel an active transfer by flipping its cancel flag.
+    fn cancel_transfer(&mut self, transfer_id: &str) -> Result<()> {
+        let record = self
+            .transfers
+            .get(transfer_id)
+            .ok_or_else(|| Error::Other(format!("unknown transfer '{transfer_id}'")))?;
+        if record.state != "active" {
+            return Err(Error::Other(format!(
+                "transfer '{transfer_id}' is not active"
+            )));
+        }
+        record.cancel.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Terminal-state handler for spawned transfer tasks.
+    async fn on_transfer_outcome(
+        &mut self,
+        transfer_id: &str,
+        result: std::result::Result<(), String>,
+    ) {
+        match result {
+            Ok(()) => {
+                if let Some(record) = self.transfers.get_mut(transfer_id) {
+                    record.state = "finished".into();
+                    record.reason = None;
+                }
+                self.bus.publish(Event::TransferFinished {
+                    id: transfer_id.to_string(),
+                });
+            }
+            Err(reason) => {
+                // Sweep any partial staging file the task may have left.
+                let mut engine = self.engine.lock().await;
+                let _ = engine.abort(transfer_id).await;
+                drop(engine);
+                if let Some(record) = self.transfers.get_mut(transfer_id) {
+                    record.state = "failed".into();
+                    record.reason = Some(reason.clone());
+                }
+                self.bus.publish(Event::TransferFailed {
+                    id: transfer_id.to_string(),
+                    reason,
+                });
+            }
+        }
     }
 
     /// Update the table from an announcement; returns true if a dial attempt
@@ -296,20 +620,24 @@ impl Manager {
         let identity = self.self_identity.clone();
         let tx = self.self_tx.clone();
         // Fire-and-forget dial; success lands back as Command::Connected.
+        // The secure identity returned by the handshake must still match the
+        // announced one, or a spoofed announcement could hijack the link.
         tokio::spawn(async move {
-            match async {
-                let transport = Transport::connect(addr, pair).await?;
-                crate::handshake::complete_outbound(transport, &identity).await
-            }
-            .await
-            {
-                Ok((_, transport)) => {
+            match async { crate::handshake::dial_control(addr, pair, &identity).await }.await {
+                Ok((secure, transport)) if secure.device_id == device_id => {
                     let _ = tx
                         .send(Command::Connected {
-                            device_id,
+                            device_id: secure.device_id,
                             transport,
                         })
                         .await;
+                }
+                Ok((secure, _)) => {
+                    debug!(
+                        announced = %device_id,
+                        secure = %secure.device_id,
+                        "secure identity did not match announcement"
+                    );
                 }
                 Err(err) => debug!(%err, %addr, "outbound dial failed"),
             }
@@ -335,6 +663,8 @@ impl Manager {
 
         let (out_tx, mut out_rx) = mpsc::channel::<Packet>(64);
         let cmd_tx = self.self_tx.clone();
+        let pair = self.pair.clone();
+        let peer_addr = transport.peer_addr();
         let (mut reader, mut writer) = transport.into_parts();
 
         // Writer loop: drain the outbound queue onto the wire.
@@ -348,15 +678,33 @@ impl Manager {
         });
 
         // Reader loop: push every packet to the actor; report closure once.
+        // Share headers announcing a payload get their data connection dialed
+        // here (we have the peer address and certificate pair) so the actor
+        // receives the stream ready to consume.
         let reader_device_id = device_id.clone();
         let closer_device_id = device_id.clone();
         tokio::spawn(async move {
             loop {
                 match Packet::read_from(&mut reader).await {
                     Ok(packet) => {
-                        let cmd = Command::PacketFrom {
-                            device_id: reader_device_id.clone(),
-                            packet: Box::new(packet),
+                        let payload = match packet.payload_transfer_port() {
+                            Some(port) => Some(
+                                crate::payload::connect_payload(peer_addr, port, pair.clone())
+                                    .await
+                                    .map_err(|err| err.to_string()),
+                            ),
+                            None => None,
+                        };
+                        let cmd = match payload {
+                            Some(result) => Command::SharePayload {
+                                device_id: reader_device_id.clone(),
+                                header: Box::new(packet),
+                                payload: result,
+                            },
+                            None => Command::PacketFrom {
+                                device_id: reader_device_id.clone(),
+                                packet: Box::new(packet),
+                            },
                         };
                         if cmd_tx.send(cmd).await.is_err() {
                             break;
@@ -407,6 +755,243 @@ impl Manager {
         }
     }
 
+    /// Send a local file (or a GVFS/KIO URI) to `device_id`.
+    ///
+    /// Streams the payload over a second TLS connection exactly like upstream:
+    /// bind a data port, announce `payloadSize` + `payloadTransferInfo.port`
+    /// in the share header, then pump the file bytes to whoever dials us.
+    async fn send_file(&mut self, device_id: &str, path: &str) -> Result<String> {
+        let materialized = crate::backends::materialize_source(path).await?;
+        let local = materialized.local;
+        let cleanup = materialized.cleanup;
+
+        let metadata = match tokio::fs::metadata(&local).await {
+            Ok(meta) => meta,
+            Err(err) => {
+                if let Some(tmp) = cleanup {
+                    let _ = tokio::fs::remove_file(tmp).await;
+                }
+                return Err(Error::Other(format!(
+                    "cannot stat {}: {err}",
+                    local.display()
+                )));
+            }
+        };
+        if !metadata.is_file() {
+            if let Some(tmp) = cleanup {
+                let _ = tokio::fs::remove_file(tmp).await;
+            }
+            return Err(Error::Other(format!(
+                "{} is not a regular file",
+                local.display()
+            )));
+        }
+        let size = metadata.len();
+        let modified_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let Some(state) = self.devices.get_mut(device_id) else {
+            if let Some(tmp) = cleanup {
+                let _ = tokio::fs::remove_file(tmp).await;
+            }
+            return Err(Error::Other(format!("device '{device_id}' is unknown")));
+        };
+        if !state.is_connected() {
+            if let Some(tmp) = cleanup {
+                let _ = tokio::fs::remove_file(tmp).await;
+            }
+            return Err(Error::Other(format!("device '{device_id}' is offline")));
+        }
+
+        let file_name = local
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("file")
+            .to_string();
+
+        // Empty file: a bare header (no payloadSize / no port), matching
+        // upstream's hasPayload()==false shortcut.
+        if size == 0 {
+            let header = Packet::new(
+                TYPE_SHARE,
+                json!({
+                    "filename": file_name,
+                    "lastModified": modified_ms,
+                    "numberOfFiles": 1,
+                    "totalPayloadSize": 0,
+                }),
+            );
+            state.send_out(header)?;
+            let transfer_id = self.new_transfer_id();
+            self.register_transfer(
+                transfer_id.clone(),
+                device_id.to_string(),
+                "outgoing".into(),
+                file_name,
+                0,
+                Arc::new(AtomicBool::new(false)),
+            );
+            if let Some(record) = self.transfers.get_mut(&transfer_id) {
+                record.state = "finished".into();
+            }
+            self.bus.publish(Event::TransferFinished {
+                id: transfer_id.clone(),
+            });
+            return Ok(transfer_id);
+        }
+
+        let (port, listener) = crate::payload::PayloadListener::bind(self.pair.clone()).await?;
+
+        let header = Packet::new(
+            TYPE_SHARE,
+            json!({
+                "filename": file_name,
+                "creationTime": modified_ms,
+                "lastModified": modified_ms,
+                "numberOfFiles": 1,
+                "totalPayloadSize": size,
+            }),
+        )
+        .with_payload(size as i64, port);
+        if let Err(err) = state.send_out(header) {
+            if let Some(tmp) = cleanup {
+                let _ = tokio::fs::remove_file(tmp).await;
+            }
+            return Err(err);
+        }
+
+        let transfer_id = self.new_transfer_id();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.register_transfer(
+            transfer_id.clone(),
+            device_id.to_string(),
+            "outgoing".into(),
+            file_name.clone(),
+            size,
+            cancel.clone(),
+        );
+
+        let bus = self.bus.clone();
+        let self_tx = self.self_tx.clone();
+        let tx_id = transfer_id.clone();
+        let dev_id = device_id.to_string();
+        tokio::spawn(async move {
+            let result =
+                stream_outgoing(tx_id.clone(), listener, local, cleanup, size, bus, cancel).await;
+            let _ = self_tx
+                .send(Command::TransferOutcome {
+                    transfer_id: tx_id,
+                    result: result.map_err(|err| format!("{dev_id}: {err}")),
+                })
+                .await;
+        });
+
+        Ok(transfer_id)
+    }
+
+    /// A share header with a payload arrived (or its data dial failed).
+    fn on_share_payload(
+        &mut self,
+        device_id: &str,
+        header: Packet,
+        payload: std::result::Result<Transport, String>,
+    ) {
+        match payload {
+            Ok(transport) => self.spawn_receive(device_id, header, Some(transport)),
+            Err(reason) => {
+                // Data connection could not be established; record a failed
+                // transfer so the user sees why the file never arrived.
+                let file_name = header
+                    .body
+                    .get("filename")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("received-file")
+                    .to_string();
+                let transfer_id = self.new_transfer_id();
+                self.register_transfer(
+                    transfer_id.clone(),
+                    device_id.to_string(),
+                    "incoming".into(),
+                    file_name,
+                    0,
+                    Arc::new(AtomicBool::new(false)),
+                );
+                if let Some(record) = self.transfers.get_mut(&transfer_id) {
+                    record.state = "failed".into();
+                    record.reason = Some(reason.clone());
+                }
+                self.bus.publish(Event::TransferFailed {
+                    id: transfer_id,
+                    reason,
+                });
+            }
+        }
+    }
+
+    /// Start a receive for a share header: either with an established data
+    /// connection (payload) or without one (empty file).
+    fn spawn_receive(&mut self, device_id: &str, header: Packet, payload: Option<Transport>) {
+        let Some(_state) = self.devices.get(device_id) else {
+            warn!(device = %device_id, "share from unknown device dropped");
+            return;
+        };
+        let file_name = header
+            .body
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .unwrap_or("received-file")
+            .to_string();
+        let announced = header.payload_size().unwrap_or(0);
+        let size = if announced < 0 {
+            UNKNOWN_SIZE
+        } else {
+            announced as u64
+        };
+
+        let transfer_id = self.new_transfer_id();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let total = if size == UNKNOWN_SIZE { 0 } else { size };
+        self.register_transfer(
+            transfer_id.clone(),
+            device_id.to_string(),
+            "incoming".into(),
+            file_name.clone(),
+            total,
+            cancel.clone(),
+        );
+
+        let engine = self.engine.clone();
+        let bus = self.bus.clone();
+        let self_tx = self.self_tx.clone();
+        let save_target = self.save_target.clone();
+        let tx_id = transfer_id.clone();
+        let dev_id = device_id.to_string();
+        tokio::spawn(async move {
+            let result = receive_stream(
+                engine,
+                save_target,
+                bus,
+                tx_id.clone(),
+                dev_id.clone(),
+                file_name,
+                size,
+                payload,
+                cancel,
+            )
+            .await;
+            let _ = self_tx
+                .send(Command::TransferOutcome {
+                    transfer_id: tx_id,
+                    result: result.map(|_| ()).map_err(|err| err.to_string()),
+                })
+                .await;
+        });
+    }
+
     async fn on_packet(&mut self, device_id: &str, packet: Packet) {
         if packet.ptype == TYPE_IDENTITY {
             if let Ok(identity) = serde_json::from_value::<Identity>(packet.body.clone()) {
@@ -419,6 +1004,15 @@ impl Manager {
 
         if packet.ptype == TYPE_PAIR {
             self.on_pair_packet(device_id, packet).await;
+            return;
+        }
+
+        // Inbound file shares with a `filename` (and no payload connection —
+        // those arrive via Command::SharePayload) are empty files: create
+        // them, mirroring upstream's hasPayload()==false receive path.
+        if packet.ptype == TYPE_SHARE && packet.body.get("filename").is_some() {
+            info!(device = %device_id, "receiving empty file share");
+            self.spawn_receive(device_id, packet, None);
             return;
         }
 
@@ -516,26 +1110,94 @@ impl Manager {
                 .flatten()
                 .is_some_and(|v| v == "1");
             info!(device = %device_id, auto_accept, "incoming pairing request");
-            let accepted = auto_accept
-                && self
-                    .devices
-                    .get(device_id)
-                    .is_some_and(|s| s.is_connected());
-            if accepted {
+            let connected = self
+                .devices
+                .get(device_id)
+                .is_some_and(|s| s.is_connected());
+
+            if auto_accept && connected {
                 self.persist_trust(device_id, true).await;
+                let response = Packet::new(TYPE_PAIR, serde_json::json!({ "pair": true }));
+                if let Some(state) = self.devices.get(device_id) {
+                    let _ = state.send_out(response);
+                }
+                return;
             }
-            let response = Packet::new(TYPE_PAIR, serde_json::json!({ "pair": accepted }));
-            if let Some(state) = self.devices.get(device_id) {
-                let _ = state.send_out(response);
+
+            if !connected {
+                // Nothing to answer on; decline immediately so the remote
+                // does not hang waiting for our decision.
+                let response = Packet::new(TYPE_PAIR, serde_json::json!({ "pair": false }));
+                if let Some(state) = self.devices.get(device_id) {
+                    let _ = state.send_out(response);
+                }
+                return;
             }
+
+            // Park the request for an explicit user decision.
+            let name = self
+                .devices
+                .get(device_id)
+                .map(|s| s.identity.name.clone())
+                .unwrap_or_default();
+            self.incoming_pairs.insert(
+                device_id.to_string(),
+                std::time::Instant::now() + INCOMING_PAIR_TIMEOUT,
+            );
+            self.bus.publish(Event::PairingRequest {
+                id: device_id.to_string(),
+                name,
+            });
+            info!(
+                device = %device_id,
+                "incoming pairing request parked; awaiting user decision"
+            );
+
+            // Decline automatically if nobody answers in time (mirrors the
+            // remote's own PAIRING_TIMEOUT window).
+            let tx = self.self_tx.clone();
+            let dev = device_id.to_string();
+            tokio::spawn(async move {
+                tokio::time::sleep(INCOMING_PAIR_TIMEOUT).await;
+                let _ = tx.send(Command::PairingTimeout { device_id: dev }).await;
+            });
         } else {
             // Remote revoked pairing.
+            self.incoming_pairs.remove(device_id);
             self.persist_trust(device_id, false).await;
             self.bus.publish(Event::DeviceStateChanged {
                 id: device_id.to_string(),
                 state: "unpaired".into(),
             });
         }
+    }
+
+    /// Resolve a parked incoming pairing request with the user's decision.
+    async fn answer_incoming_pairing(&mut self, device_id: &str, accept: bool) -> Result<()> {
+        let pending = self.incoming_pairs.remove(device_id);
+        let Some(deadline) = pending else {
+            return Err(Error::Other(format!(
+                "no pending pairing request from '{device_id}'"
+            )));
+        };
+        if std::time::Instant::now() > deadline {
+            // Expired while the answer was in flight; the timeout handler
+            // will already have declined (or is about to).
+            return Err(Error::Other("pairing request already expired".into()));
+        }
+        if accept {
+            self.persist_trust(device_id, true).await;
+        }
+        let response = Packet::new(TYPE_PAIR, serde_json::json!({ "pair": accept }));
+        if let Some(state) = self.devices.get(device_id) {
+            let _ = state.send_out(response);
+        }
+        self.bus.publish(Event::DeviceStateChanged {
+            id: device_id.to_string(),
+            state: if accept { "paired" } else { "unpaired" }.into(),
+        });
+        info!(device = %device_id, accept, "incoming pairing request answered");
+        Ok(())
     }
 
     fn begin_pairing(&mut self, device_id: &str, reply: oneshot::Sender<Result<bool>>) {
@@ -572,6 +1234,10 @@ impl Manager {
     }
 
     fn on_closed(&mut self, device_id: &str) {
+        // A parked incoming pairing request dies with the connection: the
+        // reply can no longer be delivered, so drop it (its timeout task
+        // finds nothing and exits silently).
+        self.incoming_pairs.remove(device_id);
         if let Some(state) = self.devices.get_mut(device_id) {
             state.outbound = None;
             state.live_fingerprint = None;
@@ -650,4 +1316,406 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Pump a local file over the accepted data connection in 4 KiB chunks
+/// (upstream's `UploadJob` granularity), reporting progress on the bus.
+async fn stream_outgoing(
+    transfer_id: String,
+    listener: crate::payload::PayloadListener,
+    local: PathBuf,
+    cleanup: Option<PathBuf>,
+    size: u64,
+    bus: Bus,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+
+    let result: Result<()> = async {
+        let mut transport = listener.accept().await?;
+        let mut file = tokio::fs::File::open(&local).await?;
+        let mut buf = vec![0u8; handfast_protocol::transfer::PAYLOAD_CHUNK_SIZE];
+        let mut done: u64 = 0;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(Error::Other("transfer cancelled".into()));
+            }
+            let read = file.read(&mut buf).await?;
+            if read == 0 {
+                break;
+            }
+            transport.write_bytes(&buf[..read]).await?;
+            done += read as u64;
+            bus.publish(Event::TransferProgress {
+                id: transfer_id.clone(),
+                bytes_done: done,
+                bytes_total: size,
+            });
+            if done >= size {
+                break;
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    if let Some(tmp) = cleanup {
+        let _ = tokio::fs::remove_file(tmp).await;
+    }
+    result
+}
+
+/// Receive a payload stream (or an empty file) into the transfer engine,
+/// publishing progress, then finalize it into the save target.
+#[allow(clippy::too_many_arguments)]
+async fn receive_stream(
+    engine: Arc<Mutex<TransferEngine>>,
+    save_target: SaveTarget,
+    bus: Bus,
+    transfer_id: String,
+    device_id: String,
+    file_name: String,
+    size: u64,
+    payload: Option<Transport>,
+    cancel: Arc<AtomicBool>,
+) -> Result<PathBuf> {
+    let meta = TransferMeta {
+        transfer_id: transfer_id.clone(),
+        device_id: device_id.clone(),
+        file_name: file_name.clone(),
+        file_size: size,
+    };
+    {
+        let mut engine = engine.lock().await;
+        engine.start_receive(meta).await?;
+    }
+
+    let mut done: u64 = 0;
+    if let Some(mut transport) = payload {
+        let mut buf = vec![0u8; CHUNK_SIZE];
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                let mut engine = engine.lock().await;
+                let _ = engine.abort(&transfer_id).await;
+                return Err(Error::Other("transfer cancelled".into()));
+            }
+            let read = if size == UNKNOWN_SIZE {
+                let chunk = tokio::time::timeout(
+                    handfast_protocol::transfer::PAYLOAD_READ_TIMEOUT,
+                    transport.read_some(&mut buf),
+                )
+                .await
+                .map_err(|_| Error::Other("payload read timed out".into()))??;
+                if chunk == 0 {
+                    break; // clean EOF for unknown-size streams
+                }
+                chunk
+            } else {
+                let remaining = size - done;
+                let want = buf.len().min(remaining as usize);
+                if want == 0 {
+                    break;
+                }
+                tokio::time::timeout(
+                    handfast_protocol::transfer::PAYLOAD_READ_TIMEOUT,
+                    transport.read_bytes(&mut buf[..want]),
+                )
+                .await
+                .map_err(|_| Error::Other("payload read timed out".into()))??;
+                want
+            };
+            engine
+                .lock()
+                .await
+                .write_chunk(&transfer_id, &buf[..read])
+                .await?;
+            done += read as u64;
+            bus.publish(Event::TransferProgress {
+                id: transfer_id.clone(),
+                bytes_done: done,
+                bytes_total: size,
+            });
+            if size != UNKNOWN_SIZE && done >= size {
+                break;
+            }
+        }
+    }
+
+    let final_path = engine.lock().await.finish_receive(&transfer_id).await?;
+
+    // GVFS/KIO destination: copy the finished file into the URI and drop the
+    // local staging copy (the engine staged in a temp dir for URI targets).
+    if let SaveTarget::Uri(uri) = &save_target {
+        if let Err(err) = crate::backends::move_into_uri(&final_path, uri).await {
+            let _ = tokio::fs::remove_file(&final_path).await;
+            return Err(err);
+        }
+    }
+
+    let share_path = match &save_target {
+        SaveTarget::Uri(uri) => format!("{}/{}", uri.trim_end_matches('/'), file_name),
+        SaveTarget::Local(_) => final_path.display().to_string(),
+    };
+    bus.publish(Event::ShareReceived {
+        path: share_path,
+        device_id,
+    });
+    Ok(final_path)
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    #![allow(clippy::unwrap_used)] // test helpers assert loudly on failure
+
+    //! Actor-level pairing tests: incoming requests are parked and surfaced,
+    //! answered explicitly (accept/decline), expired safely, and persisted
+    //! with the peer's certificate fingerprint — the "reliable, persistent,
+    //! properly functional" pairing contract.
+
+    use std::sync::Arc;
+
+    use handfast_core::bus::{Bus, Event};
+    use handfast_core::store::Store;
+    use handfast_protocol::tls::CertPair;
+    use handfast_protocol::{Identity, Packet, PROTO_VERSION, TYPE_PAIR};
+
+    use super::*;
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "handfastd-pair-{tag}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn identity(device_id: &str, name: &str) -> Identity {
+        Identity {
+            device_id: device_id.to_string(),
+            name: name.to_string(),
+            device_type: "desktop".into(),
+            protocol_version: PROTO_VERSION,
+            incoming: vec![TYPE_PAIR.to_string()],
+            outgoing: vec![TYPE_PAIR.to_string()],
+            tcp_source_port: handfast_protocol::DEFAULT_TCP_PORT,
+        }
+    }
+
+    fn manager(bus: Bus) -> (Manager, ManagerHandle) {
+        let dir = tmp_dir("mgr");
+        let store = Arc::new(Store::open(&dir.join("state.db3")).unwrap());
+        let pair = Arc::new(CertPair::load_or_generate(&dir, "self-device").unwrap());
+        let (handle, manager) = Manager::new(
+            store,
+            bus,
+            "self-device".into(),
+            identity("self-device", "Handfast Test"),
+            pair,
+            handfast_plugins::registry(),
+        );
+        (manager, handle)
+    }
+
+    /// Inject a fake connected device and return the receiver for packets the
+    /// manager sends it.
+    fn insert_connected(
+        manager: &mut Manager,
+        id: &str,
+        name: &str,
+        live_fingerprint: &str,
+    ) -> mpsc::Receiver<Packet> {
+        let state = DeviceState::new(identity(id, name), &manager.factories);
+        let (tx, rx) = mpsc::channel(16);
+        manager.devices.insert(
+            id.to_string(),
+            DeviceState {
+                live_fingerprint: Some(live_fingerprint.to_string()),
+                outbound: Some(tx),
+                ..state
+            },
+        );
+        rx
+    }
+
+    fn pair_request(accept: bool) -> Packet {
+        Packet::new(TYPE_PAIR, serde_json::json!({ "pair": accept }))
+    }
+
+    async fn recv_packet(rx: &mut mpsc::Receiver<Packet>) -> Packet {
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("manager must reply")
+            .expect("channel must not close")
+    }
+
+    #[tokio::test]
+    async fn incoming_request_is_parked_surfaced_and_answerable() {
+        let bus = Bus::new();
+        let mut events = bus.subscribe();
+        let (mut manager, _handle) = manager(bus);
+        let mut out = insert_connected(&mut manager, "peer-1", "Peer One", "fp-peer-1");
+
+        manager.on_pair_packet("peer-1", pair_request(true)).await;
+
+        // Surfaced to the UI and parked (no reply sent yet).
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .expect("PairingRequest event must be published")
+            .unwrap();
+        assert!(
+            matches!(ev, Event::PairingRequest { id, ref name } if id == "peer-1" && name == "Peer One")
+        );
+        assert!(manager.incoming_pairs.contains_key("peer-1"));
+
+        // Nothing on the wire until the user answers.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), out.recv())
+                .await
+                .is_err(),
+            "no reply before a decision"
+        );
+
+        manager
+            .answer_incoming_pairing("peer-1", true)
+            .await
+            .unwrap();
+
+        let reply = recv_packet(&mut out).await;
+        assert_eq!(reply.ptype, TYPE_PAIR);
+        assert_eq!(reply.body["pair"], serde_json::json!(true));
+        assert!(!manager.incoming_pairs.contains_key("peer-1"));
+
+        // Persisted with the pinned fingerprint of the live connection.
+        let rows = manager.store.list_devices().unwrap();
+        let row = rows.iter().find(|r| r.device_id == "peer-1").unwrap();
+        assert!(row.paired);
+        assert_eq!(row.cert_fingerprint, "fp-peer-1");
+    }
+
+    #[tokio::test]
+    async fn declined_request_replies_false_and_stays_unpaired() {
+        let bus = Bus::new();
+        let (mut manager, _handle) = manager(bus);
+        let mut out = insert_connected(&mut manager, "peer-2", "Peer Two", "fp-peer-2");
+
+        manager.on_pair_packet("peer-2", pair_request(true)).await;
+        manager
+            .answer_incoming_pairing("peer-2", false)
+            .await
+            .unwrap();
+
+        let reply = recv_packet(&mut out).await;
+        assert_eq!(reply.body["pair"], serde_json::json!(false));
+
+        // Declining must not create trust: no persisted row at all, or one
+        // that is explicitly unpaired with no pinned certificate.
+        let rows = manager.store.list_devices().unwrap();
+        if let Some(row) = rows.iter().find(|r| r.device_id == "peer-2") {
+            assert!(!row.paired);
+            assert!(row.cert_fingerprint.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_without_pending_request_fails() {
+        let bus = Bus::new();
+        let (mut manager, _handle) = manager(bus);
+        insert_connected(&mut manager, "peer-3", "Peer Three", "fp-peer-3");
+
+        let err = manager
+            .answer_incoming_pairing("peer-3", true)
+            .await
+            .expect_err("no parked request -> error");
+        assert!(err.to_string().contains("no pending pairing request"));
+
+        // And an expired parked request is refused too.
+        manager.incoming_pairs.insert(
+            "peer-3".into(),
+            std::time::Instant::now() - std::time::Duration::from_secs(1),
+        );
+        let err = manager
+            .answer_incoming_pairing("peer-3", true)
+            .await
+            .expect_err("expired request -> error");
+        assert!(err.to_string().contains("expired"));
+    }
+
+    #[tokio::test]
+    async fn auto_accept_skips_the_user_and_persists_immediately() {
+        let bus = Bus::new();
+        let mut events = bus.subscribe();
+        let (mut manager, _handle) = manager(bus);
+        let mut out = insert_connected(&mut manager, "peer-4", "Peer Four", "fp-peer-4");
+        manager.store.kv_set("pairing.auto_accept", "1").unwrap();
+
+        manager.on_pair_packet("peer-4", pair_request(true)).await;
+
+        let reply = recv_packet(&mut out).await;
+        assert_eq!(reply.body["pair"], serde_json::json!(true));
+        assert!(manager.incoming_pairs.is_empty());
+        // No PairingRequest event: the decision was automatic (other events
+        // such as the paired state change are expected and ignored).
+        let mut saw_request = false;
+        loop {
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(150), events.recv());
+            match ev.await {
+                Ok(Ok(Event::PairingRequest { .. })) => {
+                    saw_request = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(
+            !saw_request,
+            "no user-facing pairing request under auto_accept"
+        );
+
+        let rows = manager.store.list_devices().unwrap();
+        let row = rows.iter().find(|r| r.device_id == "peer-4").unwrap();
+        assert!(row.paired);
+        assert_eq!(row.cert_fingerprint, "fp-peer-4");
+    }
+
+    #[tokio::test]
+    async fn remote_revoke_unpairs_and_clears_pending() {
+        let bus = Bus::new();
+        let (mut manager, _handle) = manager(bus);
+        insert_connected(&mut manager, "peer-5", "Peer Five", "fp-peer-5");
+        manager.incoming_pairs.insert(
+            "peer-5".into(),
+            std::time::Instant::now() + INCOMING_PAIR_TIMEOUT,
+        );
+
+        manager.on_pair_packet("peer-5", pair_request(false)).await;
+
+        assert!(!manager.incoming_pairs.contains_key("peer-5"));
+        let rows = manager.store.list_devices().unwrap();
+        let row = rows.iter().find(|r| r.device_id == "peer-5").unwrap();
+        assert!(!row.paired);
+    }
+
+    #[tokio::test]
+    async fn pairing_answer_command_round_trips_through_the_run_loop() {
+        // The IPC path (Request::PairingAnswer -> Command::PairingAnswer) is
+        // just message wiring; prove it resolves through the actor loop even
+        // though no request is parked.
+        let bus = Bus::new();
+        let (_manager, handle) = manager(bus);
+        let loop_task = tokio::spawn(_manager.run());
+
+        let err = handle
+            .pairing_answer("ghost".into(), true)
+            .await
+            .expect_err("no parked request on the wire path");
+        assert!(err.to_string().contains("no pending pairing request"));
+
+        drop(handle);
+        // The manager keeps its own channel sender alive (self_tx), so the
+        // loop never exits on its own; abort it.
+        loop_task.abort();
+        let _ = loop_task.await;
+    }
 }

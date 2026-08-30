@@ -22,6 +22,15 @@ pub enum Request {
         /// Target device identifier.
         device_id: String,
     },
+    /// Answer a pending incoming pairing request (see
+    /// [`ServerEvent::PairingRequest`]): `accept` stores the peer's
+    /// certificate fingerprint and replies `{"pair": true}` on the wire.
+    PairingAnswer {
+        /// Device identifier whose request is being answered.
+        device_id: String,
+        /// `true` to accept, `false` to decline.
+        accept: bool,
+    },
     /// List plugins available for a device together with their enabled state.
     PluginList {
         /// Target device identifier.
@@ -140,6 +149,18 @@ impl Response {
         Response::Ok { result: v }
     }
 
+    /// Render the response as one JSON value for scripting: the result
+    /// payload on success, `{"code": …, "message": …}` on failure.
+    #[must_use]
+    pub fn as_json(&self) -> serde_json::Value {
+        match self {
+            Response::Ok { result } => result.clone(),
+            Response::Err { code, message } => {
+                serde_json::json!({ "code": code, "message": message })
+            }
+        }
+    }
+
     /// Build an error response.
     #[must_use]
     pub fn err(code: i32, msg: impl Into<String>) -> Self {
@@ -216,6 +237,22 @@ pub enum ServerEvent {
         /// Human-readable failure reason.
         reason: String,
     },
+    /// An inbound share (file/text/url) landed and is ready for the user.
+    ShareReceived {
+        /// Local path or URL of the received share.
+        path: String,
+        /// Peer device identifier.
+        device_id: String,
+    },
+    /// A remote device is asking to pair with us and waits for an explicit
+    /// answer (auto-accept is off). Respond with
+    /// [`Request::PairingAnswer`].
+    PairingRequest {
+        /// Device identifier.
+        device_id: String,
+        /// Human-readable device name.
+        device_name: String,
+    },
     /// An incoming notification arrived on a paired device.
     NotificationReceived {
         /// Notification identifier.
@@ -288,6 +325,10 @@ impl From<handfast_core::bus::Event> for ServerEvent {
             Event::DeviceStateChanged { id, state } => {
                 ServerEvent::DeviceStateChanged { id, state }
             }
+            Event::PairingRequest { id, name } => ServerEvent::PairingRequest {
+                device_id: id,
+                device_name: name,
+            },
             Event::TransferProgress {
                 id,
                 bytes_done,
@@ -297,6 +338,24 @@ impl From<handfast_core::bus::Event> for ServerEvent {
                 bytes_done,
                 bytes_total,
             },
+            Event::TransferAdded {
+                id,
+                device_id,
+                direction,
+                file_name,
+                total,
+            } => ServerEvent::TransferAdded {
+                id,
+                device_id,
+                direction,
+                file_name,
+                total,
+            },
+            Event::TransferFinished { id } => ServerEvent::TransferFinished { id },
+            Event::TransferFailed { id, reason } => ServerEvent::TransferFailed { id, reason },
+            Event::ShareReceived { path, device_id } => {
+                ServerEvent::ShareReceived { path, device_id }
+            }
             Event::NotificationReceived {
                 id,
                 app,

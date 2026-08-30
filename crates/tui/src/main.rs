@@ -20,6 +20,7 @@ mod app;
 mod cli;
 mod cmd;
 mod error;
+mod filemanager;
 mod model;
 mod state;
 mod view;
@@ -73,11 +74,21 @@ async fn run() -> anyhow::Result<ExitCode> {
 
     let command = cli.command.unwrap_or(Command::Tui);
     let socket = cli.socket.unwrap_or_else(handfast_ipc::default_socket_path);
+    let json = cli.json;
 
     // Completion generation never touches the socket.
     if let Command::Completions { shell } = &command {
         cli::generate_completions(*shell)?;
         return Ok(ExitCode::SUCCESS);
+    }
+
+    // File-manager install/remove are offline operations: they must work
+    // without a running daemon (only `update` needs the device list).
+    if let Command::FileManager { action } = &command {
+        if !matches!(action, crate::cli::FileManagerAction::Update { .. }) {
+            crate::filemanager::run(*action, None).await?;
+            return Ok(ExitCode::SUCCESS);
+        }
     }
 
     let mut client = cmd::connect(&socket).await?;
@@ -90,18 +101,33 @@ async fn run() -> anyhow::Result<ExitCode> {
             );
             app::run(client).await?;
         }
-        Command::Status => cmd::print_status(&mut client, &socket).await?,
-        Command::Devices => cmd::print_devices(&client).await?,
+        Command::Status => cmd::print_status(&mut client, &socket, json).await?,
+        Command::Devices => cmd::print_devices(&client, json).await?,
         Command::Pair { device_id } => cmd::print_pair(&client, &device_id).await?,
         Command::Unpair { device_id } => cmd::print_unpair(&client, &device_id).await?,
+        Command::PairAnswer {
+            device_id,
+            accept,
+            reject,
+        } => {
+            cmd::pair_answer(&client, &device_id, accept && !reject).await?;
+            println!(
+                "pairing request from {device_id} {}",
+                if accept { "accepted" } else { "declined" }
+            );
+        }
         Command::Plugins { action } => {
             cmd::print_plugins_action(&client, action).await?;
         }
         Command::Send {
             device_id,
-            file_path,
+            pick,
+            file_paths,
         } => {
-            cmd::print_send(&client, &device_id, &file_path).await?;
+            cmd::print_send(&client, device_id.as_deref(), pick, &file_paths).await?;
+        }
+        Command::FileManager { action } => {
+            crate::filemanager::run(action, Some(&client)).await?;
         }
         Command::Notifications { action } => {
             cmd::print_notifications_action(&client, action).await?;
@@ -114,7 +140,11 @@ async fn run() -> anyhow::Result<ExitCode> {
         Command::Completions { .. } => {}
         Command::Transfers => {
             let resp = client.request(Request::TransferList).await?;
-            cmd::print_transfers(&resp);
+            if json {
+                println!("{}", resp.as_json());
+            } else {
+                cmd::print_transfers(&resp);
+            }
         }
         Command::TransferCancel { transfer_id } => {
             let resp = client
