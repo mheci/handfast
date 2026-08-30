@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-core"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-gui"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "handfast-ipc",
  "iced",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-ipc"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1646,7 +1646,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-plugins"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "handfast-core",
  "handfast-protocol",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-protocol"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "criterion",
@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-tui"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1692,7 +1692,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-wayland"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "ashpd",
  "handfast-core",
@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "handfastd"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5425,7 +5425,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",

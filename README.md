@@ -63,10 +63,16 @@ supervisor restarts it with exponential backoff instead of killing the session.
 
 ## Install
 
-### Arch Linux — prebuilt package
+Prebuilt packages are attached to every [release](https://github.com/mheci/handfast/releases):
 
-Grab `handfast-<version>-1-x86_64.pkg.tar.zst` from the
-[latest release](https://github.com/mheci/handfast/releases/latest), then:
+| Distro | Package | File (from latest release) |
+| --- | --- | --- |
+| Arch Linux | `handfast` | `handfast-<version>-1-x86_64.pkg.tar.zst` (since 0.1.0) |
+| Debian / Ubuntu | `handfast` | `handfast_<version>-1_amd64.deb` (since 0.1.1) |
+| Fedora | `handfast` | `handfast-<version>-1.x86_64.rpm` (since 0.1.1) |
+| Any Linux | portable | `handfast-<version>-x86_64-unknown-linux-gnu.tar.zst` |
+
+### Arch Linux — prebuilt package
 
 ```sh
 pacman -U handfast-*-x86_64.pkg.tar.zst
@@ -81,10 +87,25 @@ curl -LO https://github.com/mheci/handfast/releases/latest/download/PKGBUILD
 makepkg -si
 ```
 
+### Debian / Ubuntu — prebuilt package
+
+```sh
+sudo apt install ./handfast_<version>-1_amd64.deb
+```
+
+Installs `handfastd` / `hfctl` / `handfast-gui`, the systemd user unit, desktop
+file, icon, and shell completions. Runtime deps (`libwayland-client0`,
+`libxkbcommon0`, `libsqlite3-0`) are pulled in automatically.
+
+### Fedora — prebuilt package
+
+```sh
+sudo dnf install ./handfast-<version>-1.x86_64.rpm
+```
+
 ### Any distro — portable binaries
 
-Download `handfast-<version>-x86_64-unknown-linux-gnu.tar.zst` from the
-[latest release](https://github.com/mheci/handfast/releases/latest), unpack, and run
+Download `handfast-<version>-x86_64-unknown-linux-gnu.tar.zst`, unpack, and run
 `handfastd` / `hfctl` / `handfast-gui` from wherever you like. A `systemd` user unit,
 desktop file, and icon are included under `packaging/`.
 
