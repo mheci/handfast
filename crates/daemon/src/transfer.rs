@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use handfast_core::error::{Error, Result};
-use handfast_protocol::transfer::{TransferMeta, CHUNK_SIZE};
+use handfast_protocol::transfer::{TransferMeta, CHUNK_SIZE, UNKNOWN_SIZE};
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info};
 
@@ -142,7 +142,8 @@ impl TransferEngine {
 
     /// Finalize `transfer_id`: rename its staging file to the final name.
     ///
-    /// The transfer must have received exactly the declared size. When a file
+    /// The transfer must have received exactly the declared size (any amount
+    /// is accepted when the size was unknown — [`UNKNOWN_SIZE`]). When a file
     /// of that name already exists, a numbered copy (`name (1).ext`) is used
     /// instead so completed downloads are never overwritten. Returns the
     /// destination path.
@@ -150,7 +151,7 @@ impl TransferEngine {
         let Some(transfer) = self.incoming.get(transfer_id) else {
             return Err(Error::Other(format!("unknown transfer '{transfer_id}'")));
         };
-        if transfer.received != transfer.meta.file_size {
+        if transfer.meta.file_size != UNKNOWN_SIZE && transfer.received != transfer.meta.file_size {
             return Err(Error::Other(format!(
                 "transfer '{transfer_id}' incomplete: {}/{} bytes",
                 transfer.received, transfer.meta.file_size
@@ -181,12 +182,14 @@ impl TransferEngine {
     }
 
     /// Whether a receive with this id is currently in flight.
+    #[cfg_attr(not(test), allow(dead_code))] // exercised by the test suite
     #[must_use]
     pub fn is_active(&self, id: &str) -> bool {
         self.incoming.contains_key(id)
     }
 
     /// Number of receives currently in flight.
+    #[cfg_attr(not(test), allow(dead_code))] // exercised by the test suite
     #[must_use]
     pub fn active_count(&self) -> usize {
         self.incoming.len()

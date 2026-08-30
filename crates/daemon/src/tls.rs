@@ -19,6 +19,7 @@ use std::task::{Context, Poll};
 
 use handfast_core::error::{Error, Result};
 use handfast_protocol::tls::{cert_fingerprint, CertPair};
+use handfast_protocol::{Identity, Packet};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
@@ -226,10 +227,14 @@ impl AsyncWrite for Wire {
 
 pub(crate) type ReaderHalf = ReadHalf<Wire>;
 pub(crate) type WriterHalf = WriteHalf<Wire>;
+/// Packet reader: a persistent buffer so newline-delimited frames are
+/// assembled cheaply and any bytes read past a frame boundary (payload
+/// traffic on the same stream) are preserved for later raw reads.
+pub(crate) type PacketReader = tokio::io::BufReader<ReaderHalf>;
 
 /// An established, encrypted connection to one remote device.
 pub struct Transport {
-    reader: ReaderHalf,
+    reader: PacketReader,
     writer: WriterHalf,
     peer_fingerprint: [u8; 32],
     peer_addr: std::net::SocketAddr,
@@ -244,7 +249,14 @@ impl fmt::Debug for Transport {
 }
 
 impl Transport {
-    /// Dial a remote device and complete the TLS handshake (client role).
+    /// Dial a remote device and complete the TLS handshake.
+    ///
+    /// **Payload (data) connections only.** For payloads the sender listens
+    /// and plays TLS server, the receiver dials and plays TLS client — the
+    /// standard convention, matching upstream's payload sockets.
+    ///
+    /// For *control* connections the roles are inverted (see
+    /// [`Transport::connect_control`]).
     pub async fn connect(addr: impl ToSocketAddrs, pair: Arc<CertPair>) -> Result<Self> {
         let tcp = TcpStream::connect(addr).await?;
         let peer_addr = tcp.peer_addr()?;
@@ -256,16 +268,20 @@ impl Transport {
         let (_, conn) = tls.get_ref();
         let peer_fingerprint = fingerprint_of_first(conn.peer_certificates())?;
         let (reader, writer) = tokio::io::split(Wire::Client(Box::new(tls)));
-        debug!(%peer_addr, "outbound tls established");
+        debug!(%peer_addr, "payload data connection established (client role)");
         Ok(Self {
-            reader,
+            reader: tokio::io::BufReader::new(reader),
             writer,
             peer_fingerprint,
             peer_addr,
         })
     }
 
-    /// Accept an inbound TCP stream and complete the TLS handshake (server role).
+    /// Accept an inbound TCP stream and complete the TLS handshake.
+    ///
+    /// **Payload (data) connections only** — sender side, TLS server role.
+    /// For *control* connections use [`Transport::accept_control`], where the
+    /// acceptor plays the TLS *client* role per the KDE Connect convention.
     pub async fn accept(tcp: TcpStream, pair: Arc<CertPair>) -> Result<Self> {
         let peer_addr = tcp.peer_addr()?;
         let acceptor = TlsAcceptor::from(Arc::new(server_config(&pair)?));
@@ -273,9 +289,76 @@ impl Transport {
         let (_, conn) = tls.get_ref();
         let peer_fingerprint = fingerprint_of_first(conn.peer_certificates())?;
         let (reader, writer) = tokio::io::split(Wire::Server(Box::new(tls)));
-        debug!(%peer_addr, "inbound tls accepted");
+        debug!(%peer_addr, "payload data connection accepted (server role)");
         Ok(Self {
-            reader,
+            reader: tokio::io::BufReader::new(reader),
+            writer,
+            peer_fingerprint,
+            peer_addr,
+        })
+    }
+
+    /// Establish a **control** connection to a remote device, following the
+    /// upstream KDE Connect role convention.
+    ///
+    /// Upstream's rule is "if I'm the TCP server I will be the SSL client and
+    /// vice-versa": the TCP *dialer* writes its plaintext identity packet to
+    /// the raw socket first, then upgrades as the TLS **server**; the TCP
+    /// *acceptor* reads that plaintext identity, then upgrades as the TLS
+    /// **client**. Both the Android app (`LanLinkProvider`) and kdeconnect-kde
+    /// (`LanLinkProvider` / `startServerEncryption()` on the outbound socket)
+    /// implement exactly this, so Handfast must too or the TLS handshake
+    /// deadlocks against them (both sides waiting on the other's ClientHello
+    /// when roles collide).
+    ///
+    /// `mine` is written plaintext before the TLS handshake; the post-TLS
+    /// secure identity exchange is driven separately via
+    /// [`crate::handshake`].
+    pub async fn connect_control(
+        addr: impl ToSocketAddrs,
+        pair: Arc<CertPair>,
+        mine: &Identity,
+    ) -> Result<Self> {
+        use tokio::io::AsyncWriteExt;
+        let mut tcp = TcpStream::connect(addr).await?;
+        let peer_addr = tcp.peer_addr()?;
+
+        // 1. Plaintext identity first (upstream reads this line before any TLS).
+        let mut frame = serde_json::to_vec(&Packet::identity(mine.clone()))?;
+        frame.push(b'\n');
+        tcp.write_all(&frame).await?;
+        tcp.flush().await?;
+
+        // 2. Upgrade as the TLS *server* (dialer = server per upstream).
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(&pair)?));
+        let tls: ServerTlsStream<TcpStream> = acceptor.accept(tcp).await?;
+        let (_, conn) = tls.get_ref();
+        let peer_fingerprint = fingerprint_of_first(conn.peer_certificates())?;
+        let (reader, writer) = tokio::io::split(Wire::Server(Box::new(tls)));
+        debug!(%peer_addr, "outbound control tls established (server role)");
+        Ok(Self {
+            reader: tokio::io::BufReader::new(reader),
+            writer,
+            peer_fingerprint,
+            peer_addr,
+        })
+    }
+
+    /// Accept an inbound **control** connection: the remote peer has already
+    /// written its plaintext identity packet (the caller reads it before
+    /// calling this — see [`crate::handshake::accept_control`]), and we now
+    /// upgrade as the TLS **client** per the upstream role convention.
+    pub async fn accept_control(tcp: TcpStream, pair: Arc<CertPair>) -> Result<Self> {
+        let peer_addr = tcp.peer_addr()?;
+        let connector = TlsConnector::from(Arc::new(client_config(&pair)?));
+        let name = ServerName::from(peer_addr.ip());
+        let tls: ClientTlsStream<TcpStream> = connector.connect(name, tcp).await?;
+        let (_, conn) = tls.get_ref();
+        let peer_fingerprint = fingerprint_of_first(conn.peer_certificates())?;
+        let (reader, writer) = tokio::io::split(Wire::Client(Box::new(tls)));
+        debug!(%peer_addr, "inbound control tls established (client role)");
+        Ok(Self {
+            reader: tokio::io::BufReader::new(reader),
             writer,
             peer_fingerprint,
             peer_addr,
@@ -287,7 +370,14 @@ impl Transport {
         self.peer_fingerprint
     }
 
-    /// Read one length-prefixed JSON packet from the wire.
+    /// Address of the peer end of the connection (used to dial the data
+    /// connection a peer announces for payloads).
+    #[must_use]
+    pub fn peer_addr(&self) -> std::net::SocketAddr {
+        self.peer_addr
+    }
+
+    /// Read one newline-delimited JSON packet from the wire.
     pub async fn read_packet(&mut self) -> Result<handfast_protocol::Packet> {
         handfast_protocol::Packet::read_from(&mut self.reader)
             .await
@@ -303,8 +393,39 @@ impl Transport {
         Ok(self.writer.flush().await?)
     }
 
+    /// Read exactly `buf.len()` raw payload bytes from the connection.
+    pub async fn read_bytes(&mut self, buf: &mut [u8]) -> Result<()> {
+        use tokio::io::AsyncReadExt;
+        self.reader.read_exact(buf).await?;
+        Ok(())
+    }
+
+    /// Read up to `buf.len()` raw payload bytes; returns how many were read
+    /// (0 at EOF). Payloads of unknown size use this until EOF.
+    ///
+    /// A peer that closes the TCP stream without a TLS `close_notify` (common
+    /// on some stacks) surfaces as `UnexpectedEof`; for payload streams that
+    /// *is* end-of-data, so it is normalized to `Ok(0)` here. The control
+    /// channel never uses this method.
+    pub async fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
+        use tokio::io::AsyncReadExt;
+        match self.reader.read(buf).await {
+            Ok(n) => Ok(n),
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Write raw payload bytes; flushes (progress-friendly on LAN links).
+    pub async fn write_bytes(&mut self, buf: &[u8]) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.writer.write_all(buf).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
     /// Split into halves so reader/writer loops can own each direction.
-    pub(crate) fn into_parts(self) -> (ReaderHalf, WriterHalf) {
+    pub(crate) fn into_parts(self) -> (PacketReader, WriterHalf) {
         (self.reader, self.writer)
     }
 }

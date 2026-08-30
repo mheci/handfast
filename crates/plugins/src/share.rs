@@ -6,8 +6,16 @@
 //! * `{"url": "..."}` — peer asked this device to open a URL;
 //! * `{"text": "..."}` — peer shared raw text (surfaced on the clipboard in
 //!   Phase 3);
-//! * `{"filename": "...", "fileSize": N}` — metadata announcing an upcoming
-//!   file transfer; the raw-TLS byte stream itself lands in Phase 3.
+//! * `{"filename": "..."}` — file-transfer metadata.
+//!
+//! File bytes no longer travel in the packet body: upstream KDE Connect (and
+//! the Android app) announce `payloadSize` + `payloadTransferInfo.port` in
+//! the header and stream the bytes over a second TLS connection, which the
+//! daemon's transfer engine consumes directly (see `handfast-daemon`'s
+//! payload/transfer modules). Filename-bearing packets are therefore
+//! intercepted by the daemon before plugin dispatch; [`ShareItem::FileMeta`]
+//! remains as a documented fallback classification for legacy/non-payload
+//! peers.
 //!
 //! Recognized bodies are queued as [`ShareItem`] values in arrival order and
 //! drained via [`SharePlugin::take_pending`]. Handling never emits reply

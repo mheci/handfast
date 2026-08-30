@@ -1724,6 +1724,7 @@ dependencies = [
  "mimalloc",
  "rustls",
  "serde_json",
+ "socket2",
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",

@@ -85,6 +85,11 @@ async fn framed_write_read_preserves_order_and_values() {
     first.write_to(&mut wire).await.unwrap();
     second.write_to(&mut wire).await.unwrap();
 
+    // Wire format must be newline-delimited JSON (upstream compatible): each
+    // frame is one JSON object terminated by '\n', no length prefix.
+    assert!(wire.ends_with(b"\n"));
+    assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 2);
+
     let mut reader = Cursor::new(wire);
     let got_first = Packet::read_from(&mut reader).await.unwrap();
     let got_second = Packet::read_from(&mut reader).await.unwrap();
@@ -95,6 +100,31 @@ async fn framed_write_read_preserves_order_and_values() {
     assert_eq!(got_second.ptype, TYPE_IDENTITY);
     let ident: Identity = serde_json::from_value(got_second.body).unwrap();
     assert_eq!(ident, sample_identity());
+}
+
+#[tokio::test]
+async fn framing_matches_upstream_serialize_exactly() {
+    // Replicate upstream NetworkPacket::serialize(): compact JSON + '\n',
+    // with payloadSize/payloadTransferInfo serialized at the top level.
+    let packet = Packet::new(TYPE_SHARE, serde_json::json!({ "filename": "a.txt" }))
+        .with_payload(1024, 1745);
+
+    let mut wire = Vec::new();
+    packet.write_to(&mut wire).await.unwrap();
+
+    let text = String::from_utf8(wire.clone()).unwrap();
+    assert!(text.ends_with('\n'));
+    let json: serde_json::Value = serde_json::from_str(text.trim_end_matches('\n')).unwrap();
+    assert_eq!(json["type"], "kdeconnect.share.request");
+    assert_eq!(json["payloadSize"], 1024);
+    assert_eq!(json["payloadTransferInfo"]["port"], 1745);
+    assert_eq!(json["body"]["filename"], "a.txt");
+
+    // Round-trip through the same byte stream.
+    let mut reader = Cursor::new(wire);
+    let decoded = Packet::read_from(&mut reader).await.unwrap();
+    assert_eq!(decoded, packet);
+    assert_eq!(decoded.payload_transfer_port(), Some(1745));
 }
 
 /// Reader handing out at most 3 bytes per poll to prove framing tolerates
@@ -137,9 +167,11 @@ async fn reads_survive_split_buffers() {
     first.write_to(&mut wire).await.unwrap();
     second.write_to(&mut wire).await.unwrap();
 
-    let mut reader = Trickle {
+    // Trickle hands out ≤3 bytes per poll; the buffered reader must still
+    // assemble complete newline-delimited frames.
+    let mut reader = tokio::io::BufReader::new(Trickle {
         inner: Cursor::new(wire),
-    };
+    });
     let got_first = Packet::read_from(&mut reader).await.unwrap();
     let got_second = Packet::read_from(&mut reader).await.unwrap();
 
@@ -149,10 +181,11 @@ async fn reads_survive_split_buffers() {
 
 #[tokio::test]
 async fn oversized_frames_are_rejected_unbuffered() {
-    let too_long = (MAX_PACKET_LEN as u32) + 1;
+    // A line that never gets a newline and exceeds the cap must be rejected
+    // without buffering it all (the scanner aborts as soon as the cap passes).
     let mut wire = Vec::new();
-    wire.extend_from_slice(&too_long.to_be_bytes());
-    wire.extend_from_slice(b"\"trailing garbage\"");
+    wire.extend_from_slice(&vec![b'A'; MAX_PACKET_LEN + 1]);
+    wire.push(b'\n');
 
     let mut reader = Cursor::new(wire);
     let err = Packet::read_from(&mut reader).await.unwrap_err();
@@ -190,8 +223,8 @@ async fn frames_exactly_at_max_len_are_accepted() {
     );
 
     let mut wire = Vec::new();
-    wire.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     wire.extend_from_slice(&payload);
+    wire.push(b'\n');
 
     let mut reader = Cursor::new(wire);
     let decoded = Packet::read_from(&mut reader).await.unwrap();
@@ -257,10 +290,9 @@ proptest! {
         let mut buf = BytesMut::new();
         packet.encode_into(&mut buf).unwrap();
         let frame: Bytes = buf.freeze();
-        let len = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
-        prop_assert!(len <= MAX_PACKET_LEN);
-        prop_assert_eq!(frame.len(), len + 4);
-        let decoded: Packet = serde_json::from_slice(&frame[4..]).unwrap();
+        prop_assert!(frame.len() <= MAX_PACKET_LEN + 1);
+        prop_assert_eq!(frame.last(), Some(&b'\n'));
+        let decoded: Packet = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
         prop_assert_eq!(&decoded, &packet);
     }
 }

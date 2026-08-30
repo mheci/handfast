@@ -5,7 +5,7 @@
 //! 1716. A listener that receives such a datagram learns:
 //!
 //! * the sender's IP (from the datagram source),
-//! * the TCP port of its TLS server (`tcpSourcePort`),
+//! * the TCP port of its control listener (`tcpPort`),
 //! * its capabilities.
 //!
 //! and may then open an outgoing TLS connection. This module only transports
@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use handfast_core::error::Result;
 use handfast_protocol::{Identity, Packet, TYPE_IDENTITY, UDP_BROADCAST_PORT};
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
@@ -29,19 +30,25 @@ const MAX_DATAGRAM: usize = 4096;
 pub struct PeerAnnouncement {
     /// Source IP of the announcing peer.
     pub ip: IpAddr,
-    /// Identity carried by the datagram (includes `tcpSourcePort`).
+    /// Identity carried by the datagram (includes `tcpPort`).
     pub identity: Identity,
 }
 
 /// Bind the discovery socket on all IPv4 interfaces with broadcast enabled.
 ///
-/// Binding port 1716 exclusively matches upstream; when another Handfast or
-/// KDE Connect instance already holds it we surface the error to the caller
-/// instead of degrading silently.
+/// SO_REUSEADDR mirrors upstream android `LanLinkProvider`, which binds with
+/// `ShareAddress` so several KDE Connect instances can coexist on one host;
+/// on Linux it also delivers broadcast datagrams to *every* socket bound to
+/// the port, which is what lets a mesh of handfastd instances on a single
+/// machine discover each other (the two-daemon E2E relies on this).
 pub async fn bind() -> Result<UdpSocket> {
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, UDP_BROADCAST_PORT)).await?;
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), UDP_BROADCAST_PORT);
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&addr.into())?;
     socket.set_broadcast(true)?;
-    Ok(socket)
+    socket.set_nonblocking(true)?;
+    Ok(UdpSocket::from_std(socket.into())?)
 }
 
 /// Send one identity announcement to the IPv4 limited broadcast address.
@@ -131,7 +138,7 @@ async fn recv_one(socket: &UdpSocket, self_device_id: &str) -> Option<PeerAnnoun
             continue;
         }
         if parsed.tcp_source_port == 0 {
-            debug!(device = %parsed.device_id, "announcement lacks tcpSourcePort");
+            debug!(device = %parsed.device_id, "announcement lacks tcpPort");
             continue;
         }
         return Some(PeerAnnouncement {

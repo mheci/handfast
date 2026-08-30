@@ -1,24 +1,56 @@
-//! File-transfer payload types.
+//! File-transfer payload plumbing.
 //!
-//! Control-plane metadata ([`TransferMeta`], [`ChunkHeader`]) travels inside
-//! framed JSON packets (e.g. [`crate::TYPE_SHARE`]); the file bytes themselves
-//! stream over the separate raw-TLS transfer channel in fixed
-//! [`CHUNK_SIZE`] blocks. [`split_into_chunks`] and [`reassemble`] implement
-//! that blocking on the sending and receiving sides respectively.
+//! Matches upstream KDE Connect byte-for-byte. A `kdeconnect.share.request`
+//! header packet announces a file over the control connection with the
+//! top-level `payloadSize` and `payloadTransferInfo: {"port": <u16>}` fields
+//! (see [`crate::Packet`]); the file bytes then stream **raw** — no chunk
+//! headers, no base64 — over a second TLS connection that the *receiver*
+//! dials to the sender's announced port. Upstream's `UploadJob` writes 4 KiB
+//! at a time and `CompositeUploadJob` opens the data port in
+//! [`PAYLOAD_PORT_MIN`]..=[`PAYLOAD_PORT_MAX`].
+//!
+//! [`TransferMeta`] and [`TransferDirection`] are the control-plane metadata
+//! the daemon's receive engine tracks for staging, collision handling and
+//! progress reporting.
 
-/// Fixed payload size of one transfer chunk (64 KiB).
+/// Upper bound on one control-packet body chunk handled by the receive engine
+/// (64 KiB). Payload *streams* on the data connection are unbounded; this only
+/// caps how much of them we hand to the engine at a time.
 pub const CHUNK_SIZE: usize = 64 * 1024;
+
+/// Read/write granularity for payload streams (upstream's `UploadJob` buffer).
+/// The wire carries no chunk framing, so the exact value is not part of the
+/// protocol — this exists to mirror upstream behaviour and to size buffers.
+pub const PAYLOAD_CHUNK_SIZE: usize = 4096;
+
+/// First port the sender tries for the data connection (upstream
+/// `UploadJob::MIN_PORT`).
+pub const PAYLOAD_PORT_MIN: u16 = 1739;
+
+/// Last port the sender tries for the data connection (upstream
+/// `UploadJob::MAX_PORT`).
+pub const PAYLOAD_PORT_MAX: u16 = 1764;
+
+/// How long a sender waits for the receiver to dial the data connection
+/// (upstream Android uses a 10 s `ServerSocket` accept window).
+pub const PAYLOAD_ACCEPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a receiver waits for the next payload bytes before aborting
+/// (generous; upstream relies on TCP timeouts alone, we want a hard bound so
+/// a stalled peer cannot pin a staging file forever).
+pub const PAYLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Metadata describing a single file transfer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct TransferMeta {
-    /// Unique id correlating the control packets with the streamed chunks.
+    /// Unique id correlating the control packets with the streamed payload.
     pub transfer_id: String,
     /// Peer device id this transfer belongs to.
     pub device_id: String,
     /// Name of the file being transferred (no path components).
     pub file_name: String,
-    /// Total size of the file in bytes.
+    /// Total size of the file in bytes. `u64::MAX` means "unknown" (upstream
+    /// `payloadSize: -1`); the engine then skips size validation.
     pub file_size: u64,
 }
 
@@ -31,68 +63,31 @@ pub enum TransferDirection {
     Download,
 }
 
-/// Prefix sent ahead of every chunk's bytes on the transfer stream.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct ChunkHeader {
-    /// Id of the transfer this chunk belongs to.
-    pub transfer_id: String,
-    /// Zero-based position of this chunk within the transfer.
-    pub chunk_index: u32,
-    /// Total number of chunks the transfer is split into.
-    pub total_chunks: u32,
-}
-
-/// Splits `data` into consecutive chunks of at most [`CHUNK_SIZE`] bytes.
-///
-/// Returns an empty vector when `data` is empty; otherwise every chunk except
-/// possibly the last is exactly [`CHUNK_SIZE`] bytes.
-#[must_use]
-pub fn split_into_chunks(data: &[u8]) -> Vec<Vec<u8>> {
-    data.chunks(CHUNK_SIZE).map(<[u8]>::to_vec).collect()
-}
-
-/// Concatenates `chunks` back into a single byte vector.
-#[must_use]
-pub fn reassemble(chunks: &[Vec<u8>]) -> Vec<u8> {
-    let total: usize = chunks.iter().map(Vec::len).sum();
-    let mut out = Vec::with_capacity(total);
-    for chunk in chunks {
-        out.extend_from_slice(chunk);
-    }
-    out
-}
+/// Sentinel for "the sender did not announce a size" (upstream `-1`).
+pub const UNKNOWN_SIZE: u64 = u64::MAX;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn round_trip_split_reassemble() {
-        let data: Vec<u8> = (0..=255u8).cycle().take(CHUNK_SIZE * 2 + 12345).collect();
-        let chunks = split_into_chunks(&data);
-        assert_eq!(chunks.len(), 3);
-        assert_eq!(reassemble(&chunks), data);
+    fn port_range_is_upstreams() {
+        assert_eq!(PAYLOAD_PORT_MIN, 1739);
+        assert_eq!(PAYLOAD_PORT_MAX, 1764);
+        assert_eq!(PAYLOAD_CHUNK_SIZE, 4096);
+        assert_eq!(CHUNK_SIZE, 64 * 1024);
     }
 
     #[test]
-    fn exact_size_boundary_yields_single_full_chunk() {
-        let data = vec![7u8; CHUNK_SIZE];
-        let chunks = split_into_chunks(&data);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].len(), CHUNK_SIZE);
-
-        let one_over = vec![9u8; CHUNK_SIZE + 1];
-        let chunks = split_into_chunks(&one_over);
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].len(), CHUNK_SIZE);
-        assert_eq!(chunks[1].len(), 1);
-        assert_eq!(reassemble(&chunks), one_over);
-    }
-
-    #[test]
-    fn empty_input_produces_no_chunks() {
-        let chunks = split_into_chunks(&[]);
-        assert!(chunks.is_empty());
-        assert!(reassemble(&chunks).is_empty());
+    fn meta_round_trips() {
+        let meta = TransferMeta {
+            transfer_id: "t1".into(),
+            device_id: "dev".into(),
+            file_name: "photo.jpg".into(),
+            file_size: 1024,
+        };
+        let decoded: TransferMeta =
+            serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
+        assert_eq!(decoded, meta);
     }
 }

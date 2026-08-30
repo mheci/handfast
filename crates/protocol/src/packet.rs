@@ -1,24 +1,30 @@
-//! Length-prefixed JSON packet framing ([`Packet`]).
+//! Newline-delimited JSON packet framing ([`Packet`]).
 //!
-//! Every KDE Connect packet travels as a single frame:
+//! Every KDE Connect packet travels as one compact JSON object terminated by
+//! a single `\n` (0x0A) byte — byte-for-byte the framing upstream
+//! `NetworkPacket` uses: `serialize()` appends `'\n'` and link readers loop
+//! on `canReadLine()`/`readLine()`. There is **no length prefix** on the
+//! wire; the JSON object is self-delimiting.
 //!
-//! ```text
-//! u32 (big-endian byte count) ++ UTF-8 JSON of the whole packet object
-//! ```
-//!
-//! The JSON object has three fields:
+//! The JSON object has the upstream shape:
 //!
 //! ```json
 //! {"id": 42, "type": "kdeconnect.ping", "body": {}}
 //! ```
 //!
-//! [`Packet::read_frame`] validates the length prefix against
-//! [`crate::MAX_PACKET_LEN`] *before* reserving memory for the payload.
+//! and, for transfers, the optional top-level `payloadSize` /
+//! `payloadTransferInfo` fields that announce a payload streamed over a
+//! separate TLS connection (see [`crate::transfer`]).
+//!
+//! [`Packet::read_frame`] incrementally scans for the newline so memory never
+//! grows past [`crate::MAX_PACKET_LEN`] even if a peer floods bytes without
+//! ever sending the terminator.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use bytes::BytesMut;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use bytes::{BufMut, BytesMut};
+use serde_json::Value;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::error::{Error, Result};
 use crate::identity::Identity;
@@ -44,6 +50,23 @@ pub struct Packet {
     /// Type-specific payload object; `null` when a plugin sends none.
     #[serde(default)]
     pub body: serde_json::Value,
+    /// Announced size of the payload streamed over the data connection, when
+    /// this packet carries one. Negative values mean "unknown/endless", which
+    /// upstream encodes as `payloadSize: -1`.
+    #[serde(
+        default,
+        rename = "payloadSize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub payload_size: Option<i64>,
+    /// How to reach the data connection (upstream: `{"port": <u16>}`).
+    /// Absent when the payload rides no separate connection.
+    #[serde(
+        default,
+        rename = "payloadTransferInfo",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub payload_transfer_info: Option<serde_json::Map<String, Value>>,
 }
 
 impl Packet {
@@ -59,7 +82,43 @@ impl Packet {
             id: next_packet_id(),
             ptype: ptype.to_string(),
             body,
+            payload_size: None,
+            payload_transfer_info: None,
         }
+    }
+
+    /// Marks this packet as announcing a payload of `size` bytes streamed over
+    /// a data connection listening on local port `port` (the receiver dials
+    /// the sender's address on that port).
+    pub fn with_payload(mut self, size: i64, port: u16) -> Self {
+        self.payload_size = Some(size);
+        let mut info = serde_json::Map::new();
+        info.insert("port".to_string(), Value::from(port));
+        self.payload_transfer_info = Some(info);
+        self
+    }
+
+    /// Announced payload size, if this packet carries one (`< 0` = unknown).
+    #[must_use]
+    pub fn payload_size(&self) -> Option<i64> {
+        self.payload_size
+    }
+
+    /// Whether this packet announces a payload to stream (size present and
+    /// non-zero; upstream's `hasPayload()` semantics).
+    #[must_use]
+    pub fn has_payload(&self) -> bool {
+        self.payload_size.is_some_and(|size| size != 0)
+    }
+
+    /// Port the peer listens on for the data connection, if announced.
+    #[must_use]
+    pub fn payload_transfer_port(&self) -> Option<u16> {
+        self.payload_transfer_info
+            .as_ref()
+            .and_then(|info| info.get("port"))
+            .and_then(Value::as_u64)
+            .and_then(|port| u16::try_from(port).ok())
     }
 
     /// Wraps an [`Identity`] into an outgoing [`crate::TYPE_IDENTITY`] packet.
@@ -79,24 +138,26 @@ impl Packet {
             id: next_packet_id(),
             ptype: TYPE_IDENTITY.to_string(),
             body: value,
+            payload_size: None,
+            payload_transfer_info: None,
         }
     }
 
-    /// Encodes the packet into `buf` as a frame: a `u32` big-endian byte
-    /// length prefix followed by the UTF-8 JSON serialization of the whole
-    /// packet object.
+    /// Encodes the packet into `buf` as a frame: the UTF-8 JSON serialization
+    /// of the whole packet object followed by a single `\n` terminator.
     pub fn encode_into(&self, buf: &mut BytesMut) -> Result<()> {
-        let payload = serde_json::to_vec(self)?;
-        let len = u32::try_from(payload.len()).map_err(|_| {
-            Error::Other(format!(
-                "packet of {} bytes does not fit the u32 length prefix",
-                payload.len()
-            ))
-        })?;
-        tracing::trace!(ptype = %self.ptype, id = self.id, len = payload.len(), "encoding packet");
-        buf.reserve(4 + payload.len());
-        buf.extend_from_slice(&len.to_be_bytes());
-        buf.extend_from_slice(&payload);
+        let json = serde_json::to_vec(self)?;
+        if json.len() > crate::MAX_PACKET_LEN {
+            return Err(Error::Other(format!(
+                "packet of {} bytes exceeds MAX_PACKET_LEN ({})",
+                json.len(),
+                crate::MAX_PACKET_LEN
+            )));
+        }
+        tracing::trace!(ptype = %self.ptype, id = self.id, len = json.len(), "encoding packet");
+        buf.reserve(json.len() + 1);
+        buf.extend_from_slice(&json);
+        buf.put_u8(b'\n');
         Ok(())
     }
 
@@ -113,40 +174,60 @@ impl Packet {
     }
 
     /// Reads one raw frame from `r` and returns its payload: the JSON bytes
-    /// *without* the 4-byte length prefix.
+    /// *without* the trailing newline.
     ///
-    /// Returns [`Error::Other`] when the declared length exceeds
-    /// [`crate::MAX_PACKET_LEN`]; nothing is buffered in that case.
+    /// Returns [`Error::Other`] when a frame exceeds
+    /// [`crate::MAX_PACKET_LEN`]; the scan is incremental so no oversized
+    /// buffer is ever allocated. An EOF before any byte is an error; an EOF
+    /// mid-line is treated as a truncated frame.
     pub async fn read_frame<R>(r: &mut R) -> Result<BytesMut>
     where
-        R: AsyncRead + Unpin,
+        R: AsyncBufRead + Unpin,
     {
-        let mut prefix = [0u8; 4];
-        r.read_exact(&mut prefix).await?;
-        let len = u32::from_be_bytes(prefix) as usize;
-        if len > crate::MAX_PACKET_LEN {
-            tracing::warn!(
-                len,
-                max = crate::MAX_PACKET_LEN,
-                "rejecting oversized frame"
-            );
-            return Err(Error::Other(format!(
-                "framed packet of {len} bytes exceeds MAX_PACKET_LEN ({})",
-                crate::MAX_PACKET_LEN
-            )));
+        let mut line = BytesMut::with_capacity(256);
+        loop {
+            let chunk = r.fill_buf().await?;
+            if chunk.is_empty() {
+                // EOF. A clean close after a complete frame is the caller's
+                // concern; arriving here means we still owed a frame.
+                if line.is_empty() {
+                    return Err(Error::Other("connection closed before a frame".into()));
+                }
+                return Err(Error::Other(
+                    "truncated frame: connection closed mid-line".into(),
+                ));
+            }
+            if let Some(pos) = chunk.iter().position(|byte| *byte == b'\n') {
+                if line.len() + pos > crate::MAX_PACKET_LEN {
+                    return Err(Error::Other(format!(
+                        "framed packet of {} bytes exceeds MAX_PACKET_LEN ({})",
+                        line.len() + pos,
+                        crate::MAX_PACKET_LEN
+                    )));
+                }
+                line.extend_from_slice(&chunk[..pos]);
+                r.consume(pos + 1); // swallow the newline too
+                return Ok(line);
+            }
+            if line.len() + chunk.len() > crate::MAX_PACKET_LEN {
+                return Err(Error::Other(format!(
+                    "framed packet exceeds MAX_PACKET_LEN ({})",
+                    crate::MAX_PACKET_LEN
+                )));
+            }
+            line.extend_from_slice(chunk);
+            let consumed = chunk.len();
+            r.consume(consumed);
         }
-        let mut payload = BytesMut::with_capacity(len);
-        payload.resize(len, 0);
-        r.read_exact(&mut payload[..]).await?;
-        Ok(payload)
     }
 
     /// Reads and parses one packet, guarding against frames longer than
     /// [`crate::MAX_PACKET_LEN`]. Works with incrementally delivered data;
-    /// callers never need to buffer whole frames themselves.
+    /// callers keep a single buffered reader so over-read bytes (including
+    /// any that follow the newline) are never lost.
     pub async fn read_from<R>(r: &mut R) -> Result<Self>
     where
-        R: AsyncRead + Unpin,
+        R: AsyncBufRead + Unpin,
     {
         let payload = Self::read_frame(r).await?;
         let packet: Self = serde_json::from_slice(&payload)?;
@@ -167,12 +248,48 @@ mod tests {
     }
 
     #[test]
-    fn encode_writes_big_endian_length_prefix() {
+    fn encode_uses_newline_framing() {
         let packet = Packet::new(crate::TYPE_PING, serde_json::json!({ "v": 1 }));
         let mut buf = BytesMut::new();
         packet.encode_into(&mut buf).unwrap();
-        let len = u32::from_be_bytes(buf[..4].try_into().unwrap()) as usize;
-        assert_eq!(buf.len(), len + 4);
-        assert_eq!(&buf[4..], serde_json::to_vec(&packet).unwrap());
+        assert_eq!(buf.last(), Some(&b'\n'), "frame must end with a newline");
+        assert_eq!(&buf[..buf.len() - 1], serde_json::to_vec(&packet).unwrap());
+        assert!(!buf.windows(2).any(|w| w == *b"\n\n"));
+    }
+
+    #[test]
+    fn payload_envelope_round_trips() {
+        let packet = Packet::new(
+            crate::TYPE_SHARE,
+            serde_json::json!({ "filename": "a.bin" }),
+        )
+        .with_payload(42, 1745);
+        let json = serde_json::to_string(&packet).unwrap();
+        let decoded: Packet = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, packet);
+        assert_eq!(decoded.payload_size(), Some(42));
+        assert_eq!(decoded.payload_transfer_port(), Some(1745));
+        assert!(decoded.has_payload());
+
+        // Absent fields must round-trip as None (compat with plain packets).
+        let plain = Packet::new(crate::TYPE_PING, serde_json::Value::Null);
+        let json = serde_json::to_string(&plain).unwrap();
+        let decoded: Packet = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, plain);
+        assert_eq!(decoded.payload_size(), None);
+        assert_eq!(decoded.payload_transfer_port(), None);
+        assert!(!decoded.has_payload());
+    }
+
+    #[test]
+    fn zero_size_payload_is_not_a_payload() {
+        // Upstream treats payloadSize == 0 as "no payload" (empty file).
+        let packet = Packet::new(
+            crate::TYPE_SHARE,
+            serde_json::json!({ "filename": "empty" }),
+        )
+        .with_payload(0, 1745);
+        assert!(!packet.has_payload());
+        assert_eq!(packet.payload_size(), Some(0));
     }
 }

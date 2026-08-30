@@ -18,21 +18,18 @@
 //! Peers connect to [`DEFAULT_TCP_PORT`] and immediately upgrade the socket to
 //! TLS; both sides present self-signed device certificates (see [`tls`]) and
 //! authenticate by comparing SHA-256 certificate fingerprints
-//! (trust-on-first-use). Inside TLS every packet is framed as:
+//! (trust-on-first-use). Inside TLS every packet is one line of UTF-8 JSON
+//! terminated by a single `\n`:
 //!
 //! ```text
-//! u32 (big-endian byte count) ++ that many bytes of UTF-8 JSON
+//! {"id": 42, "type": "kdeconnect.ping", "body": {}}\n
 //! ```
 //!
-//! The JSON object has exactly three fields:
-//!
-//! ```json
-//! {"id": 42, "type": "kdeconnect.ping", "body": {}}
-//! ```
-//!
-//! Frames whose declared length exceeds [`MAX_PACKET_LEN`] are rejected before
-//! anything is buffered; file transfers do not use this framing but stream raw
-//! bytes over a separate TLS connection negotiated via share packets.
+//! Lines whose length exceeds [`MAX_PACKET_LEN`] are rejected as they are
+//! scanned, so memory never grows unbounded. File transfers announce
+//! `payloadSize` + `payloadTransferInfo: {"port": ...}` in the header line
+//! and then stream the file bytes raw over a *second* TLS connection — see
+//! [`transfer`].
 //!
 //! # Capabilities
 //!
@@ -47,6 +44,10 @@
 //!   comes from fingerprint verification rather than a CA chain. See [`tls`].
 //! * [`TYPE_PAIR_REQUEST`] is retained purely as a documentation alias for the
 //!   legacy pairing request type; modern peers only use [`TYPE_PAIR`].
+//! * Control framing, payload announcement and the second-connection payload
+//!   stream match upstream exactly (newline-delimited JSON; `payloadSize` /
+//!   `payloadTransferInfo`; raw bytes on a receiver-dialed TLS data
+//!   connection), so file transfers interoperate with the Android app.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -107,8 +108,12 @@ pub const TYPE_CLIPBOARD: &str = "kdeconnect.clipboard";
 /// Advertises whether a peer participates in clipboard sync.
 pub const TYPE_CLIPBOARD_CONNECT: &str = "kdeconnect.clipboard.connect";
 
-/// Share text, URLs or file-transfer metadata.
+/// Share text, URLs or file-transfer headers.
 pub const TYPE_SHARE: &str = "kdeconnect.share.request";
+
+/// Aggregate progress metadata for a batch of shares (`numberOfFiles`,
+/// `totalPayloadSize`). Sent by upstream's `CompositeUploadJob`; informative.
+pub const TYPE_SHARE_UPDATE: &str = "kdeconnect.share.request.update";
 
 /// Lists commands runnable on a peer.
 pub const TYPE_RUNCOMMAND: &str = "kdeconnect.runcommand";
