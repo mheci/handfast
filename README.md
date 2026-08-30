@@ -1,21 +1,22 @@
 # Handfast
 
-Connect your Android phone and your Linux desktop. See notifications, share
-files and links, use your desktop keyboard/mouse on the phone, check your
-phone's battery — over your local network, no cloud involved.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
+[![Latest release](https://img.shields.io/github/v/release/mheci/handfast)](https://github.com/mheci/handfast/releases/latest)
 
-Works on Wayland (and is built for it first). Compatible with the KDE Connect
-Android app — install that on your phone and pair.
+Connect your Android phone to your Linux desktop over your local network. No cloud, no account, no phone vendor needed. Handfast speaks the KDE Connect protocol, so it pairs with the standard KDE Connect Android app.
+
+Built Wayland-first. Ships as three binaries: `handfastd` (the daemon), `hfctl` (terminal UI), and `handfast-gui` (desktop app).
+
+> Personal project, experimental. Anything can change or break without notice.
 
 ## What you can do
 
-- Get phone notifications on your desktop and dismiss them (reply UI lands in Phase 3)
-- See your phone's battery level
-- Browse and control everything from a terminal UI (`hfctl tui`) or a desktop app
-- Run quick remote commands (ping today; more landing soon)
+- See and dismiss phone notifications on your desktop
+- Check your phone's battery level
+- Control everything from a terminal UI (`hfctl tui`) or a desktop app
+- Run quick remote commands (ping today, more arriving)
 
-_File sharing, link/text sharing, phone input control, two-way clipboard sync
-and notification replies are under active development and arrive in Phases 3-4._
+_File sharing, link and text sharing, phone input control, two-way clipboard sync, and notification replies are under active development (Phases 3-4)._
 
 ## Install
 
@@ -44,6 +45,8 @@ Download `handfast-*.tar.zst` from the
 and run `handfastd` / `hfctl` / `handfast-gui` from wherever you like.
 
 ### From source
+
+You need a Rust toolchain plus the development headers for Wayland, xkbcommon, and SQLite (Debian/Ubuntu: `libwayland-dev libxkbcommon-dev libsqlite3-dev`).
 
 ```sh
 git clone https://github.com/mheci/handfast && cd handfast
@@ -75,14 +78,10 @@ Binaries end up in `target/release/`.
 
 Need help reading logs? Set `RUST_LOG=debug` before starting the daemon.
 
-## Documentation
-
-See [`docs/perf.md`](docs/perf.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
-
 ## Contributing
 
-PRs welcome! Conventional commits, `cargo fmt` + `clippy -D warnings` clean.
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+PRs welcome. Conventional commits, `cargo fmt` + `clippy -D warnings` clean.
+Found a bug or want a feature? Open an [issue](https://github.com/mheci/handfast/issues).
 
 ## License
 
