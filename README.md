@@ -197,20 +197,26 @@ and kdeconnect-kde do, so transfers interoperate with both directions.
 
 ### File-manager integration
 
-`hfctl filemanager install` writes context menus into every major file manager:
+`hfctl filemanager install` writes context menus into every major file manager.
+Formats and locations follow the current upstream docs (nautilus-python ≥ 4.0
+with Nautilus ≥ 43.beta, Nemo 3.0 `nemo-python`, MATE `python-caja`, KDE
+`ServiceTypes=KonqPopupMenu/Plugin` servicemenus, Xfce Thunar `uca.xml`, LXDE
+PCManFM DES-EMA actions):
 
-| File manager | Desktop | Mechanism |
-| --- | --- | --- |
-| Nautilus | GNOME | `nautilus-python` extension with a live per-device submenu |
-| Nemo | Cinnamon | `nemo-python` extension with a live per-device submenu |
-| Caja | MATE | `caja-python` extension with a live per-device submenu |
-| Dolphin | KDE Plasma | KService servicemenu (per-device actions + `--pick` fallback) |
-| Thunar | Xfce | `uca.xml` custom action (merged without touching your actions) |
-| PCManFM | LXDE | file-manager custom action |
+| File manager | Desktop | Mechanism | User location |
+| --- | --- | --- | --- |
+| Nautilus | GNOME | `nautilus-python` extension, live per-device submenu | `~/.local/share/nautilus-python/extensions/` |
+| Nemo | Cinnamon | `nemo-python` extension, live per-device submenu | `~/.local/share/nemo-python/extensions/` |
+| Caja | MATE | `caja-python` extension, live per-device submenu | `~/.local/share/caja-python/extensions/` |
+| Dolphin | KDE Plasma | KService servicemenu (per-device actions + `--pick` fallback) | `~/.local/share/kio/servicemenus/` |
+| Thunar | Xfce | `uca.xml` custom action (merged, preserving your actions) | `~/.config/Thunar/uca.xml` |
+| PCManFM | LXDE | DES-EMA file-manager action (`--pick`) | `~/.local/share/file-manager/actions/` |
 
 Run `hfctl filemanager update` after pairing changes to refresh Dolphin's per-device
 entries, and `hfctl filemanager remove` to uninstall. Add `--system` to install for all
-users (`/usr/share`, needs root). Restart the file manager after installing.
+users (`/usr/share`, needs root). Thunar is the one exception — it only reads
+`~/.config/Thunar/uca.xml` and has no system-wide file, so `--system` skips it
+with a notice. Restart the file manager after installing.
 
 ## Configuration
 
@@ -222,6 +228,12 @@ The daemon persists state under XDG dirs:
 - **IPC socket:** `$XDG_RUNTIME_DIR/handfast` (see `handfast_ipc::default_socket_path`)
 
 Logging follows `RUST_LOG` (`info` default; `debug` for protocol tracing).
+
+`handfastd` accepts `--tcp-port` (default 1716, the KDE Connect well-known
+port) so a second instance can coexist on one host — e.g. for the mesh E2E or
+testing against a different port in the upstream 1716–1764 range. The
+discovery socket shares UDP 1716 across instances (SO_REUSEADDR, mirroring
+Android's `ShareAddress`).
 
 ## Development
 
@@ -245,6 +257,11 @@ bash tools/interop/run.sh
 # outbound control handshake -> interactive pairing answer via
 # `hfctl pair-answer` -> payload send -> reconnect with cert pinning)
 bash tools/interop/run_dialout.sh
+
+# Two-daemon full-mesh E2E: two real handfastd instances discover each other
+# over shared UDP 1716 (SO_REUSEADDR, like android's ShareAddress), pair via
+# the interactive IPC path, and transfer files in both directions
+bash tools/interop/run_mesh.sh
 
 # Fuzzing (nightly toolchain)
 cargo +nightly fuzz build -O --sanitizer=none
