@@ -36,6 +36,25 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  # ------------------------------------------------------------------ msrv --
+  # Guards the declared rust-version floor (1.90): dependency bumps that
+  # silently raise the MSRV fail here instead of on end-user machines.
+  msrv:
+    name: msrv (rust 1.90)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system deps (wayland / xkbcommon)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev
+      - name: Check workspace at MSRV (locked)
+        run: cargo check --locked --workspace --all-features
+
   # --------------------------------------------------------------- clippy --
   clippy:
     name: clippy (-D warnings)
