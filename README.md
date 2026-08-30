@@ -241,6 +241,11 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 # secure re-exchange, payload + empty-file shares) against a real handfastd
 bash tools/interop/run.sh
 
+# Dial-out interop: handfast dials the android-shaped peer (UDP announce ->
+# outbound control handshake -> interactive pairing answer via
+# `hfctl pair-answer` -> payload send -> reconnect with cert pinning)
+bash tools/interop/run_dialout.sh
+
 # Fuzzing (nightly toolchain)
 cargo +nightly fuzz build -O --sanitizer=none
 cargo +nightly fuzz run <target> --sanitizer=none -- -max_total_time=60

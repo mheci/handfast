@@ -27,6 +27,7 @@ The peer certificate (RSA-2048, CN = device id, OU "KDE Connect") is
 generated on first run with the `openssl` CLI when missing.
 """
 
+import argparse
 import hashlib
 import json
 import os
@@ -77,7 +78,7 @@ def ensure_peer_certificate():
     )
 
 
-def identity_packet():
+def identity_packet(tcp_port=CONTROL_PORT):
     return {
         "id": next_id(),
         "type": "kdeconnect.identity",
@@ -88,7 +89,7 @@ def identity_packet():
             "deviceType": "phone",
             "incomingCapabilities": ["kdeconnect.ping", "kdeconnect.share.request"],
             "outgoingCapabilities": ["kdeconnect.ping", "kdeconnect.share.request"],
-            "tcpPort": CONTROL_PORT,
+            "tcpPort": tcp_port,
         },
     }
 
@@ -116,65 +117,231 @@ def fail(msg):
     sys.exit(1)
 
 
-def main():
-    ensure_peer_certificate()
-
-    handfast_der = os.path.join(HANDFAST_CERT_DIR, "id_cert.der")
-    if not os.path.exists(handfast_der):
-        fail(f"handfast certificate not found at {handfast_der}")
-    with open(handfast_der, "rb") as fh:
-        disk_der = fh.read()
-    # PEM copy for the TLS trust store (self-signed cert used as its own root).
+def load_handfast_cert():
+    """Read handfast's identity cert (DER on disk) and return (der, pem-path)."""
+    der_path = os.path.join(HANDFAST_CERT_DIR, "id_cert.der")
+    if not os.path.exists(der_path):
+        fail(f"handfast certificate not found at {der_path}")
+    with open(der_path, "rb") as fh:
+        der = fh.read()
     with open(HANDFAST_CERT, "wb") as fh:
         fh.write(b"-----BEGIN CERTIFICATE-----\n")
-        fh.write(base64_encode_lines(disk_der))
+        fh.write(base64_encode_lines(der))
         fh.write(b"-----END CERTIFICATE-----\n")
+    return der
 
-    # ---------- 1 + 2: dial, plaintext identity, TLS server upgrade ----------
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(PEER_CERT, PEER_KEY)
-    ctx.verify_mode = ssl.CERT_OPTIONAL  # request handfast's client cert (android needClientAuth)
-    ctx.load_verify_locations(HANDFAST_CERT)
-    ctx.check_hostname = False
 
-    sock = socket.create_connection((HOST, CONTROL_PORT), timeout=10)
-    sock.sendall(serialize(identity_packet()))
-    tls = ctx.wrap_socket(sock, server_side=True)
-    print("control TLS established; cipher:", tls.cipher())
+def make_tls_ctx(server_side: bool, pin_cert: bytes):
+    """TLS context matching android's SslHelper roles.
 
-    peer_cert = tls.getpeercert(binary_form=True)
-    if not peer_cert:
-        fail("handfast did not present its client certificate")
-    if hashlib.sha256(peer_cert).digest() != hashlib.sha256(disk_der).digest():
-        fail("handfast's presented client cert differs from its on-disk cert")
+    Server role: present our cert, require the peer's cert (needClientAuth),
+    pin it to handfast's on-disk certificate.
+    Client role: present our cert when asked, verify the server against the
+    same pinned certificate.
+    """
+    if server_side:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(PEER_CERT, PEER_KEY)
+        ctx.verify_mode = ssl.CERT_OPTIONAL  # request handfast's client cert
+        ctx.load_verify_locations(HANDFAST_CERT)
+        ctx.check_hostname = False
+    else:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.load_cert_chain(PEER_CERT, PEER_KEY)
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.load_verify_locations(HANDFAST_CERT)
+        ctx.check_hostname = False
+    return ctx
 
-    # ---------- 3: secure identity re-exchange (protocol >= 8) ----------
-    tls.sendall(serialize(identity_packet()))  # write first, like android
-    secure = json.loads(read_line(tls))
-    if secure["type"] != "kdeconnect.identity":
-        fail(f"expected identity, got {secure['type']}")
-    body = secure["body"]
+
+def verify_peer_cert(tls, pin_cert):
+    """The TLS peer certificate must byte-match handfast's on-disk cert."""
+    presented = tls.getpeercert(binary_form=True)
+    if not presented:
+        fail("handfast did not present its certificate")
+    if hashlib.sha256(presented).digest() != hashlib.sha256(pin_cert).digest():
+        fail("handfast's presented certificate differs from its on-disk cert")
+
+
+def validate_identity(body, expected_port):
+    """DeviceInfo.isValidIdentityPacket checks (android)."""
     if not re.fullmatch(r"[a-zA-Z0-9_-]{32,38}", body.get("deviceId", "")):
         fail(f"handfast deviceId fails android regex: {body.get('deviceId')!r}")
     if not body.get("deviceName", "").strip():
         fail("handfast deviceName is blank (android drops such peers)")
     if body.get("protocolVersion") != PROTOCOL_VERSION:
         fail(f"handfast protocolVersion {body.get('protocolVersion')} != {PROTOCOL_VERSION}")
-    if body.get("tcpPort") != CONTROL_PORT:
-        fail(f"handfast advertises tcpPort {body.get('tcpPort')} (must be {CONTROL_PORT})")
-    print(f"handfast secure identity OK: {body['deviceId']} '{body['deviceName']}' "
-          f"v{body['protocolVersion']}")
+    if body.get("tcpPort") != expected_port:
+        fail(f"handfast advertises tcpPort {body.get('tcpPort')} (must be {expected_port})")
+    return body
+
+
+def read_packet(tls, timeout_s=10):
+    """Read one newline-delimited packet with a socket timeout."""
+    tls.settimeout(timeout_s)
+    try:
+        return json.loads(read_line(tls))
+    finally:
+        tls.settimeout(None)
+
+
+def announce_udp(advertised_port, attempts=5, tcp_port=None):
+    """Send our identity datagram to handfast's UDP discovery port so it
+    dials us (android's LanLinkProvider UDP broadcast, unicast here)."""
+    payload = serialize(identity_packet(tcp_port if tcp_port is not None else advertised_port))
+    for _ in range(attempts):
+        try:
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp.sendto(payload, (HOST, 1716))
+            udp.close()
+        except OSError as err:
+            print(f"udp announce failed: {err}", file=sys.stderr)
+        time.sleep(0.2)
+
+
+def serve(args):
+    """Reverse role: handfast DIALS us (we are the TCP acceptor / TLS client,
+    exactly android's LanLinkProvider when a remote initiates). Exercises
+    outbound connect reliability, the interactive pairing answer, and payload
+    reception from handfast. The driver script answers the pairing request via
+    `hfctl pair-answer --accept` once we print PAIRING_REQUEST_SENT.
+    """
+    ensure_peer_certificate()
+    pin_cert = load_handfast_cert()
+    ctx = make_tls_ctx(server_side=False, pin_cert=pin_cert)
+    save_dir = os.path.abspath(os.path.expanduser(args.save_dir))
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Bind FIRST, then announce: handfast dials on the first datagram it
+    # sees, so a listener must already be accepting when the announce lands.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((HOST, args.control_port))
+    listener.listen(1)
+    listener.settimeout(20)
+    announce_udp(args.control_port, tcp_port=args.control_port)
+    print(f"serving on {HOST}:{args.control_port}; waiting for handfast to dial...")
+    try:
+        conn, _ = listener.accept()
+    except socket.timeout:
+        fail("handfast never dialed us")
+    plain = read_packet(conn, timeout_s=10)
+    if plain.get("type") != "kdeconnect.identity":
+        fail(f"expected plaintext identity from handfast, got {plain.get('type')!r}")
+    plain_body = plain.get("body", {})
+    print(f"handfast plaintext identity OK: {plain_body.get('deviceId')}")
+    tls = ctx.wrap_socket(conn, server_side=False)
+    print("dial-out control TLS established; cipher:", tls.cipher())
+    verify_peer_cert(tls, pin_cert)
+
+    # ---- 2: protocol-8 secure identity re-exchange (write first). ----
+    tls.sendall(serialize(identity_packet(args.control_port)))
+    secure = read_packet(tls)
+    if secure.get("type") != "kdeconnect.identity":
+        fail(f"expected secure identity, got {secure.get('type')!r}")
+    # handfast advertises its own control listener (1716), not our serve port.
+    secure_body = validate_identity(secure.get("body", {}), CONTROL_PORT)
+    if secure_body.get("deviceId") != plain_body.get("deviceId"):
+        fail("device id changed between plaintext and secure identity")
+    if secure_body.get("protocolVersion") != plain_body.get("protocolVersion"):
+        fail("protocol version changed between plaintext and secure identity")
+    print(f"handfast secure identity OK: {secure_body['deviceId']} "
+          f"'{secure_body['deviceName']}' v{secure_body['protocolVersion']}")
+
+    # ---- 3: request pairing, await the user's answer. ----
+    tls.sendall(serialize({"id": next_id(), "type": "kdeconnect.pair", "body": {"pair": True}}))
+    print("PAIRING_REQUEST_SENT", flush=True)
+    answer = read_packet(tls, timeout_s=25)
+    if answer.get("type") != "kdeconnect.pair":
+        fail(f"expected pair answer, got {answer.get('type')!r}")
+    if answer.get("body", {}).get("pair") is not True:
+        fail(f"pairing declined: {answer}")
+    print("pairing accepted by handfast")
+
+    # ---- 4: receive the payload handfast sends (sender binds, receiver
+    # dials as TLS client — android LanLink payload roles). ----
+    header = read_packet(tls, timeout_s=25)
+    if header.get("type") != "kdeconnect.share.request":
+        fail(f"expected share.request header, got {header.get('type')!r}")
+    body = header.get("body", {})
+    size = header.get("payloadSize", 0)
+    info = header.get("payloadTransferInfo") or {}
+    port = info.get("port")
+    if port is None:
+        fail("share header lacks payloadTransferInfo.port")
+    data = b""
+    data_sock = socket.create_connection((HOST, port), timeout=15)
+    data_tls = ctx.wrap_socket(data_sock, server_side=False)
+    verify_peer_cert(data_tls, pin_cert)
+    data_tls.settimeout(15)
+    while len(data) < size:
+        chunk = data_tls.recv(min(65536, size - len(data)))
+        if not chunk:
+            fail(f"payload stream ended early: {len(data)}/{size} bytes")
+        data += chunk
+    data_tls.close()
+    if len(data) != size:
+        fail(f"payload size mismatch: {len(data)} != {size}")
+    fname = os.path.basename(body.get("filename", "received.bin")) or "received.bin"
+    dest = os.path.join(save_dir, fname)
+    with open(dest, "wb") as fh:
+        fh.write(data)
+    print(f"PAYLOAD_RECEIVED {len(data)} {hashlib.sha256(data).hexdigest()} -> {dest}", flush=True)
+
+    # ---- 5: reconnect to prove pairing persisted + cert pinning passes. ----
+    tls.close()
+    listener.close()
+    listener2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener2.bind((HOST, args.control_port))
+    listener2.listen(1)
+    listener2.settimeout(20)
+    announce_udp(args.control_port, tcp_port=args.control_port)
+    try:
+        conn2, _ = listener2.accept()
+    except socket.timeout:
+        fail("handfast did not re-dial after the first connection closed")
+    read_packet(conn2, timeout_s=10)  # plaintext identity
+    tls2 = ctx.wrap_socket(conn2, server_side=False)
+    verify_peer_cert(tls2, pin_cert)  # pinned fingerprint must still match
+    tls2.sendall(serialize(identity_packet(args.control_port)))
+    secure2 = read_packet(tls2)
+    if secure2.get("type") != "kdeconnect.identity":
+        fail(f"reconnect: expected identity, got {secure2.get('type')!r}")
+    print("RECONNECT_OK (pairing persisted, certificate pinning passed)")
+    tls2.close()
+    listener2.close()
+
+    print("DIAL-OUT INTEROP: ALL CHECKS PASSED")
+
+
+def main():
+    ensure_peer_certificate()
+    pin_cert = load_handfast_cert()
+
+    # ---------- 1 + 2: dial, plaintext identity, TLS server upgrade ----------
+    ctx = make_tls_ctx(server_side=True, pin_cert=pin_cert)
+    sock = socket.create_connection((HOST, CONTROL_PORT), timeout=10)
+    sock.sendall(serialize(identity_packet()))
+    tls = ctx.wrap_socket(sock, server_side=True)
+    print("control TLS established; cipher:", tls.cipher())
+    verify_peer_cert(tls, pin_cert)
+
+    # ---------- 3: secure identity re-exchange (protocol >= 8) ----------
+    tls.sendall(serialize(identity_packet()))  # write first, like android
+    secure = read_packet(tls)
+    if secure["type"] != "kdeconnect.identity":
+        fail(f"expected identity, got {secure['type']}")
+    validate_identity(secure["body"], CONTROL_PORT)
+    print(f"handfast secure identity OK: {secure['body']['deviceId']} "
+          f"'{secure['body']['deviceName']}' v{secure['body']['protocolVersion']}")
 
     # ---------- 4: payload file transfer (android -> handfast) ----------
     payload = bytes(range(256)) * 1024 + b"interop-tail"  # 256 KiB + tail
     want_sha = hashlib.sha256(payload).hexdigest()
     fname = "interop-from-android.bin"
 
-    data_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    data_ctx.load_cert_chain(PEER_CERT, PEER_KEY)
-    data_ctx.verify_mode = ssl.CERT_OPTIONAL
-    data_ctx.load_verify_locations(HANDFAST_CERT)
-    data_ctx.check_hostname = False
+    data_ctx = make_tls_ctx(server_side=True, pin_cert=pin_cert)
 
     listener = None
     for port in range(PAYLOAD_MIN_PORT, PAYLOAD_MIN_PORT + 26):  # android range 1739..1764
@@ -267,4 +434,23 @@ def base64_encode_lines(der: bytes) -> bytes:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Android-shaped KDE Connect interop peer")
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="reverse role: handfast dials us (dial-out connect reliability + "
+        "pairing answer + payload receive)",
+    )
+    parser.add_argument(
+        "--control-port", type=int, default=CONTROL_PORT, help="TCP port to serve on"
+    )
+    parser.add_argument(
+        "--save-dir",
+        default=os.environ.get("SAVE_DIR", "~/Downloads"),
+        help="directory to write received files (serve mode)",
+    )
+    args = parser.parse_args()
+    if args.serve:
+        serve(args)
+    else:
+        main()
