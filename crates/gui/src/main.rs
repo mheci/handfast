@@ -3,7 +3,7 @@
 //! Handfast GUI front-end.
 //!
 //! GUI speaks only handfast-ipc over UDS; Wayland constraints live in the
-//! daemon (see docs/IPC.md). This crate contains no display-server code: the
+//! daemon. This crate contains no display-server code: the
 //! window runs through Iced's winit backend, which uses Wayland natively
 //! whenever a Wayland compositor is present.
 

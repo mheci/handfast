@@ -12,7 +12,7 @@
 //! targets): KDE Plasma 6, GNOME 48+ (`ext` stack), Sway 1.9+, Hyprland
 //! (`zwlr` stack).
 //!
-//! The watcher is fully event-driven (CONTRIBUTING.md rule 4): a dedicated
+//! The watcher is fully event-driven: a dedicated
 //! thread owns a second Wayland connection, listens for `selection` /
 //! `primary_selection` device events, and forwards every *changed* TEXT
 //! selection into an unbounded tokio channel — no polling loops.
@@ -171,7 +171,7 @@ mod imp {
     /// `selection` / `primary_selection` event marks the state dirty. After
     /// each roundtrip with pending changes, current TEXT selections are
     /// snapshotted through wl-clipboard-rs and forwarded on change — no
-    /// polling anywhere (CONTRIBUTING.md rule 4).
+    /// polling anywhere.
     struct Watcher {
         /// Keeps the connection alive for as long as the watcher exists.
         _conn: Connection,

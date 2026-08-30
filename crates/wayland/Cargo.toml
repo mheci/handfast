@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 # Handfast is strictly Wayland-first: no X11/XWayland/XTEST dependencies are
-# permitted anywhere in this crate (see CONTRIBUTING.md ground rule 3).
+# permitted anywhere in this crate.
 [lints]
 workspace = true
 

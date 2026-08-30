@@ -131,6 +131,6 @@ fi
 if (( fail == 0 )); then
     log "overall: PASS"
 else
-    log "overall: FAIL (see docs/perf.md for targets and baselines)"
+    log "overall: FAIL (see the limits at the top of this script)"
 fi
 exit "$fail"
