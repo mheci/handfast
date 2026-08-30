@@ -93,11 +93,28 @@ mod imp {
         /// service is reachable on the session bus, and [`Error::Other`] for
         /// handshake failures (user cancellation included). Never falls back
         /// to X11/XTEST.
+        ///
+        /// Only the initial session-bus connection is bounded here. The
+        /// handshake itself (`CreateSession`/`Start`) may legitimately wait on
+        /// the desktop's user-consent dialog, so it is intentionally left
+        /// unbounded: a missing or wedged bus must degrade in seconds, while a
+        /// real consent prompt can take as long as the user needs.
         pub async fn connect() -> Result<Self> {
-            let proxy = RemoteDesktop::new().await.map_err(|e| {
-                tracing::debug!(error = %e, "remote-desktop portal unreachable");
-                Error::ProtocolMissing(PORTAL.to_string())
-            })?;
+            const BUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+            let proxy = match tokio::time::timeout(BUS_TIMEOUT, RemoteDesktop::new()).await {
+                Ok(Ok(proxy)) => proxy,
+                Ok(Err(e)) => {
+                    tracing::debug!(error = %e, "remote-desktop portal unreachable");
+                    return Err(Error::ProtocolMissing(PORTAL.to_string()));
+                }
+                Err(_) => {
+                    tracing::debug!("remote-desktop portal connect timed out; no session bus?");
+                    return Err(Error::Other(format!(
+                        "{PORTAL} connect timed out (no session bus?)"
+                    )));
+                }
+            };
             let session = proxy
                 .create_session(Default::default())
                 .await
@@ -292,7 +309,14 @@ mod imp {
             if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty()) {
                 return;
             }
-            match PortalInput::connect().await {
+            // Bounded: zbus autolaunch can block indefinitely on runners with
+            // no session bus (observed hanging CI for the full job timeout),
+            // so treat a timeout as the graceful degradation we are asserting.
+            let result =
+                tokio::time::timeout(std::time::Duration::from_secs(5), PortalInput::connect())
+                    .await
+                    .unwrap_or_else(|_| Err(Error::Other("portal connect timed out".into())));
+            match result {
                 Ok(_) => panic!("unexpectedly connected without a session bus"),
                 Err(e) => assert!(
                     matches!(
