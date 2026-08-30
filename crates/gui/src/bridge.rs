@@ -22,7 +22,7 @@
 //! justified by the thin-client nature of the front-end.
 //!
 //! GUI speaks only handfast-ipc over UDS; Wayland constraints live in the
-//! daemon (see docs/IPC.md).
+//! daemon.
 
 use std::thread;
 use std::time::Duration;

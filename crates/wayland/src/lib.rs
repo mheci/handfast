@@ -7,7 +7,7 @@
 //! change watching, and idle inhibition.
 //!
 //! **Strictly Wayland-first**: there is no X11 / XWayland / XTEST code path
-//! anywhere in this crate (CONTRIBUTING.md ground rule 3). Where compositors
+//! anywhere in this crate. Where compositors
 //! lack native Wayland protocols, D-Bus services (`org.freedesktop.ScreenSaver`)
 //! and XDG portals (`org.freedesktop.portal.RemoteDesktop`) are used instead.
 //! Every fallible operation degrades gracefully to [`Error`] — nothing here

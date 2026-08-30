@@ -2,7 +2,7 @@
 //!
 //! The IPC protocol fixes the shapes of requests, responses and server
 //! events, but a successful response carries free-form JSON in its `result`
-//! field (see docs/IPC.md). Every parser below is therefore defensive:
+//! field. Every parser below is therefore defensive:
 //! fields are matched by several likely keys with sensible defaults, and
 //! malformed entries are skipped instead of failing the whole list.
 

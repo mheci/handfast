@@ -264,7 +264,7 @@ jobs:
 
       # Weston's headless backend is the most reliable no-seat compositor for
       # ephemeral CI containers; the sway/hyprland/KWin matrix runs on
-      # self-hosted runners in Phase 4 (see docs/TESTING.md).
+      # self-hosted runners in Phase 4.
       - name: Install weston + system deps
         run: |
           sudo apt-get update

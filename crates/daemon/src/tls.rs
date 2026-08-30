@@ -10,7 +10,7 @@
 //! presenting a different fingerprint for a known device are rejected before
 //! any plugin traffic flows ([`Transport::peer_fingerprint`] feeds that check).
 //!
-//! This mirrors kdeconnect-kde's model; hardening TODOs live in docs/PROTOCOL.md.
+//! This mirrors kdeconnect-kde's model.
 
 use std::fmt;
 use std::pin::Pin;
