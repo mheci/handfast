@@ -19,7 +19,8 @@ pub enum Error {
     #[error("certificate error: {0}")]
     Cert(String),
     /// Protocol-level violation without a tighter variant (for example a frame
-    /// whose declared length exceeds [`crate::MAX_PACKET_LEN`]).
+    /// longer than [`crate::MAX_PACKET_LEN`] or a transfer that overflows its
+    /// declared size).
     #[error("{0}")]
     Other(String),
 }

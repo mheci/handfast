@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,14 +16,18 @@ use handfast_core::bus::{Bus, Event};
 use handfast_core::error::{Error, Result};
 use handfast_core::store::{DeviceRow, Store};
 use handfast_plugins::{Plugin, PluginFactory};
+use handfast_protocol::transfer::TransferMeta;
 use handfast_protocol::{
-    Identity, Packet, TYPE_CLIPBOARD, TYPE_IDENTITY, TYPE_NOTIFICATION, TYPE_PAIR,
+    Identity, Packet, PAYLOAD_TRANSFER_MIN_PORT, TYPE_CLIPBOARD, TYPE_IDENTITY, TYPE_NOTIFICATION,
+    TYPE_PAIR, TYPE_SHARE, TYPE_SHARE_UPDATE,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::discovery::PeerAnnouncement;
-use crate::tls::Transport;
+use crate::tls::{PayloadChannel, Transport};
+use crate::transfer::{TransferEngine, TransferInfo};
 
 /// How long an IPC caller waits for a remote pairing decision.
 pub const PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -55,6 +60,21 @@ pub enum Command {
     /// IPC: revoke trust and tell the peer.
     Unpair {
         device_id: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// IPC: send a local file to a device over the payload channel.
+    ShareFile {
+        device_id: String,
+        path: PathBuf,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// IPC: list in-flight transfers (incoming + outgoing).
+    TransferList {
+        reply: oneshot::Sender<Vec<TransferInfo>>,
+    },
+    /// IPC: cancel an in-flight transfer.
+    TransferCancel {
+        transfer_id: String,
         reply: oneshot::Sender<Result<()>>,
     },
 }
@@ -163,6 +183,65 @@ impl ManagerHandle {
         }
     }
 
+    /// Queue `path` for transfer to `device_id` over the payload channel.
+    ///
+    /// Resolves once the transfer has been announced and the payload channel
+    /// is listening; byte streaming then proceeds in the background with
+    /// progress events on the bus.
+    pub async fn share_file(&self, device_id: String, path: PathBuf) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::ShareFile {
+                device_id,
+                path,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err(Error::Other("device manager stopped".into()));
+        }
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(Error::Other("share reply channel dropped".into())),
+        }
+    }
+
+    /// Snapshot of every in-flight transfer.
+    pub async fn transfer_list(&self) -> Vec<TransferInfo> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::TransferList { reply: tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Cancel an in-flight transfer, deleting any partial staging file.
+    pub async fn transfer_cancel(&self, transfer_id: String) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::TransferCancel {
+                transfer_id,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err(Error::Other("device manager stopped".into()));
+        }
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(Error::Other("cancel reply channel dropped".into())),
+        }
+    }
+
     pub(crate) fn command_sender(&self) -> mpsc::Sender<Command> {
         self.tx.clone()
     }
@@ -177,6 +256,8 @@ pub struct Manager {
     self_identity: Identity,
     pair: Arc<handfast_protocol::tls::CertPair>,
     factories: Vec<Box<dyn PluginFactory>>,
+    /// File-transfer bookkeeping (both directions).
+    engine: Arc<tokio::sync::Mutex<TransferEngine>>,
     /// Clone of our own command inbox so spawned helper tasks can report back.
     self_tx: mpsc::Sender<Command>,
     rx: mpsc::Receiver<Command>,
@@ -191,6 +272,7 @@ impl Manager {
         self_identity: Identity,
         pair: Arc<handfast_protocol::tls::CertPair>,
         factories: Vec<Box<dyn PluginFactory>>,
+        engine: Arc<tokio::sync::Mutex<TransferEngine>>,
     ) -> (ManagerHandle, Self) {
         let (tx, rx) = mpsc::channel(256);
         (
@@ -203,6 +285,7 @@ impl Manager {
                 self_identity,
                 pair,
                 factories,
+                engine,
                 self_tx: tx,
                 rx,
             },
@@ -255,6 +338,19 @@ impl Manager {
                 }
                 Command::Unpair { device_id, reply } => {
                     let _ = reply.send(self.unpair(&device_id).await);
+                }
+                Command::ShareFile {
+                    device_id,
+                    path,
+                    reply,
+                } => {
+                    let _ = reply.send(self.on_share_file(&device_id, &path).await);
+                }
+                Command::TransferList { reply } => {
+                    let _ = reply.send(self.engine.lock().await.snapshot());
+                }
+                Command::TransferCancel { transfer_id, reply } => {
+                    let _ = reply.send(self.on_transfer_cancel(&transfer_id).await);
                 }
             }
         }
@@ -422,6 +518,18 @@ impl Manager {
             return;
         }
 
+        // File transfers announce themselves as payload-bearing share
+        // requests; the file bytes never travel inside the packet itself.
+        if packet.ptype == TYPE_SHARE && packet.payload_size.is_some() {
+            self.begin_inbound_transfer(device_id, &packet).await;
+            return;
+        }
+        // Composite-transfer progress totals carry no actionable payload for
+        // us; our progress is derived from the payload stream directly.
+        if packet.ptype == TYPE_SHARE_UPDATE {
+            return;
+        }
+
         let replies = self.dispatch_to_plugins(device_id, &packet);
         self.emit_side_events(device_id, &packet);
 
@@ -433,6 +541,281 @@ impl Manager {
                     }
                 }
             }
+        }
+    }
+
+    /// Start an inbound file transfer announced by a payload-bearing
+    /// `kdeconnect.share.request` packet.
+    ///
+    /// Reserves the destination name immediately (matching upstream, which
+    /// also reserves on announce), then dials the sender's announced payload
+    /// port as the TLS client, streams exactly `payloadSize` raw bytes into
+    /// the staging file, and atomically renames it on completion. Progress
+    /// and lifecycle events go out on the bus.
+    async fn begin_inbound_transfer(&mut self, device_id: &str, packet: &Packet) {
+        let Some(port) = packet.payload_port() else {
+            debug!(device = %device_id, "share request missing payload port; ignoring");
+            return;
+        };
+        let Some(file_name) = packet
+            .body
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+        else {
+            debug!(device = %device_id, "payload share request without filename; ignoring");
+            return;
+        };
+        let file_size = packet.payload_size.unwrap_or(0).max(0) as u64;
+
+        // Transfers are only accepted from paired devices, mirroring upstream
+        // `Device::sendPacket`'s paired gate.
+        let (Some(pinned), Some(addr)) = self
+            .devices
+            .get(device_id)
+            .map(|s| (s.pinned_fingerprint.clone(), s.addr))
+            .unwrap_or((None, None))
+        else {
+            debug!(device = %device_id, "ignoring transfer from unpaired or unknown device");
+            return;
+        };
+
+        let transfer_id = uuid::Uuid::new_v4().to_string();
+        let meta = TransferMeta {
+            transfer_id: transfer_id.clone(),
+            device_id: device_id.to_string(),
+            file_name: file_name.clone(),
+            file_size,
+        };
+        if let Err(err) = self.engine.lock().await.start_receive(meta).await {
+            warn!(device = %device_id, %err, "could not start inbound transfer");
+            self.bus.publish(Event::TransferFailed {
+                id: transfer_id,
+                reason: err.to_string(),
+            });
+            return;
+        }
+        self.bus.publish(Event::TransferAdded {
+            id: transfer_id.clone(),
+            device_id: device_id.to_string(),
+            direction: "incoming".into(),
+            file_name,
+            file_size,
+        });
+
+        let peer_ip = addr.ip();
+        let engine = self.engine.clone();
+        let bus = self.bus.clone();
+        let pair = self.pair.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let channel = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    PayloadChannel::connect((peer_ip, port), pair),
+                )
+                .await
+                .map_err(|_| Error::Other("payload connect timed out".into()))??;
+                if pinned != hex(&channel.peer_fingerprint()) {
+                    return Err(Error::Other(
+                        "payload certificate does not match paired device".into(),
+                    ));
+                }
+                let (mut reader, _writer) = channel.into_raw();
+                let mut done: u64 = 0;
+                let mut buf = vec![0u8; handfast_protocol::transfer::CHUNK_SIZE];
+                while done < file_size {
+                    if engine.lock().await.is_cancelled(&transfer_id) {
+                        return Err(Error::Other("cancelled".into()));
+                    }
+                    let want = usize::try_from(file_size - done)
+                        .unwrap_or(buf.len())
+                        .min(buf.len());
+                    let n = reader.read(&mut buf[..want]).await?;
+                    if n == 0 {
+                        return Err(Error::Other(format!(
+                            "payload stream ended early ({done}/{file_size} bytes)"
+                        )));
+                    }
+                    engine
+                        .lock()
+                        .await
+                        .write_chunk(&transfer_id, &buf[..n])
+                        .await?;
+                    done += n as u64;
+                    bus.publish(Event::TransferProgress {
+                        id: transfer_id.clone(),
+                        bytes_done: done,
+                        bytes_total: file_size,
+                    });
+                }
+                let destination = engine.lock().await.finish_receive(&transfer_id).await?;
+                bus.publish(Event::TransferFinished {
+                    id: transfer_id.clone(),
+                });
+                info!(id = %transfer_id, to = %destination.display(), "inbound transfer complete");
+                Ok::<_, Error>(())
+            }
+            .await;
+            if let Err(err) = result {
+                let reason = err.to_string();
+                let _ = engine.lock().await.abort(&transfer_id).await;
+                bus.publish(Event::TransferFailed {
+                    id: transfer_id,
+                    reason,
+                });
+            }
+        });
+    }
+
+    /// Send a local file to `device_id` over the payload channel.
+    ///
+    /// Opens the file, binds a payload listener at or above
+    /// [`PAYLOAD_TRANSFER_MIN_PORT`], announces `kdeconnect.share.request`
+    /// with `payloadSize` + `payloadTransferInfo`, then accepts the peer's
+    /// payload connection as the TLS server and streams the file's bytes
+    /// unframed. Resolves once the announce has been queued.
+    async fn on_share_file(&mut self, device_id: &str, path: &PathBuf) -> Result<()> {
+        let (pinned, connected) = match self.devices.get(device_id) {
+            Some(state) => (state.pinned_fingerprint.clone(), state.is_connected()),
+            None => return Err(Error::Other(format!("unknown device '{device_id}'"))),
+        };
+        if pinned.is_none() {
+            return Err(Error::Other(format!("device '{device_id}' is not paired")));
+        }
+        if !connected {
+            return Err(Error::Other(format!(
+                "device '{device_id}' is not connected"
+            )));
+        }
+
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(|err| Error::Other(format!("cannot open '{}': {err}", path.display())))?;
+        let file_size = file.metadata().await?.len();
+        let file_name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unnamed".into());
+
+        let listener = bind_payload_listener().await?;
+        let port = listener.local_addr()?.port();
+
+        let transfer_id = uuid::Uuid::new_v4().to_string();
+        self.engine
+            .lock()
+            .await
+            .start_upload(
+                transfer_id.clone(),
+                device_id.to_string(),
+                file_name.clone(),
+                file_size,
+            )
+            .map_err(|err| Error::Other(err.to_string()))?;
+
+        let packet = Packet::new(
+            TYPE_SHARE,
+            serde_json::json!({ "filename": file_name.clone() }),
+        )
+        .with_payload(file_size, port);
+        let state = self
+            .devices
+            .get(device_id)
+            .ok_or_else(|| Error::Other(format!("device '{device_id}' disappeared")))?;
+        state.send_out(packet)?;
+
+        self.bus.publish(Event::TransferAdded {
+            id: transfer_id.clone(),
+            device_id: device_id.to_string(),
+            direction: "outgoing".into(),
+            file_name,
+            file_size,
+        });
+
+        let engine = self.engine.clone();
+        let bus = self.bus.clone();
+        let pair = self.pair.clone();
+        let peer_fingerprint = pinned;
+        let transfer_id_clone = transfer_id.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let tcp = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                    .await
+                    .map_err(|_| Error::Other("peer never fetched the payload".into()))?
+                    .map_err(|err| Error::Other(err.to_string()))?
+                    .0;
+                let channel = PayloadChannel::accept(tcp, pair).await?;
+                if peer_fingerprint.as_deref() != Some(hex(&channel.peer_fingerprint()).as_str()) {
+                    return Err(Error::Other(
+                        "payload certificate does not match paired device".into(),
+                    ));
+                }
+                let (_reader, mut writer) = channel.into_raw();
+                let mut file = file;
+                let mut sent: u64 = 0;
+                let mut buf = vec![0u8; handfast_protocol::transfer::CHUNK_SIZE];
+                loop {
+                    if engine.lock().await.is_cancelled(&transfer_id_clone) {
+                        return Err(Error::Other("cancelled".into()));
+                    }
+                    let n = file.read(&mut buf).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    writer.write_all(&buf[..n]).await?;
+                    sent += n as u64;
+                    engine
+                        .lock()
+                        .await
+                        .upload_progress(&transfer_id_clone, sent);
+                    bus.publish(Event::TransferProgress {
+                        id: transfer_id_clone.clone(),
+                        bytes_done: sent,
+                        bytes_total: file_size,
+                    });
+                }
+                writer.flush().await?;
+                writer.shutdown().await?;
+                engine.lock().await.finish_upload(&transfer_id_clone)?;
+                bus.publish(Event::TransferFinished {
+                    id: transfer_id_clone.clone(),
+                });
+                info!(id = %transfer_id_clone, bytes = sent, "outbound transfer complete");
+                Ok::<_, Error>(())
+            }
+            .await;
+            if let Err(err) = result {
+                let reason = err.to_string();
+                let _ = engine.lock().await.fail_upload(&transfer_id_clone);
+                bus.publish(Event::TransferFailed {
+                    id: transfer_id_clone,
+                    reason,
+                });
+            }
+        });
+        Ok(())
+    }
+
+    /// Cancel an in-flight transfer by id (incoming or outgoing).
+    async fn on_transfer_cancel(&mut self, transfer_id: &str) -> Result<()> {
+        let mut engine = self.engine.lock().await;
+        if engine.is_cancelled(transfer_id) {
+            return Ok(());
+        }
+        // Incoming transfers: abort deletes the staging file and flags the id.
+        if engine.abort(transfer_id).await.is_ok() {
+            return Ok(());
+        }
+        // Outgoing transfers: flag the id; the streaming task notices on its
+        // next chunk poll and cleans up the tracking entry itself.
+        if engine
+            .snapshot()
+            .iter()
+            .any(|t| t.transfer_id == transfer_id && t.direction == "outgoing")
+        {
+            engine.cancel_outgoing(transfer_id);
+            Ok(())
+        } else {
+            Err(Error::Other(format!("unknown transfer '{transfer_id}'")))
         }
     }
 
@@ -643,6 +1026,24 @@ impl Manager {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Bind a payload-channel listener on the first free port at or above
+/// [`PAYLOAD_TRANSFER_MIN_PORT`], mirroring the upstream sender behavior.
+///
+/// Ports below the floor are never used for payloads, so a KDE Connect peer
+/// opening its own listener on the same machine will not collide with ours.
+async fn bind_payload_listener() -> Result<tokio::net::TcpListener> {
+    let last = PAYLOAD_TRANSFER_MIN_PORT.saturating_add(1024);
+    for port in PAYLOAD_TRANSFER_MIN_PORT..=last {
+        match tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(_) => continue,
+        }
+    }
+    Err(Error::Other(format!(
+        "no free payload port in [{PAYLOAD_TRANSFER_MIN_PORT}..{last}]"
+    )))
 }
 
 fn unix_now() -> i64 {

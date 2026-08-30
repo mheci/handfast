@@ -34,6 +34,19 @@ pub enum Event {
         /// New state label.
         state: String,
     },
+    /// A file transfer was registered (inbound announce or outbound send).
+    TransferAdded {
+        /// Transfer identifier.
+        id: String,
+        /// Peer device identifier.
+        device_id: String,
+        /// Direction label (`"incoming"` or `"outgoing"`).
+        direction: String,
+        /// Name of the transferred file.
+        file_name: String,
+        /// Total transfer size in bytes.
+        file_size: u64,
+    },
     /// Progress update for an ongoing file transfer.
     TransferProgress {
         /// Transfer identifier.
@@ -42,6 +55,18 @@ pub enum Event {
         bytes_done: u64,
         /// Total transfer size in bytes.
         bytes_total: u64,
+    },
+    /// A file transfer completed successfully.
+    TransferFinished {
+        /// Transfer identifier.
+        id: String,
+    },
+    /// A file transfer failed or was cancelled.
+    TransferFailed {
+        /// Transfer identifier.
+        id: String,
+        /// Human-readable failure reason.
+        reason: String,
     },
     /// An incoming notification arrived on a paired device.
     NotificationReceived {

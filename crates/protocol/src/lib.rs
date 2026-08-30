@@ -18,21 +18,19 @@
 //! Peers connect to [`DEFAULT_TCP_PORT`] and immediately upgrade the socket to
 //! TLS; both sides present self-signed device certificates (see [`tls`]) and
 //! authenticate by comparing SHA-256 certificate fingerprints
-//! (trust-on-first-use). Inside TLS every packet is framed as:
-//!
-//! ```text
-//! u32 (big-endian byte count) ++ that many bytes of UTF-8 JSON
-//! ```
-//!
-//! The JSON object has exactly three fields:
+//! (trust-on-first-use). Inside TLS every packet is one line of compact JSON
+//! terminated by `\n`, exactly as upstream KDE Connect serializes packets:
 //!
 //! ```json
-//! {"id": 42, "type": "kdeconnect.ping", "body": {}}
+//! {"id":42,"type":"kdeconnect.ping","body":{}}
 //! ```
 //!
-//! Frames whose declared length exceeds [`MAX_PACKET_LEN`] are rejected before
-//! anything is buffered; file transfers do not use this framing but stream raw
-//! bytes over a separate TLS connection negotiated via share packets.
+//! A frame longer than [`MAX_PACKET_LEN`] is rejected before more data is
+//! buffered. File transfers do not send bytes inside these packets: the
+//! sender announces `payloadSize` + `payloadTransferInfo` (`{"port": N}`),
+//! the receiver dials the sender on that port, both wrap the socket in TLS
+//! (receiver = TLS client, sender = TLS server), and exactly `payloadSize`
+//! raw bytes stream over it — see [`PAYLOAD_TRANSFER_MIN_PORT`].
 //!
 //! # Capabilities
 //!
@@ -109,6 +107,20 @@ pub const TYPE_CLIPBOARD_CONNECT: &str = "kdeconnect.clipboard.connect";
 
 /// Share text, URLs or file-transfer metadata.
 pub const TYPE_SHARE: &str = "kdeconnect.share.request";
+
+/// Composite-transfer progress totals sent alongside [`TYPE_SHARE`].
+///
+/// The sender uses this to announce how many files and how many payload
+/// bytes a batch of transfers will carry; receivers may use it for UI
+/// preallocation but must not require it (single-file sends omit it).
+pub const TYPE_SHARE_UPDATE: &str = "kdeconnect.share.request.update";
+
+/// Lowest port the *sender* of a file transfer listens on for the payload
+/// channel (mirrors `LanLinkProvider.PAYLOAD_TRANSFER_MIN_PORT` upstream).
+///
+/// Senders bind the first free port at or above this value and announce it
+/// in the packet's `payloadTransferInfo`; the receiver dials it back.
+pub const PAYLOAD_TRANSFER_MIN_PORT: u16 = 1739;
 
 /// Lists commands runnable on a peer.
 pub const TYPE_RUNCOMMAND: &str = "kdeconnect.runcommand";

@@ -288,6 +288,19 @@ impl From<handfast_core::bus::Event> for ServerEvent {
             Event::DeviceStateChanged { id, state } => {
                 ServerEvent::DeviceStateChanged { id, state }
             }
+            Event::TransferAdded {
+                id,
+                device_id,
+                direction,
+                file_name,
+                file_size,
+            } => ServerEvent::TransferAdded {
+                id,
+                device_id,
+                direction,
+                file_name,
+                total: file_size,
+            },
             Event::TransferProgress {
                 id,
                 bytes_done,
@@ -297,6 +310,8 @@ impl From<handfast_core::bus::Event> for ServerEvent {
                 bytes_done,
                 bytes_total,
             },
+            Event::TransferFinished { id } => ServerEvent::TransferFinished { id },
+            Event::TransferFailed { id, reason } => ServerEvent::TransferFailed { id, reason },
             Event::NotificationReceived {
                 id,
                 app,

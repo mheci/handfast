@@ -36,8 +36,28 @@ Iced GUI that runs natively on Wayland.
 | Share requests (URL / text / file announcement) | ✅ Queued; surfacing lands in Phase 3 |
 | SMS sending from the desktop (via paired phone) | ✅ Live |
 | TUI (`hfctl tui`) + rich CLI + Iced GUI | ✅ Live |
-| File transfer byte streams (SFTP-style) | 🚧 Phase 3 (engine exists, being wired) |
+| File transfer byte streams — KDE Connect-compatible payload channel (send + receive, progress, cancel) | ✅ Live |
 | Mousepad input, full two-way clipboard sync, contacts, connectivity report | 🚧 Phase 3–4 |
+
+### File transfers
+
+Files travel over the KDE Connect payload channel, exactly like the reference
+implementations: the sender announces `payloadSize` + `payloadTransferInfo`
+(`{"port": N}`) in a `kdeconnect.share.request` packet, the receiver dials
+that port back, both sides wrap the socket in TLS (receiver = TLS client,
+sender = TLS server), and exactly `payloadSize` raw bytes stream over it.
+Control packets are newline-delimited JSON, matching upstream. Inbound files
+land under `$XDG_DATA_HOME/handfast/downloads` (override with
+`--data-dir`); peer-supplied names are sanitized and colliding names get
+numbered copies, so a hostile sender can never overwrite existing files.
+
+Use it from the CLI:
+
+```console
+hfctl send <device-id> /path/to/file     # send a file
+hfctl transfers                           # list in-flight transfers
+hfctl transfer-cancel <transfer-id>       # cancel (partial file is removed)
+```
 
 ## Architecture
 

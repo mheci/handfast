@@ -25,7 +25,7 @@ use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{
     ClientConfig, DigitallySignedStruct, DistinguishedName, ServerConfig, SignatureScheme,
 };
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::net::ToSocketAddrs;
 use tokio_rustls::client::TlsStream as ClientTlsStream;
@@ -228,8 +228,13 @@ pub(crate) type ReaderHalf = ReadHalf<Wire>;
 pub(crate) type WriterHalf = WriteHalf<Wire>;
 
 /// An established, encrypted connection to one remote device.
+///
+/// The reader half is buffered: control packets are newline-delimited JSON
+/// (see [`handfast_protocol::packet::Packet`]), and a `BufReader` lets the
+/// frame parser consume exactly one line while leaving the next packet's
+/// bytes buffered for the following call.
 pub struct Transport {
-    reader: ReaderHalf,
+    reader: BufReader<ReaderHalf>,
     writer: WriterHalf,
     peer_fingerprint: [u8; 32],
     peer_addr: std::net::SocketAddr,
@@ -256,6 +261,7 @@ impl Transport {
         let (_, conn) = tls.get_ref();
         let peer_fingerprint = fingerprint_of_first(conn.peer_certificates())?;
         let (reader, writer) = tokio::io::split(Wire::Client(Box::new(tls)));
+        let reader = BufReader::new(reader);
         debug!(%peer_addr, "outbound tls established");
         Ok(Self {
             reader,
@@ -273,6 +279,7 @@ impl Transport {
         let (_, conn) = tls.get_ref();
         let peer_fingerprint = fingerprint_of_first(conn.peer_certificates())?;
         let (reader, writer) = tokio::io::split(Wire::Server(Box::new(tls)));
+        let reader = BufReader::new(reader);
         debug!(%peer_addr, "inbound tls accepted");
         Ok(Self {
             reader,
@@ -304,7 +311,188 @@ impl Transport {
     }
 
     /// Split into halves so reader/writer loops can own each direction.
-    pub(crate) fn into_parts(self) -> (ReaderHalf, WriterHalf) {
+    ///
+    /// The reader is buffered; callers read one newline-delimited packet per
+    /// [`handfast_protocol::Packet::read_from`] call.
+    pub(crate) fn into_parts(self) -> (BufReader<ReaderHalf>, WriterHalf) {
         (self.reader, self.writer)
+    }
+}
+
+/// A raw (unframed) TLS stream used for file-transfer payloads.
+///
+/// Mirrors the KDE Connect payload channel: the *sender* listens and the
+/// *receiver* dials back; the sender acts as the TLS server and the receiver
+/// as the TLS client, then exactly `payloadSize` bytes stream unframed over
+/// the connection (no length prefixes, no JSON). Both sides present their
+/// device certificates; the peer fingerprint is available for the same
+/// pinning checks the control channel uses.
+pub struct PayloadChannel {
+    reader: ReaderHalf,
+    writer: WriterHalf,
+    peer_fingerprint: [u8; 32],
+}
+
+impl PayloadChannel {
+    /// Accept an inbound payload connection (TLS server role — the side that
+    /// announced the transfer).
+    pub async fn accept(tcp: TcpStream, pair: Arc<CertPair>) -> Result<Self> {
+        let peer_addr = tcp.peer_addr()?;
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(&pair)?));
+        let tls: ServerTlsStream<TcpStream> = acceptor.accept(tcp).await?;
+        let (_, conn) = tls.get_ref();
+        let peer_fingerprint = fingerprint_of_first(conn.peer_certificates())?;
+        let (reader, writer) = tokio::io::split(Wire::Server(Box::new(tls)));
+        debug!(%peer_addr, "payload channel accepted (tls server)");
+        Ok(Self {
+            reader,
+            writer,
+            peer_fingerprint,
+        })
+    }
+
+    /// Dial a payload endpoint (TLS client role — the side that fetches).
+    pub async fn connect(addr: impl ToSocketAddrs, pair: Arc<CertPair>) -> Result<Self> {
+        let tcp = TcpStream::connect(addr).await?;
+        let peer_addr = tcp.peer_addr()?;
+        let connector = TlsConnector::from(Arc::new(client_config(&pair)?));
+        let name = ServerName::from(peer_addr.ip());
+        let tls: ClientTlsStream<TcpStream> = connector.connect(name, tcp).await?;
+        let (_, conn) = tls.get_ref();
+        let peer_fingerprint = fingerprint_of_first(conn.peer_certificates())?;
+        let (reader, writer) = tokio::io::split(Wire::Client(Box::new(tls)));
+        debug!(%peer_addr, "payload channel connected (tls client)");
+        Ok(Self {
+            reader,
+            writer,
+            peer_fingerprint,
+        })
+    }
+
+    /// SHA-256 of the peer end-entity certificate (DER), for pinning.
+    pub fn peer_fingerprint(&self) -> [u8; 32] {
+        self.peer_fingerprint
+    }
+
+    /// Split into raw halves for unframed streaming.
+    pub(crate) fn into_raw(self) -> (ReaderHalf, WriterHalf) {
+        (self.reader, self.writer)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use handfast_protocol::Packet;
+    use std::path::PathBuf;
+    use tokio::io::AsyncReadExt;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("handfast-tls-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn payload_channel_streams_raw_bytes_and_pins_fingerprints() {
+        let alice_dir = temp_dir("alice");
+        let bob_dir = temp_dir("bob");
+        let alice = Arc::new(CertPair::load_or_generate(&alice_dir, "alice-device").unwrap());
+        let bob = Arc::new(CertPair::load_or_generate(&bob_dir, "bob-device").unwrap());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let payload: Vec<u8> = (0..=255u8).cycle().take(300_000).collect();
+        let expected_len = payload.len();
+        let alice_for_task = alice.clone();
+        let payload_for_task = payload.clone();
+
+        let alice_fp = handfast_protocol::tls::cert_fingerprint(&alice.cert_der).unwrap();
+        let bob_fp = handfast_protocol::tls::cert_fingerprint(&bob.cert_der).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let channel = PayloadChannel::accept(tcp, alice_for_task).await.unwrap();
+            let peer = channel.peer_fingerprint();
+            let (mut reader, mut writer) = channel.into_raw();
+            let mut received = Vec::with_capacity(expected_len);
+            let mut buf = vec![0u8; 4096];
+            while received.len() < expected_len {
+                let n = reader.read(&mut buf).await.unwrap();
+                assert!(n > 0, "payload stream ended early");
+                received.extend_from_slice(&buf[..n]);
+            }
+            assert_eq!(received, payload_for_task);
+            writer.write_all(b"ack").await.unwrap();
+            writer.shutdown().await.unwrap();
+            peer
+        });
+
+        let channel = PayloadChannel::connect(addr, bob).await.unwrap();
+        assert_eq!(
+            channel.peer_fingerprint(),
+            alice_fp,
+            "client must observe the server's certificate"
+        );
+        let (mut reader, mut writer) = channel.into_raw();
+        writer.write_all(&payload).await.unwrap();
+        writer.flush().await.unwrap();
+        let mut ack = [0u8; 3];
+        reader.read_exact(&mut ack).await.unwrap();
+        assert_eq!(&ack, b"ack");
+
+        let server_seen = server.await.unwrap();
+        assert_eq!(
+            server_seen, bob_fp,
+            "server must observe the client's certificate"
+        );
+
+        let _ = std::fs::remove_dir_all(alice_dir);
+        let _ = std::fs::remove_dir_all(bob_dir);
+    }
+
+    #[tokio::test]
+    async fn control_channel_round_trips_newline_framed_packets_over_tls() {
+        let alice_dir = temp_dir("alice2");
+        let bob_dir = temp_dir("bob2");
+        let alice = Arc::new(CertPair::load_or_generate(&alice_dir, "alice-device").unwrap());
+        let bob = Arc::new(CertPair::load_or_generate(&bob_dir, "bob-device").unwrap());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let alice_for_task = alice.clone();
+
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut transport = Transport::accept(tcp, alice_for_task).await.unwrap();
+            let packet = transport.read_packet().await.unwrap();
+            (packet, transport)
+        });
+
+        let mut transport = Transport::connect(addr, bob).await.unwrap();
+        let announce = Packet::new(
+            handfast_protocol::TYPE_SHARE,
+            serde_json::json!({ "filename": "photo.jpg" }),
+        )
+        .with_payload(1_000_000, 1743);
+        transport.write_packet(&announce).await.unwrap();
+
+        let (received, mut server_transport) = server.await.unwrap();
+        assert_eq!(received.ty(), handfast_protocol::TYPE_SHARE);
+        assert_eq!(received.body["filename"], "photo.jpg");
+        assert_eq!(received.payload_size, Some(1_000_000));
+        assert_eq!(received.payload_port(), Some(1743));
+
+        // Framing must still be intact for a follow-up packet on the same
+        // connection (the reader stays aligned after the first line).
+        let ping = Packet::new(handfast_protocol::TYPE_PING, serde_json::json!({ "n": 1 }));
+        server_transport.write_packet(&ping).await.unwrap();
+        let got_ping = transport.read_packet().await.unwrap();
+        assert_eq!(got_ping.ty(), handfast_protocol::TYPE_PING);
+
+        let _ = std::fs::remove_dir_all(alice_dir);
+        let _ = std::fs::remove_dir_all(bob_dir);
     }
 }

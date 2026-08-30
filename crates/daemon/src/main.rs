@@ -51,6 +51,7 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 
 use crate::device::{Command, Manager};
+use crate::transfer::TransferEngine;
 
 /// Global allocator policy:
 /// * --features jemalloc -> jemalloc (linux-gnu packaging default),
@@ -172,6 +173,10 @@ async fn run(args: Args) -> anyhow::Result<()> {
         });
     }
 
+    // File-transfer engine: inbound files stage under the data dir.
+    let save_dir = paths.data.join("downloads");
+    let engine = Arc::new(tokio::sync::Mutex::new(TransferEngine::new(save_dir)));
+
     // Device manager actor — owns pairing state, pinning, plugin dispatch.
     let factories = handfast_plugins::registry();
     let (manager_handle, manager) = Manager::new(
@@ -181,6 +186,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         self_identity.clone(),
         cert.clone(),
         factories,
+        engine,
     );
     {
         // The channel cannot be rebuilt after an actor crash (handles would go
@@ -453,7 +459,15 @@ async fn handle_request(
                 Err(err) => Response::err(3000, err.to_string()),
             }
         }
-        Request::SendFile { .. } => Response::err(4000, "file transfers arrive in Phase 3"),
+        Request::SendFile { device_id, path } => {
+            match manager
+                .share_file(device_id, std::path::PathBuf::from(path))
+                .await
+            {
+                Ok(()) => Response::ok_json(serde_json::json!({ "queued": true })),
+                Err(err) => Response::err(4000, err.to_string()),
+            }
+        }
         Request::NotificationList => Response::ok_json(serde_json::Value::Array(vec![])),
         Request::NotificationDismiss { notification_id } => {
             tracing::debug!(%notification_id, "notification dismiss is a no-op until Phase 3");
@@ -480,10 +494,29 @@ async fn handle_request(
                 Err(join_err) => Response::err(5000, join_err.to_string()),
             }
         }
-        Request::TransferList => Response::ok_json(serde_json::Value::Array(vec![])),
+        Request::TransferList => {
+            let transfers = manager.transfer_list().await;
+            Response::ok_json(serde_json::Value::Array(
+                transfers
+                    .into_iter()
+                    .map(|t| {
+                        serde_json::json!({
+                            "id": t.transfer_id,
+                            "deviceId": t.device_id,
+                            "direction": t.direction,
+                            "fileName": t.file_name,
+                            "fileSize": t.file_size,
+                            "bytesTransferred": t.bytes_transferred,
+                        })
+                    })
+                    .collect(),
+            ))
+        }
         Request::TransferCancel { transfer_id } => {
-            tracing::debug!(%transfer_id, "transfer cancellation not wired yet");
-            Response::err(4001, "transfer cancellation arrives in Phase 4")
+            match manager.transfer_cancel(transfer_id).await {
+                Ok(()) => Response::ok_json(serde_json::json!({ "cancelled": true })),
+                Err(err) => Response::err(4001, err.to_string()),
+            }
         }
         Request::RunCommandList { device_id } => {
             tracing::debug!(%device_id, "run-command listing not wired yet");

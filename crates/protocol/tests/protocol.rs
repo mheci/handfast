@@ -137,9 +137,12 @@ async fn reads_survive_split_buffers() {
     first.write_to(&mut wire).await.unwrap();
     second.write_to(&mut wire).await.unwrap();
 
-    let mut reader = Trickle {
+    // Trickle only implements AsyncRead; buffer it so the newline-delimited
+    // frame parser gets the AsyncBufRead it needs while still receiving data
+    // in at-most-3-byte poll chunks.
+    let mut reader = tokio::io::BufReader::new(Trickle {
         inner: Cursor::new(wire),
-    };
+    });
     let got_first = Packet::read_from(&mut reader).await.unwrap();
     let got_second = Packet::read_from(&mut reader).await.unwrap();
 
@@ -148,11 +151,11 @@ async fn reads_survive_split_buffers() {
 }
 
 #[tokio::test]
-async fn oversized_frames_are_rejected_unbuffered() {
-    let too_long = (MAX_PACKET_LEN as u32) + 1;
-    let mut wire = Vec::new();
-    wire.extend_from_slice(&too_long.to_be_bytes());
-    wire.extend_from_slice(b"\"trailing garbage\"");
+async fn oversized_frames_are_rejected() {
+    // A line that never terminates stays below the cap check until it crosses
+    // MAX_PACKET_LEN; the parser must reject it without waiting for `\n`.
+    let mut wire = vec![b'A'; MAX_PACKET_LEN + 1];
+    wire.push(b'\n');
 
     let mut reader = Cursor::new(wire);
     let err = Packet::read_from(&mut reader).await.unwrap_err();
@@ -190,8 +193,8 @@ async fn frames_exactly_at_max_len_are_accepted() {
     );
 
     let mut wire = Vec::new();
-    wire.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     wire.extend_from_slice(&payload);
+    wire.push(b'\n');
 
     let mut reader = Cursor::new(wire);
     let decoded = Packet::read_from(&mut reader).await.unwrap();
@@ -257,10 +260,9 @@ proptest! {
         let mut buf = BytesMut::new();
         packet.encode_into(&mut buf).unwrap();
         let frame: Bytes = buf.freeze();
-        let len = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
-        prop_assert!(len <= MAX_PACKET_LEN);
-        prop_assert_eq!(frame.len(), len + 4);
-        let decoded: Packet = serde_json::from_slice(&frame[4..]).unwrap();
+        prop_assert!(frame.len() <= MAX_PACKET_LEN + 1);
+        prop_assert!(frame.ends_with(b"\n"));
+        let decoded: Packet = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
         prop_assert_eq!(&decoded, &packet);
     }
 }

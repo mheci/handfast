@@ -1,13 +1,20 @@
-//! Inbound file-transfer staging.
+//! File-transfer bookkeeping.
 //!
-//! [`TransferEngine`] owns the *receive* side of the protocol: control-plane
-//! metadata ([`TransferMeta`]) opens a `.handfast-part` staging file inside
-//! the save directory, streamed chunks append to it, and completion atomically
-//! renames the staging file to its final name. Peer-supplied file names are
-//! never trusted — [`sanitize_file_name`] reduces them to a bare component so
-//! a hostile sender can never escape the save directory.
+//! [`TransferEngine`] owns both sides of the transfer protocol:
+//!
+//! * **Receive** — control-plane metadata ([`TransferMeta`]) opens a
+//!   `.handfast-part` staging file inside the save directory, streamed chunks
+//!   append to it, and completion atomically renames the staging file to its
+//!   final name. Peer-supplied file names are never trusted —
+//!   [`sanitize_file_name`] reduces them to a bare component so a hostile
+//!   sender can never escape the save directory.
+//! * **Send** — the outbound side registers progress only; the bytes are
+//!   streamed by the caller over the payload channel.
+//!
+//! The engine also keeps a merged [`TransferInfo`] snapshot for IPC listing
+//! and remembers cancelled ids so streaming loops can stop cleanly.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use handfast_core::error::{Error, Result};
@@ -40,7 +47,34 @@ struct IncomingTransfer {
     received: u64,
 }
 
-/// Manages file receive operations into a single save directory.
+/// Bookkeeping for one in-flight outbound transfer.
+#[derive(Debug)]
+struct OutgoingTransfer {
+    device_id: String,
+    file_name: String,
+    file_size: u64,
+    /// Bytes flushed to the payload channel so far.
+    sent: u64,
+}
+
+/// User-visible summary of a transfer, used by IPC listings.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TransferInfo {
+    /// Transfer identifier.
+    pub transfer_id: String,
+    /// Peer device identifier.
+    pub device_id: String,
+    /// Direction label (`"incoming"` or `"outgoing"`).
+    pub direction: &'static str,
+    /// Name of the transferred file.
+    pub file_name: String,
+    /// Total transfer size in bytes.
+    pub file_size: u64,
+    /// Bytes transferred so far.
+    pub bytes_transferred: u64,
+}
+
+/// Manages file transfers into a single save directory.
 ///
 /// One engine per daemon is expected; methods take `&mut self`, which keeps
 /// chunk ordering per transfer trivially correct when driven from an actor
@@ -49,6 +83,9 @@ struct IncomingTransfer {
 pub struct TransferEngine {
     save_dir: PathBuf,
     incoming: HashMap<String, IncomingTransfer>,
+    outgoing: HashMap<String, OutgoingTransfer>,
+    /// Transfer ids whose streaming loops should stop early.
+    cancelled: HashSet<String>,
 }
 
 impl TransferEngine {
@@ -60,7 +97,105 @@ impl TransferEngine {
         Self {
             save_dir,
             incoming: HashMap::new(),
+            outgoing: HashMap::new(),
+            cancelled: HashSet::new(),
         }
+    }
+
+    /// Register an outbound transfer for tracking and listing.
+    pub fn start_upload(
+        &mut self,
+        transfer_id: String,
+        device_id: String,
+        file_name: String,
+        file_size: u64,
+    ) -> Result<()> {
+        if self.outgoing.contains_key(&transfer_id) {
+            return Err(Error::Other(format!(
+                "transfer '{transfer_id}' already active"
+            )));
+        }
+        self.outgoing.insert(
+            transfer_id,
+            OutgoingTransfer {
+                device_id,
+                file_name,
+                file_size,
+                sent: 0,
+            },
+        );
+        Ok(())
+    }
+
+    /// Record progress of an outbound transfer.
+    pub fn upload_progress(&mut self, transfer_id: &str, sent: u64) {
+        if let Some(t) = self.outgoing.get_mut(transfer_id) {
+            t.sent = sent.min(t.file_size);
+        }
+    }
+
+    /// Mark an outbound transfer as done and drop its tracking entry.
+    pub fn finish_upload(&mut self, transfer_id: &str) -> Result<()> {
+        self.cancelled.remove(transfer_id);
+        match self.outgoing.remove(transfer_id) {
+            Some(_) => Ok(()),
+            None => Err(Error::Other(format!("unknown transfer '{transfer_id}'"))),
+        }
+    }
+
+    /// Mark an outbound transfer as failed/cancelled and drop its entry.
+    pub fn fail_upload(&mut self, transfer_id: &str) -> Result<()> {
+        self.cancelled.remove(transfer_id);
+        match self.outgoing.remove(transfer_id) {
+            Some(_) => Ok(()),
+            None => Err(Error::Other(format!("unknown transfer '{transfer_id}'"))),
+        }
+    }
+
+    /// Whether a cancellation was requested for `transfer_id`.
+    ///
+    /// The flag is sticky until the transfer is finished or aborted, so
+    /// streaming loops polling it mid-transfer stop promptly.
+    #[must_use]
+    pub fn is_cancelled(&self, transfer_id: &str) -> bool {
+        self.cancelled.contains(transfer_id)
+    }
+
+    /// Flag an outbound transfer for cancellation.
+    ///
+    /// The streaming task owns the socket, so it notices the flag on its next
+    /// chunk poll and tears down the entry itself via [`Self::fail_upload`].
+    pub fn cancel_outgoing(&mut self, transfer_id: &str) {
+        self.cancelled.insert(transfer_id.to_string());
+    }
+
+    /// Snapshot of every in-flight transfer (incoming + outgoing).
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<TransferInfo> {
+        let mut out: Vec<TransferInfo> =
+            Vec::with_capacity(self.incoming.len() + self.outgoing.len());
+        for (transfer_id, t) in &self.incoming {
+            out.push(TransferInfo {
+                transfer_id: transfer_id.clone(),
+                device_id: t.meta.device_id.clone(),
+                direction: "incoming",
+                file_name: t.meta.file_name.clone(),
+                file_size: t.meta.file_size,
+                bytes_transferred: t.received,
+            });
+        }
+        for (transfer_id, t) in &self.outgoing {
+            out.push(TransferInfo {
+                transfer_id: transfer_id.clone(),
+                device_id: t.device_id.clone(),
+                direction: "outgoing",
+                file_name: t.file_name.clone(),
+                file_size: t.file_size,
+                bytes_transferred: t.sent,
+            });
+        }
+        out.sort_by(|a, b| a.transfer_id.cmp(&b.transfer_id));
+        out
     }
 
     /// Begin receiving `meta`: create the `.handfast-part` staging file.
@@ -161,15 +296,20 @@ impl TransferEngine {
         let destination = free_destination(&self.save_dir, &final_name).await;
         tokio::fs::rename(&part_path, &destination).await?;
         self.incoming.remove(transfer_id);
+        self.cancelled.remove(transfer_id);
         info!(id = %transfer_id, to = %destination.display(), "file received");
         Ok(destination)
     }
 
     /// Cancel `transfer_id` and delete its partial staging file.
+    ///
+    /// The id is remembered as cancelled so any streaming loop currently
+    /// feeding chunks stops at its next polling point.
     pub async fn abort(&mut self, transfer_id: &str) -> Result<()> {
         let Some(transfer) = self.incoming.remove(transfer_id) else {
             return Err(Error::Other(format!("unknown transfer '{transfer_id}'")));
         };
+        self.cancelled.insert(transfer_id.to_string());
         match tokio::fs::remove_file(&transfer.part_path).await {
             Ok(()) => {}
             // Already gone (e.g. crash recovery swept it): still cancelled.
@@ -283,6 +423,85 @@ mod tests {
 
     fn cleanup(dir: &Path) {
         let _removed = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn snapshot_lists_both_directions_with_progress() {
+        let dir = unique_dir("snapshot");
+        let mut engine = TransferEngine::new(dir.clone());
+        assert!(engine.snapshot().is_empty());
+
+        engine
+            .start_receive(meta("recv-1", "incoming.bin", 100))
+            .await
+            .unwrap();
+        engine.write_chunk("recv-1", &[7u8; 40]).await.unwrap();
+
+        engine
+            .start_upload(
+                "send-1".into(),
+                "peer-device".into(),
+                "outgoing.bin".into(),
+                500,
+            )
+            .unwrap();
+        engine.upload_progress("send-1", 250);
+
+        let snap = engine.snapshot();
+        assert_eq!(snap.len(), 2);
+        let recv = snap.iter().find(|t| t.transfer_id == "recv-1").unwrap();
+        assert_eq!(recv.direction, "incoming");
+        assert_eq!(recv.bytes_transferred, 40);
+        assert_eq!(recv.file_size, 100);
+        let send = snap.iter().find(|t| t.transfer_id == "send-1").unwrap();
+        assert_eq!(send.direction, "outgoing");
+        assert_eq!(send.bytes_transferred, 250);
+        assert_eq!(send.file_name, "outgoing.bin");
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_lifecycle_finishes_and_fails() {
+        let dir = unique_dir("upload");
+        let mut engine = TransferEngine::new(dir.clone());
+        engine
+            .start_upload("u1".into(), "peer-device".into(), "a.bin".into(), 10)
+            .unwrap();
+
+        // Unknown ids are rejected, not silently absorbed.
+        assert!(engine.finish_upload("nope").is_err());
+        engine.finish_upload("u1").unwrap();
+        assert!(!engine.snapshot().iter().any(|t| t.transfer_id == "u1"));
+
+        engine
+            .start_upload("u2".into(), "peer-device".into(), "b.bin".into(), 10)
+            .unwrap();
+        engine.fail_upload("u2").unwrap();
+        assert!(!engine.snapshot().iter().any(|t| t.transfer_id == "u2"));
+        cleanup(&dir);
+    }
+
+    #[tokio::test]
+    async fn cancellation_flag_is_sticky_until_finish() {
+        let dir = unique_dir("cancel");
+        let mut engine = TransferEngine::new(dir.clone());
+        engine
+            .start_upload("u1".into(), "peer-device".into(), "a.bin".into(), 10)
+            .unwrap();
+        engine.cancel_outgoing("u1");
+        assert!(engine.is_cancelled("u1"));
+        // A streaming loop would see the flag and clean up via fail_upload.
+        engine.fail_upload("u1").unwrap();
+        assert!(!engine.is_cancelled("u1"));
+
+        // Inbound: abort flags the id too.
+        engine
+            .start_receive(meta("r1", "in.bin", 10))
+            .await
+            .unwrap();
+        engine.abort("r1").await.unwrap();
+        assert!(engine.is_cancelled("r1"));
+        cleanup(&dir);
     }
 
     #[test]
