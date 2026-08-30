@@ -192,11 +192,83 @@ jobs:
             dist/.SRCINFO
           if-no-files-found: error
 
-  # ================================================= B3) tag -> publishing ==
+  # ====================== B3) tag -> Debian/Ubuntu .deb (native assembly) ===
+  # Assembles the .deb from the proven-green ubuntu binaries using dpkg-deb
+  # (no container), mirroring the arch-package approach.
+  debian-package:
+    name: debian-package (x86_64)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-x86_64
+          path: artifact
+      - name: Extract binaries
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir src
+          tar --zstd -xf "artifact/handfast-${VER}-x86_64-unknown-linux-gnu.tar.zst" -C src
+          mv "src/handfast-${VER}-x86_64-unknown-linux-gnu" src/pkg
+      - name: Assemble .deb
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          bash scripts/package-deb.sh "$VER" "$PWD/src/pkg" "$PWD/dist"
+          sha256sum dist/*.deb > "dist/handfast_${VER}-1_amd64.deb.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: dist/*.deb*
+          if-no-files-found: error
+
+  # ===================== B4) tag -> Fedora .rpm (native assembly) ===========
+  # Assembles the .rpm from the same binaries via rpmbuild (installed on the
+  # ubuntu runner; Fedora/RHEL users can rebuild from the attached spec).
+  fedora-package:
+    name: fedora-package (x86_64)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-x86_64
+          path: artifact
+      - name: Install rpmbuild
+        run: sudo apt-get update && sudo apt-get install -y rpm
+      - name: Extract binaries
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir src
+          tar --zstd -xf "artifact/handfast-${VER}-x86_64-unknown-linux-gnu.tar.zst" -C src
+          mv "src/handfast-${VER}-x86_64-unknown-linux-gnu" src/pkg
+      - name: Assemble .rpm
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          bash scripts/package-rpm.sh "$VER" "$PWD/src/pkg" "$PWD/dist"
+          sha256sum dist/*.rpm > "dist/handfast-${VER}-1.x86_64.rpm.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fedora-package
+          path: dist/*.rpm*
+          if-no-files-found: error
+
+  # ================================================= B5) tag -> publishing ==
   publish:
     name: publish (GitHub Release)
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-linux, arch-package]
+    needs: [build-linux, arch-package, debian-package, fedora-package]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -209,6 +281,7 @@ jobs:
         run: |
           mkdir -p out
           find dl -type f \( -name '*.tar.zst' -o -name '*.sha256' \
+             -o -name '*.deb' -o -name '*.rpm' \
              -o -name 'PKGBUILD' -o -name '.SRCINFO' \) -exec mv {} out/ \;
           ls -la out/
       - name: Publish release assets
@@ -218,7 +291,7 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
-  # =============================================== B4) tag -> AUR metadata ==
+  # =============================================== B6) tag -> AUR metadata ==
   aur-publish:
     name: aur-publish (handfast)
     if: startsWith(github.ref, 'refs/tags/v')
