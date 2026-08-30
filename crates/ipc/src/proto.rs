@@ -140,6 +140,18 @@ impl Response {
         Response::Ok { result: v }
     }
 
+    /// Render the response as one JSON value for scripting: the result
+    /// payload on success, `{"code": …, "message": …}` on failure.
+    #[must_use]
+    pub fn as_json(&self) -> serde_json::Value {
+        match self {
+            Response::Ok { result } => result.clone(),
+            Response::Err { code, message } => {
+                serde_json::json!({ "code": code, "message": message })
+            }
+        }
+    }
+
     /// Build an error response.
     #[must_use]
     pub fn err(code: i32, msg: impl Into<String>) -> Self {
@@ -215,6 +227,13 @@ pub enum ServerEvent {
         id: String,
         /// Human-readable failure reason.
         reason: String,
+    },
+    /// An inbound share (file/text/url) landed and is ready for the user.
+    ShareReceived {
+        /// Local path or URL of the received share.
+        path: String,
+        /// Peer device identifier.
+        device_id: String,
     },
     /// An incoming notification arrived on a paired device.
     NotificationReceived {
@@ -297,6 +316,24 @@ impl From<handfast_core::bus::Event> for ServerEvent {
                 bytes_done,
                 bytes_total,
             },
+            Event::TransferAdded {
+                id,
+                device_id,
+                direction,
+                file_name,
+                total,
+            } => ServerEvent::TransferAdded {
+                id,
+                device_id,
+                direction,
+                file_name,
+                total,
+            },
+            Event::TransferFinished { id } => ServerEvent::TransferFinished { id },
+            Event::TransferFailed { id, reason } => ServerEvent::TransferFailed { id, reason },
+            Event::ShareReceived { path, device_id } => {
+                ServerEvent::ShareReceived { path, device_id }
+            }
             Event::NotificationReceived {
                 id,
                 app,

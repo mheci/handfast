@@ -20,6 +20,7 @@ mod app;
 mod cli;
 mod cmd;
 mod error;
+mod filemanager;
 mod model;
 mod state;
 mod view;
@@ -73,6 +74,7 @@ async fn run() -> anyhow::Result<ExitCode> {
 
     let command = cli.command.unwrap_or(Command::Tui);
     let socket = cli.socket.unwrap_or_else(handfast_ipc::default_socket_path);
+    let json = cli.json;
 
     // Completion generation never touches the socket.
     if let Command::Completions { shell } = &command {
@@ -90,8 +92,8 @@ async fn run() -> anyhow::Result<ExitCode> {
             );
             app::run(client).await?;
         }
-        Command::Status => cmd::print_status(&mut client, &socket).await?,
-        Command::Devices => cmd::print_devices(&client).await?,
+        Command::Status => cmd::print_status(&mut client, &socket, json).await?,
+        Command::Devices => cmd::print_devices(&client, json).await?,
         Command::Pair { device_id } => cmd::print_pair(&client, &device_id).await?,
         Command::Unpair { device_id } => cmd::print_unpair(&client, &device_id).await?,
         Command::Plugins { action } => {
@@ -99,9 +101,13 @@ async fn run() -> anyhow::Result<ExitCode> {
         }
         Command::Send {
             device_id,
-            file_path,
+            pick,
+            file_paths,
         } => {
-            cmd::print_send(&client, &device_id, &file_path).await?;
+            cmd::print_send(&client, device_id.as_deref(), pick, &file_paths).await?;
+        }
+        Command::FileManager { action } => {
+            crate::filemanager::run(action, Some(&client)).await?;
         }
         Command::Notifications { action } => {
             cmd::print_notifications_action(&client, action).await?;
@@ -114,7 +120,11 @@ async fn run() -> anyhow::Result<ExitCode> {
         Command::Completions { .. } => {}
         Command::Transfers => {
             let resp = client.request(Request::TransferList).await?;
-            cmd::print_transfers(&resp);
+            if json {
+                println!("{}", resp.as_json());
+            } else {
+                cmd::print_transfers(&resp);
+            }
         }
         Command::TransferCancel { transfer_id } => {
             let resp = client
