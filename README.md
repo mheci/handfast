@@ -33,10 +33,12 @@ Iced GUI that runs natively on Wayland.
 | Notifications relay — desktop ⇄ phone, with reply/dismiss routing | ✅ Live |
 | Battery status (request + periodic reports) | ✅ Live |
 | Ping, find-my-phone, pause-music, run-commands, system volume | ✅ Live |
-| Share requests (URL / text / file announcement) | ✅ Queued; surfacing lands in Phase 3 |
+| Share requests — URL / text | ✅ Live |
+| **File transfer** (send + receive, wire-compatible with the KDE Connect Android app) | ✅ Live |
+| File-manager context menus (Nautilus, Dolphin, Nemo, Thunar, PCManFM, Caja) | ✅ Live via `hfctl filemanager install` |
+| GVFS (GNOME) + KIO (KDE) backend support for send sources & receive destinations | ✅ Live (gio / kioclient5) |
 | SMS sending from the desktop (via paired phone) | ✅ Live |
 | TUI (`hfctl tui`) + rich CLI + Iced GUI | ✅ Live |
-| File transfer byte streams (SFTP-style) | 🚧 Phase 3 (engine exists, being wired) |
 | Mousepad input, full two-way clipboard sync, contacts, connectivity report | 🚧 Phase 3–4 |
 
 ## Architecture
@@ -160,7 +162,9 @@ Need help reading logs? `RUST_LOG=debug ./handfastd`.
 | `hfctl devices` | List known devices (id, name, type, paired, state) |
 | `hfctl pair <id>` / `hfctl unpair <id>` | Start / revoke pairing |
 | `hfctl plugins` | Inspect or toggle per-device plugins |
-| `hfctl send <file> <id>` | Send a local file to a device |
+| `hfctl send -d <id> <file…>` | Send local files (or GVFS/KIO URIs) to a device |
+| `hfctl send --pick <file…>` | Send files to an interactively chosen device |
+| `hfctl filemanager install` / `update` / `remove` | Install/refresh/remove "Send to device" context menus in Nautilus, Dolphin, Nemo, Thunar, PCManFM and Caja |
 | `hfctl transfers` / `transfer-cancel <id>` | Inspect / cancel transfers |
 | `hfctl notifications` | Inspect or dismiss mirrored notifications |
 | `hfctl clipboard` | Read or overwrite the local clipboard text |
@@ -173,6 +177,40 @@ Need help reading logs? `RUST_LOG=debug ./handfastd`.
 | `hfctl completions <shell>` | Emit a shell completion script (bash/zsh/fish/…) |
 
 Run `hfctl <command> --help` for per-command options.
+
+## File transfer
+
+Handfast speaks the upstream KDE Connect payload protocol: a `kdeconnect.share.request`
+header announces `payloadSize` + `payloadTransferInfo.port` over the control link, and
+the file bytes stream raw over a second TLS connection — exactly what the Android app
+and kdeconnect-kde do, so transfers interoperate with both directions.
+
+* **Send:** `hfctl send -d <DEVICE_ID> <PATH…>` (or `--pick` for an interactive device
+  picker). Paths may be plain files or `gvfs://` / `smb://` / `sftp://` / `dav(s)://` /
+  `kdeconnect://`… URIs; non-local sources are materialized through `gio` (GNOME) or
+  `kioclient5` (KDE) before streaming.
+* **Receive:** incoming files land in `transfer.save_dir` (default `~/Downloads`); a
+  `gvfs://` or KIO URI there is honored — the engine stages locally and copies the
+  finished file into the URI.
+* **Track:** `hfctl transfers`, cancel with `hfctl transfer-cancel <id>`; the TUI and
+  GUI show live progress.
+
+### File-manager integration
+
+`hfctl filemanager install` writes context menus into every major file manager:
+
+| File manager | Desktop | Mechanism |
+| --- | --- | --- |
+| Nautilus | GNOME | `nautilus-python` extension with a live per-device submenu |
+| Nemo | Cinnamon | `nemo-python` extension with a live per-device submenu |
+| Caja | MATE | `caja-python` extension with a live per-device submenu |
+| Dolphin | KDE Plasma | KService servicemenu (per-device actions + `--pick` fallback) |
+| Thunar | Xfce | `uca.xml` custom action (merged without touching your actions) |
+| PCManFM | LXDE | file-manager custom action |
+
+Run `hfctl filemanager update` after pairing changes to refresh Dolphin's per-device
+entries, and `hfctl filemanager remove` to uninstall. Add `--system` to install for all
+users (`/usr/share`, needs root). Restart the file manager after installing.
 
 ## Configuration
 
@@ -197,6 +235,11 @@ cargo test -p handfast-gui --all-features
 # Lint (CI enforces -D warnings)
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Android interop smoke: independent python peer implementing the android
+# LanLinkProvider wire protocol (plaintext identity, inverted TLS roles,
+# secure re-exchange, payload + empty-file shares) against a real handfastd
+bash tools/interop/run.sh
 
 # Fuzzing (nightly toolchain)
 cargo +nightly fuzz build -O --sanitizer=none
