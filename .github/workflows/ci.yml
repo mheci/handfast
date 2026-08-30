@@ -1,7 +1,10 @@
 # CI for Handfast — Linux-targeted Rust workspace.
 #
 # Stages: fmt, clippy, test, audit (RustSec), cargo-deny, release-build,
-#         arch-build (makepkg), fuzz-smoke (tolerated), wayland-smoke (tolerated).
+#         arch-build (makepkg), fuzz-smoke, wayland-smoke,
+#         android-interop-smoke. All lanes are required gates (no
+#         continue-on-error) so regressions surface here instead of silently
+#         rotting.
 
 name: CI
 
@@ -203,17 +206,15 @@ jobs:
           if-no-files-found: error
 
   # ----------------------------------------------------------- arch-build --
-  arch-build:
-    # Tolerated pending root-cause: the bare archlinux:base-devel CONTAINER
-    # drops native static-archive members at final link (ring/sqlite/jemalloc
-    # all fail identically) even with archives appended explicitly; identical
-    # rustup toolchain links cleanly on the VM runner. Real Arch systems use
-    # the normal toolchain where distro packages of comparable rust projects
-    # build routinely. Revisit on a VM-based validation lane.
-    name: arch-build (makepkg) [tolerated]
+  # PR-time PKGBUILD validation on a bare archlinux:base-devel container.
+  # The distro rust toolchain drops native static-archive members at final
+  # link, so the job installs the SAME rustup toolchain the ubuntu jobs use
+  # and links with bfd + --no-gc-sections (see the RUSTFLAGS below); with
+  # that workaround the lane is deterministic and required. The release
+  # .pkg.tar.zst is assembled natively in release.yml's arch-package job.
+    name: arch-build (makepkg)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    continue-on-error: true
     container:
       image: archlinux:base-devel
     steps:
@@ -263,8 +264,9 @@ jobs:
 
   # ----------------------------------------------------------- fuzz-smoke --
   fuzz-smoke:
-    # Smoke-only fuzzing; corpus flakiness tolerated early on.
-    continue-on-error: true
+    # Smoke-only fuzzing: every committed target runs 20s under cargo-fuzz.
+    # Runs on nightly (cargo-fuzz requires -Z sanitizer flags); failures are
+    # real signal now that the targets are stable, so the lane is required.
     name: fuzz-smoke (nightly, 20s/target)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -306,9 +308,11 @@ jobs:
           exit "$status"
 
   # --------------------------------------------------------- wayland-smoke --
-  # Phase-4 hardening target: tolerated until compositor integration matures.
+  # Headless-compositor smoke lane. The D-Bus portal connect used to block
+  # indefinitely without a session bus; that hang is bounded (5s timeout in
+  # handfast-wayland's PortalInput::connect), so the lane is deterministic
+  # and required.
   wayland-smoke:
-    continue-on-error: true
     name: wayland-smoke (headless sway)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -351,3 +355,27 @@ jobs:
           fi
           cargo test -p handfast-wayland --lib detect -- --nocapture
           cargo run --bin handfastd -- --version
+
+  # -------------------------------------------------- android-interop-smoke --
+  # The acceptance test for "actually connects with the Android client": a
+  # Python peer that re-implements the android LanLinkProvider/LanLink wire
+  # protocol from upstream (plaintext identity first, inverted TLS roles,
+  # protocol-8 secure identity re-exchange, payload + empty-file shares)
+  # drives a real handfastd over loopback. Fails if any byte contract
+  # drifts from what the Android app expects.
+  android-interop-smoke:
+    name: android-interop-smoke (python peer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev openssl
+
+      - name: Build + run Android interop smoke
+        run: bash tools/interop/run.sh
