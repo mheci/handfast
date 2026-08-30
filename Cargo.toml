@@ -18,7 +18,9 @@ version = "1.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/mheci/handfast"
-rust-version = "1.85"
+# Enforced by the `msrv` CI job. Keep in sync with the lowest rustc the
+# locked dependency tree accepts (currently driven by wgpu/zbus/ordered-float).
+rust-version = "1.90"
 
 [profile.release]
 opt-level = 3
