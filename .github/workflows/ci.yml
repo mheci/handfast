@@ -116,6 +116,42 @@ jobs:
       - name: Run tests
         run: cargo test -p handfast-gui --all-features -- --nocapture
 
+  # ------------------------------------------------- packaging-smoke --------
+  # Assembles the Debian/Ubuntu .deb and Fedora .rpm from a debug build so
+  # packaging regressions (spec/control drift, missing files, completions)
+  # surface on every PR instead of only at release time.
+  packaging-smoke:
+    name: packaging-smoke (deb + rpm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system deps (wayland / xkbcommon / sqlite / rpm)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev rpm
+      - name: Build debug binaries
+        run: cargo build --workspace --all-features -p handfastd -p handfast-tui -p handfast-gui
+      - name: Assemble .deb
+        run: |
+          mkdir -p dist
+          bash scripts/package-deb.sh 0.0.0 "$PWD/target/debug" "$PWD/dist"
+          dpkg-deb --info dist/*.deb | grep -E "Package|Version|Architecture"
+      - name: Assemble .rpm
+        run: |
+          mkdir -p dist
+          bash scripts/package-rpm.sh 0.0.0 "$PWD/target/debug" "$PWD/dist"
+          test -s dist/handfast-0.0.0-1.x86_64.rpm
+      - name: Upload smoke packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaging-smoke
+          path: dist/*.deb*
+          if-no-files-found: error
+
   # ---------------------------------------------------------------- audit --
   audit:
     name: audit (RustSec)
