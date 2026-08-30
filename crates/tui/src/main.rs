@@ -96,6 +96,17 @@ async fn run() -> anyhow::Result<ExitCode> {
         Command::Devices => cmd::print_devices(&client, json).await?,
         Command::Pair { device_id } => cmd::print_pair(&client, &device_id).await?,
         Command::Unpair { device_id } => cmd::print_unpair(&client, &device_id).await?,
+        Command::PairAnswer {
+            device_id,
+            accept,
+            reject,
+        } => {
+            cmd::pair_answer(&client, &device_id, accept && !reject).await?;
+            println!(
+                "pairing request from {device_id} {}",
+                if accept { "accepted" } else { "declined" }
+            );
+        }
         Command::Plugins { action } => {
             cmd::print_plugins_action(&client, action).await?;
         }

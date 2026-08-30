@@ -422,6 +422,12 @@ async fn handle_request(
             Ok(()) => Response::ok_json(serde_json::json!({ "unpaired": true })),
             Err(err) => Response::err(2002, err.to_string()),
         },
+        Request::PairingAnswer { device_id, accept } => {
+            match manager.pairing_answer(device_id, accept).await {
+                Ok(()) => Response::ok_json(serde_json::json!({ "answered": true })),
+                Err(err) => Response::err(2003, err.to_string()),
+            }
+        }
         Request::PluginList { .. } => {
             let plugins: Vec<serde_json::Value> = handfast_plugins::registry()
                 .iter()
