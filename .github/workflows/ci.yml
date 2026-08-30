@@ -206,7 +206,8 @@ jobs:
           if-no-files-found: error
 
   # ----------------------------------------------------------- arch-build --
-  # PR-time PKGBUILD validation on a bare archlinux:base-devel container.
+  arch-build:
+    # PR-time PKGBUILD validation on a bare archlinux:base-devel container.
   # The distro rust toolchain drops native static-archive members at final
   # link, so the job installs the SAME rustup toolchain the ubuntu jobs use
   # and links with bfd + --no-gc-sections (see the RUSTFLAGS below); with
