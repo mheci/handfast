@@ -244,7 +244,15 @@ mod tests {
     fn packet_ids_are_monotonic() {
         let first = Packet::new(crate::TYPE_PING, serde_json::Value::Null);
         let second = Packet::new(crate::TYPE_PING, serde_json::Value::Null);
-        assert_eq!(second.id, first.id + 1);
+        // The id source is a process-wide atomic, so other test threads can
+        // consume values between our two calls; only strict monotonicity is
+        // guaranteed, not a gap of exactly one.
+        assert!(
+            second.id > first.id,
+            "{} should be > {}",
+            second.id,
+            first.id
+        );
     }
 
     #[test]
