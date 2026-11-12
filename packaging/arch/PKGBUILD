@@ -1,0 +1,19 @@
+# Template. CI replaces __VERSION__ with the Cargo version, using _ for -.
+pkgname=handfastd-bin
+pkgver=__VERSION__
+pkgrel=1
+pkgdesc="Clean-room KDE Connect daemon (prebuilt binary)"
+arch=('x86_64')
+url="https://github.com/mheci/handfast"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+provides=('handfastd')
+conflicts=('handfastd')
+source=('handfastd' 'README.md' 'LICENSE-MIT')
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+    install -Dm755 "$srcdir/handfastd" "$pkgdir/usr/bin/handfastd"
+    install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/handfastd-bin/README.md"
+    install -Dm644 "$srcdir/LICENSE-MIT" "$pkgdir/usr/share/licenses/handfastd-bin/LICENSE-MIT"
+}

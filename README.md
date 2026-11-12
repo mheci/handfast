@@ -11,6 +11,9 @@ Clean-room, Rust-native KDE Connect implementation for Linux desktops.
 > `handfastd` currently prints an identity and waits. Discovery, TLS, pairing,
 > transfers, and the 31 plugins are not wired yet. The CI job
 > `testkit-self-test` tests the testkit and codec, not the daemon.
+>
+> The release workflow also builds a signed Windows 11 MSI. Windows is a P0
+> packaging target only; the desktop adapters are Linux-only.
 
 ## Why a rewrite
 
@@ -31,6 +34,7 @@ not the code:
   backends, phases and test status.
 - [Architecture](docs/ARCHITECTURE.md) - crate layout, runtime, plugin model,
   desktop adapters, security and CI.
+- [Releasing](docs/RELEASING.md) - tag, signing secrets and package assets.
 
 ## Workspace
 
