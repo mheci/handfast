@@ -191,7 +191,7 @@ jobs:
           $binary = (Resolve-Path 'target\release\handfastd.exe').Path
           $wixOut = Join-Path $env:RUNNER_TEMP "wix"
           New-Item -ItemType Directory -Force -Path $wixOut, "dist" | Out-Null
-          & (Join-Path $env:WIX_BIN "candle.exe") -nologo -arch x64 -dVersion=$msiVersion -dBinaryPath="$binary" -out (Join-Path $wixOut "handfast.wixobj") packaging\windows\handfast.wxs
+          & (Join-Path $env:WIX_BIN "candle.exe") -nologo -arch x64 "-dVersion=$msiVersion" "-dBinaryPath=$binary" -out (Join-Path $wixOut "handfast.wixobj") packaging\windows\handfast.wxs
           if ($LASTEXITCODE -ne 0) { throw "candle failed" }
           & (Join-Path $env:WIX_BIN "light.exe") -nologo -arch x64 -out (Join-Path "dist" "handfast-$msiVersion-x64.msi") (Join-Path $wixOut "handfast.wixobj")
           if ($LASTEXITCODE -ne 0) { throw "light failed" }
