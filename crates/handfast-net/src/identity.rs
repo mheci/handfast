@@ -734,10 +734,14 @@ mod tests {
 
     #[test]
     fn peer_certificate_parse_rejects_multiple_common_names() {
-        assert!(matches!(
-            PeerCertificate::parse(&certificate_with(&[DEVICE_A, DEVICE_B])),
-            Err(TlsError::Certificate(_))
-        ));
+        // A fixed DER certificate with two CN RDNs. rcgen's distinguished name
+        // map cannot express duplicates.
+        let der = include_bytes!("../tests/fixtures/multiple-common-names.der");
+        let error = PeerCertificate::parse(der).expect_err("two common names are rejected");
+        assert!(
+            error.to_string().contains("more than one common name"),
+            "{error}"
+        );
     }
 
     #[test]
