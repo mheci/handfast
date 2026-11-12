@@ -1,0 +1,10 @@
+{
+  "id": 0,
+  "type": "kdeconnect.contacts.response_vcards",
+  "body": {
+    "uids": [
+      "test-contact1"
+    ],
+    "test-contact1": "BEGIN:VCARD\nVERSION:2.1\nFN:Contact One\nTEL;CELL:123-456-7890\nEND:VCARD"
+  }
+}

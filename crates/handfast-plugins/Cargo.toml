@@ -1,0 +1,17 @@
+[package]
+name = "handfast-plugins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+handfast-desktop = { path = "../handfast-desktop" }
+handfast-proto = { path = "../handfast-proto" }
+handfast-runtime = { path = "../handfast-runtime" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

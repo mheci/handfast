@@ -1,0 +1,12 @@
+{
+  "id": 0,
+  "type": "kdeconnect.share.request",
+  "body": {
+    "filename": "image.png",
+    "open": false
+  },
+  "payloadSize": 882,
+  "payloadTransferInfo": {
+    "port": 1739
+  }
+}

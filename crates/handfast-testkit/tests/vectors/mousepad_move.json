@@ -1,0 +1,9 @@
+{
+  "id": 0,
+  "type": "kdeconnect.mousepad.request",
+  "body": {
+    "dx": 1.0,
+    "dy": -1.0,
+    "scroll": false
+  }
+}

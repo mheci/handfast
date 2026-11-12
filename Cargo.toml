@@ -1,78 +1,40 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/core",
-    "crates/protocol",
-    "crates/plugins",
-    "crates/wayland",
-    "crates/ipc",
-    "crates/daemon",
-    "crates/tui",
-    "crates/gui",
-    "crates/xtask",
+    "crates/handfast-proto",
+    "crates/handfast-net",
+    "crates/handfast-runtime",
+    "crates/handfast-plugins",
+    "crates/handfast-desktop",
+    "crates/handfast-store",
+    "crates/handfast-testkit",
+    "crates/handfast-daemon",
+    "xtask",
 ]
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 edition = "2021"
+rust-version = "1.90"
 license = "MIT"
 repository = "https://github.com/mheci/handfast"
-# Enforced by the `msrv` CI job. Keep in sync with the lowest rustc the
-# locked dependency tree accepts (currently driven by wgpu/zbus/ordered-float).
-rust-version = "1.90"
-
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-strip = true
-debug = false
-panic = "unwind"
-
-[profile.bench]
-inherits = "release"
-strip = false
-debug = true
 
 [workspace.dependencies]
-# Async runtime and IO
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "signal", "process"] }
-futures-util = { version = "0.3", default-features = false, features = ["std", "async-await", "async-await-macro"] }
-bytes = "1"
-
-# Serialization
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "wrap_help"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+redb = "4.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Errors, logging, ids
+sha2 = "0.10"
+socket2 = "0.6"
 thiserror = "2"
-anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
-
-# CLI plumbing for binaries
-clap = { version = "4", features = ["derive", "wrap_help"] }
-clap_complete = "4"
-
-# Allocators (feature-gated per platform in crates/daemon)
-tikv-jemallocator = "0.6"
-mimalloc = "0.1"
-
-# Persistence
-rusqlite = { version = "0.41" } # system sqlite; distro-native linking
-
-# TLS / certificates
-rcgen = "0.14"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
-sha2 = "0.11"
-
-# Testing
-proptest = "1"
-criterion = { version = "0.8", features = ["html_reports"] }
-tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -81,3 +43,15 @@ unsafe_code = "deny"
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.bench]
+inherits = "release"
+strip = false
+debug = true

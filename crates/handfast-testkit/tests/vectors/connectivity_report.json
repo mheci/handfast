@@ -1,0 +1,16 @@
+{
+  "id": 0,
+  "type": "kdeconnect.connectivity_report",
+  "body": {
+    "signalStrengths": {
+      "6": {
+        "networkType": "4G",
+        "signalStrength": 3
+      },
+      "17": {
+        "networkType": "HSPA",
+        "signalStrength": 0
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": 0,
+  "type": "kdeconnect.notification",
+  "body": {
+    "id": "notification-id",
+    "title": "Information",
+    "text": "Something happened",
+    "appName": "Terminal",
+    "isClearable": true,
+    "onlyOnce": false,
+    "silent": true,
+    "time": "1631436143331",
+    "actions": [
+      "Ignore",
+      "Open"
+    ]
+  }
+}
