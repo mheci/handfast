@@ -141,7 +141,7 @@ impl Default for MockDesktop {
 struct MockBackend(Arc<MockState>);
 
 impl MockBackend {
-    fn lock<T>(&self, mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
+    fn lock<'a, T>(&self, mutex: &'a Mutex<T>) -> Result<std::sync::MutexGuard<'a, T>> {
         mutex
             .lock()
             .map_err(|_| DesktopError::Backend("mock lock poisoned".to_string()))
