@@ -9,6 +9,7 @@ Current state:
 - The TLS link design landed on `main` in `c5a288e` after two adversarial reviews and three verifier rounds. The design is `docs/design/p1-tls-link.md`.
 - The provider gate landed on `main` in `0dacce2`. rustls with ring and `tls12` builds on Windows with the static CRT, and real TLS 1.2 and 1.3 loopback tests pass on Linux.
 - Unit 1 landed on `main` in `cd47f52`. The store persists `identity_v1`, peer pins, atomic trust, authenticated identity updates and 0.2.0 plus pre-audit migrations.
+- Unit 2 landed on `main` in `b7118ab`. Proto has the real Android and desktop identity hello, the desktop and Android discovery announcement, and the strict encrypted identity boundary.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -43,8 +44,8 @@ TLS implementation sequence:
 
 0. Provider spike: done in `0dacce2`.
 1. Store `identity_v1`, optional peer pin, trust updates and migration tests. Done in `cd47f52`.
-2. `IdentityHello` and `DiscoveryAnnouncement` in proto with real Android and desktop packet fixtures. In flight.
-3. Discovery compatibility for the desktop UDP packet.
+2. `IdentityHello` and `DiscoveryAnnouncement` in proto with real Android and desktop packet fixtures. Done in `b7118ab`.
+3. Discovery compatibility for the desktop UDP packet. In flight.
 4. Fingerprint and peer-trust policy, including CN and identity correlation.
 5. Independent testkit TLS peer and RSA fixture.
 6. TLS 1.2 and 1.3 configs and TLS-only tests.
@@ -59,13 +60,19 @@ Store follow-ups:
 - Corrupt-identity and device-ID-versus-settings startup tests belong with the daemon unit.
 - Private-key zeroization and Windows state-file ACLs remain open.
 
+Hardening follow-ups:
+
+- Add fuzz targets for `IdentityHello` and `DiscoveryAnnouncement`; the current fuzz target only covers the strict `Identity`.
+- Make the desktop fixtures use an epoch `id` instead of 0; no parser reads it.
+- Remove or deprecate `set_paired`; the pairing unit must use `set_trusted`.
+
 Active work:
 
-- Branch: `feat/proto-hello`
-- Owner: proto worker, to be spawned
+- Branch: `feat/discovery-compat`
+- Owner: discovery worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: `IdentityHello` parses real Android and desktop connection packets, including string and numeric `targetProtocolVersion`; `DiscoveryAnnouncement` parses the desktop UDP packet with only deviceId, deviceName, protocolVersion and tcpPort; strict encrypted `Identity` parsing is unchanged; proto tests cover missing fields and out-of-range ports; all 9 checks.
+- Evidence: `Discovery::recv` returns `DiscoveryAnnouncement`; a raw desktop four-field UDP datagram is accepted; the daemon persists the desktop sighting with its name and type; the Android full identity still works; malformed and out-of-range packets are ignored; all 9 checks.
 
 Design risks carried into implementation:
 
