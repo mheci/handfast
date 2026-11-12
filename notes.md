@@ -10,6 +10,7 @@ Current state:
 - The provider gate landed on `main` in `0dacce2`. rustls with ring and `tls12` builds on Windows with the static CRT, and real TLS 1.2 and 1.3 loopback tests pass on Linux.
 - Unit 1 landed on `main` in `cd47f52`. The store persists `identity_v1`, peer pins, atomic trust, authenticated identity updates and 0.2.0 plus pre-audit migrations.
 - Unit 2 landed on `main` in `b7118ab`. Proto has the real Android and desktop identity hello, the desktop and Android discovery announcement, and the strict encrypted identity boundary.
+- Unit 3 landed on `main` in `e892f7f`. Discovery returns `DiscoveryAnnouncement`, accepts the desktop four-field UDP packet and the Android full packet, and the daemon persists both.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -45,8 +46,8 @@ TLS implementation sequence:
 0. Provider spike: done in `0dacce2`.
 1. Store `identity_v1`, optional peer pin, trust updates and migration tests. Done in `cd47f52`.
 2. `IdentityHello` and `DiscoveryAnnouncement` in proto with real Android and desktop packet fixtures. Done in `b7118ab`.
-3. Discovery compatibility for the desktop UDP packet. In flight.
-4. Fingerprint and peer-trust policy, including CN and identity correlation.
+3. Discovery compatibility for the desktop UDP packet. Done in `e892f7f`.
+4. Fingerprint and peer-trust policy, including CN and identity correlation. In flight.
 5. Independent testkit TLS peer and RSA fixture.
 6. TLS 1.2 and 1.3 configs and TLS-only tests.
 7. Framed TLS link, hello and identity re-exchange.
@@ -68,11 +69,11 @@ Hardening follow-ups:
 
 Active work:
 
-- Branch: `feat/discovery-compat`
-- Owner: discovery worker, to be spawned
+- Branch: `feat/peer-trust`
+- Owner: trust policy worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: `Discovery::recv` returns `DiscoveryAnnouncement`; a raw desktop four-field UDP datagram is accepted; the daemon persists the desktop sighting with its name and type; the Android full identity still works; malformed and out-of-range packets are ignored; all 9 checks.
+- Evidence: SHA-256 certificate fingerprints, CN equals device ID, hello and encrypted identity correlation, unpaired versus pinned policy, pin match and mismatch, corrupt DER rejection, local endpoint generation and load, and all 9 checks.
 
 Design risks carried into implementation:
 
