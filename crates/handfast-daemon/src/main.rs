@@ -93,20 +93,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 received = discovery.recv() => {
-                    let (address, peer) = match received {
+                    let (address, announcement) = match received {
                         Ok(received) => received,
                         Err(error) => {
                             tracing::error!(%error, "discovery socket failed; stopping discovery");
                             break;
                         }
                     };
-                    if peer.device_id == local_device_id {
+                    if announcement.device_id == local_device_id {
                         continue;
                     }
-                    tracing::debug!(%address, device_id = %peer.device_id, "discovered device");
-                    let id = peer.device_id.as_str().to_string();
-                    let name = peer.device_name.as_str().to_string();
-                    let device_type = peer.device_type.as_str().to_string();
+                    tracing::debug!(
+                        %address,
+                        device_id = %announcement.device_id,
+                        tcp_port = announcement.tcp_port,
+                        "discovered device"
+                    );
+                    let id = announcement.device_id.as_str().to_string();
+                    let name = announcement.device_name.as_str().to_string();
+                    let device_type = announcement.device_type.as_str().to_string();
                     let last_seen = unix_now();
                     if let Err(error) = discovery_store
                         .clone()
