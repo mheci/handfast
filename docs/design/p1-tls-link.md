@@ -34,7 +34,7 @@ The findings at `30c761f` and their resolutions:
 1. **TLS 1.2 and 1.3.** Add the rustls `tls12` feature, `verify_tls12_signature`, RSA signature schemes, TLS 1.2 and 1.3 success tests, and a below-1.2 rejection test. Android's `SSLContext("TLSv1.2")` is the forcing constraint.
 2. **Full identity hello.** `IdentityHello` now carries the full `Identity` plus `targetDeviceId` and `targetProtocolVersion`. The parser accepts a full Android hello and the smaller desktop connection packet, and accepts `targetProtocolVersion` as a string or a number. Real Android and desktop fixtures are in the test plan. The "exactly four fields" statement is removed.
 3. **Port range.** The daemon binds in 1716-1764 and scans upward within the range. It rejects 0 and out-of-range values in production. The UDP announcement test reads the actual UDP datagram and asserts the advertised port is in range. It no longer trusts the encrypted identity.
-4. **Unpaired links.** The manager caps established unpaired links at 42, rate-limits incoming connections per IP (500 ms, 1024 tracked entries) and closes unpaired links idle for 60 s. The pending handshake cap stays at 64.
+4. **Unpaired links.** The manager caps established unpaired links at 42, rate-limits inbound connections per IP (500 ms, 1024 tracked entries) and closes unpaired links idle for 60 s. The pending handshake cap stays at 64. Outbound dials reserve the unpaired slot but do not apply the inbound IP window.
 5. **Duplicate links.** The manager now uses last-successful-handshake-wins, matching Android's `addOrUpdateLink` and desktop's `addLink`. A replacement with a different certificate is rejected. The test uses a testkit peer that opens a second link and closes the first.
 6. **Discovery compatibility.** A new `DiscoveryAnnouncement` parser accepts the desktop UDP packet, which has only `deviceId`, `deviceName`, `protocolVersion` and `tcpPort`. The current `Identity::from_packet` rejects that packet. A desktop UDP fixture and an integration test are added, and discovery compatibility is an implementation unit before the link.
 7. **Keepalive.** `LinkLimits` gains the desktop values: idle 30 s, interval 10 s, count 3, and a 60 s `TCP_USER_TIMEOUT` on platforms that support it. A socket-option test proves the configuration. The dropped-stream-as-keepalive claim is removed.
@@ -177,14 +177,13 @@ let discovery = Discovery::bind(discovery, args.discovery_port).await?;
 ### Discovery sighting
 
 ```rust
-if let Some(port) = announcement.tcp_port {
-    if (1716..=1764).contains(&port) {
-        links.consider_peer(announcement.device_id.clone(), SocketAddr::new(address.ip(), port));
-    }
-}
+links.consider_peer(
+    announcement.device_id.clone(),
+    SocketAddr::new(address.ip(), announcement.tcp_port),
+);
 ```
 
-The daemon persists the sighting with the announcement's name and type. The announcement has no capabilities. The encrypted identity updates name and type after the TLS link is up.
+The `DiscoveryAnnouncement` parser has already rejected a port outside 1716-1764, so the sighting path uses the field directly. The daemon persists the sighting with the announcement's name and type. The announcement has no capabilities. The encrypted identity updates name and type after the TLS link is up.
 
 ### Daemon event loop
 
@@ -298,7 +297,7 @@ Rejecting writes no pin and sends `PairingRequest::reject()`. Unpairing clears t
 - `identity.rs`: pure identity types and checks. `Fingerprint`, `TlsIdentity`, `LocalEndpoint`, `PeerCertificate`, `PeerTrust`, `TrustTable`, `TlsError`. No sockets.
 - `tls.rs`: rustls 1.2 and 1.3 configuration, the accept-any verifiers, `verify_tls12_signature` and `verify_tls13_signature`, certificate/key conversion, and provider setup. It calls `identity.rs`; it does not own trust policy.
 - `link.rs`: plaintext hello, both TLS roles, identity re-exchange, framed reader and writer, keepalive, timeouts. One public `LinkListener::accept`, one public `connect`, and `Link`.
-- `policy.rs`: `LinkPolicy` and `AdmissionPermit`. The unpaired cap and per-IP rate limit live here.
+- `policy.rs`: `LinkPolicy` and `AdmissionPermit`. The unpaired cap and the inbound per-IP rate limit live here.
 - `manager.rs`: `LinkManager` actor, duplicate rule, trust snapshot, gate, backoff, peer expiry, pending limit, events, shutdown.
 - `discovery.rs`, `pairing.rs`, `error.rs`: existing, with `NetError` extended.
 
@@ -470,7 +469,7 @@ pub struct LinkLimits {
     pub peer_ttl: Duration,               // 10 min
     pub max_unpaired_links: usize,        // 42
     pub unpaired_idle_timeout: Duration,  // 60 s
-    pub per_ip_interval: Duration,        // 500 ms
+    pub per_ip_interval: Duration,        // 500 ms, inbound only
     pub rate_limit_entries: usize,        // 1024
     pub keepalive_idle: Duration,         // 30 s
     pub keepalive_interval: Duration,     // 10 s
@@ -546,13 +545,22 @@ The `initiator` field and the min-initiator tie-break are gone. The real peers u
 pub struct LinkPolicy { /* Arc<Mutex<PolicyState>>, limits */ }
 
 impl LinkPolicy {
-    /// Reserve a slot. A paired peer does not consume an unpaired slot but still
-    /// passes the per-IP rate limit. An unpaired peer is rejected when 42
-    /// unpaired slots are reserved or active, or the IP is inside the 500 ms
-    /// rate-limit window.
-    pub fn reserve(
+    /// Reserve a slot for an incoming connection. A paired peer does not consume
+    /// an unpaired slot but still passes the inbound per-IP rate limit. An
+    /// unpaired peer is rejected when 42 unpaired slots are reserved or active,
+    /// or the IP is inside the 500 ms inbound window.
+    pub fn reserve_incoming(
         &self,
         address: IpAddr,
+        peer: &DeviceId,
+        trust: PeerTrust,
+    ) -> Result<AdmissionPermit, NetError>;
+
+    /// Reserve a slot for an outgoing dial. This reserves the unpaired slot but
+    /// does not apply the inbound per-IP window; the reciprocal peer must still
+    /// be able to accept the connection. Per-peer backoff handles retries.
+    pub fn reserve_outgoing(
+        &self,
         peer: &DeviceId,
         trust: PeerTrust,
     ) -> Result<AdmissionPermit, NetError>;
@@ -785,7 +793,7 @@ The public API has one `connect` and one `accept`. Callers do not coordinate sta
 2. Read the plaintext `IdentityHello` with `handshake_timeout`.
 3. Require `target_device_id == local.device_id()`, `target_protocol_version == 8`, and `hello.identity.device_id != local.device_id()`.
 4. Resolve `trust = trust_table.trust(&hello.identity.device_id)`.
-5. Ask `policy.reserve(address, &hello.identity.device_id, trust)` for an admission permit. A rejection closes before TLS.
+5. Ask `policy.reserve_incoming(address, &hello.identity.device_id, trust)` for an admission permit. A rejection closes before TLS.
 6. Start the TLS client handshake with the local certificate. TLS 1.2 and 1.3 are enabled.
 7. Read the peer certificate and run `PeerCertificate::check(&hello.identity.device_id, trust)`.
 8. Send the local full `Identity` from `local.identity()`; read the peer `Identity`.
@@ -844,9 +852,9 @@ enum LinkControl {
 
 Rules:
 
-- `ConsiderPeer` updates `last_seen` and the address. It dials only if the peer is not active, not pending and not in backoff. Before an outgoing dial it calls `LinkPolicy::reserve`; the permit is passed to `connect` and held by the link. A rejection skips the dial. Backoff is 5 s, 10 s, 20 s, 40 s, capped at 60 s. A success resets the failure count.
+- `ConsiderPeer` updates `last_seen` and the address. It dials only if the peer is not active, not pending and not in backoff. Before an outgoing dial it calls `LinkPolicy::reserve_outgoing`; the permit is passed to `connect` and held by the link. This reserves the unpaired slot but does not apply the inbound per-IP window, so a reciprocal accept inside 500 ms is not rejected. Per-peer backoff handles retries. A rejection skips the dial. Backoff is 5 s, 10 s, 20 s, 40 s, capped at 60 s. A success resets the failure count.
 - Incoming handshakes run in their own tasks, accepted up to `max_pending` (64). Beyond that, the connection is closed immediately.
-- `LinkPolicy::reserve` enforces the per-IP interval (500 ms, 1024 tracked entries) and the unpaired cap (42). It reserves the unpaired slot before TLS; the `AdmissionPermit` is held by the `Link` and then by `ActiveLink`, and released on close. A paired peer gets a permit without consuming an unpaired slot.
+- `LinkPolicy::reserve_incoming` enforces the inbound per-IP interval (500 ms, 1024 tracked entries) and the unpaired cap (42). `LinkPolicy::reserve_outgoing` enforces only the unpaired cap; it must not mark the peer IP, or simultaneous discovery would cause each side's reciprocal accept to be rejected. Both reserve the unpaired slot before TLS; the `AdmissionPermit` is held by the `Link` and then by `ActiveLink`, and released on close. A paired peer gets a permit without consuming an unpaired slot.
 - The peer table is capped at 256. On each tick, peers with `last_seen + peer_ttl < now` and no active link are evicted. When the table is full and a new peer arrives, the oldest non-active peer is evicted. If every entry is active, the new sighting is ignored with a warning. A 256-ID discovery flood therefore cannot lock out a later real peer.
 - A completed handshake enters the duplicate rule. Last-successful-handshake wins, matching both real peers:
   - If no active link exists, install the new link.
@@ -905,7 +913,7 @@ Run mode:
 Shutdown:
 
 - Ctrl+C sends a shutdown signal to the discovery task and stops the event loop.
-- The daemon calls `links.shutdown()` and then stops every session and pending link with `SessionHandle::stop`. This ensures `on_disconnect` runs even though the event loop is no longer reading `LinkEvent`s.
+- The daemon calls `links.shutdown()` and then stops every session with `SessionHandle::stop`. The manager's shutdown closes every active and pending link; the daemon does not have a session handle for a pending link. This ensures `on_disconnect` runs for paired sessions even though the event loop is no longer reading `LinkEvent`s.
 - Discovery stops announcing and receiving.
 - The manager stops accepting, closes every link, and waits for link tasks.
 - The daemon awaits the discovery task, the manager task and the session tasks with a 5 s timeout, then aborts. The listener is dropped.
@@ -937,7 +945,7 @@ The trust policy has one home. `PeerCertificate::check` is the only function tha
 6. Discovery receives a peer announcement. It records a sighting and tells the manager the peer ID and the announced TCP port. The announcement parser accepts the desktop minimal packet and the Android full packet.
 7. The manager either dials or accepts. A dial sends the full plaintext hello, then acts as TLS server. An accept reads the hello, then acts as TLS client.
 8. After the TLS handshake, each side parses the peer certificate and checks CN and pin. Then both exchange the full identity over TLS. TLS 1.2 and TLS 1.3 are both accepted.
-9. The manager checks the three-way ID correlation and the protocol version. It admits the link under the unpaired cap and per-IP limit, applies the last-wins duplicate rule, and emits `LinkEvent::Connected` with the trust state.
+9. The manager checks the three-way ID correlation and the protocol version. It admits the link under the unpaired cap and the inbound per-IP limit, applies the last-wins duplicate rule, and emits `LinkEvent::Connected` with the trust state.
 10. The link task forwards inbound frames to the manager. The manager gates them. Pair frames become events. Unpaired non-pair frames are dropped. Paired frames become `LinkEvent::Packet`.
 11. The daemon updates the device record from the authenticated identity. It creates a `DeviceSession` only for a paired link. The session calls `on_connect`, dispatches packets, sends plugin output and calls `on_disconnect` on close.
 12. Shutdown closes discovery, the listener and every link, then drains the sessions.
@@ -988,7 +996,7 @@ Only protocol 8 is accepted. The identity parser already rejects other versions.
 
 | Failure | Behavior | Evidence |
 | --- | --- | --- |
-| TCP range exhausted | Exit nonzero before discovery announces. | Daemon startup test. |
+| TCP range exhausted | Exit nonzero before discovery announces. | Occupy 1764 and start at 1764. |
 | `--tcp-port` 0 or out of range | Reject with a clear error. No bind. | CLI test. |
 | Bound port outside 1716-1764 | Should be impossible; defensive check exits. | Unit test. |
 | Discovery packet is desktop-minimal | `DiscoveryAnnouncement` accepts it; identity parser stays strict. | Fixture and integration test. |
@@ -999,7 +1007,7 @@ Only protocol 8 is accepted. The identity parser already rejects other versions.
 | Hello target version is a string | Accept `"8"` as 8. | Proto test with Android fixture. |
 | Hello omits type or capabilities | Accept; defaults to Unknown and empty. | Proto test with desktop fixture. |
 | Hello claims our own ID | Close. | Link test. |
-| TLS below 1.2 | Handshake rejected. | Raw TLS 1.1 ClientHello test. |
+| TLS below 1.2 | Handshake rejected. | Raw TLS 1.1 ClientHello to the TLS server, or after a valid plaintext hello. |
 | TLS 1.2 peer | Handshake succeeds. | Testkit TLS 1.2 test. |
 | TLS 1.3 peer | Handshake succeeds. | Testkit TLS 1.3 test. |
 | RSA peer certificate | TLS 1.2 and 1.3 handshakes succeed. | RSA fixture test. |
@@ -1015,7 +1023,8 @@ Only protocol 8 is accepted. The identity parser already rejects other versions.
 | Silent peer after TCP accept | Handshake timeout; pending permit released. | Link test with a silent peer. |
 | Unpaired link idle for 60 s | Manager closes it. | Manager test with paused time. |
 | 43rd unpaired link | Admission rejects before TLS. | Manager test. |
-| More than one connect from one IP in 500 ms | Admission rejects before TLS. | Manager test. |
+| More than one inbound connection from one IP in 500 ms | Admission rejects before TLS. | Manager test. |
+| Simultaneous discovery, both sides dial | Outbound reservations skip the IP window; both reciprocal accepts succeed. | Manager test. |
 | Peer disappears without FIN | Keepalive eventually errors; manager removes the link. | Keepalive option test; no EOF-only claim. |
 | 256 unique discovery IDs | Oldest non-active peer is evicted; a later real peer recovers. | Manager flood test. |
 | Corrupt identity record | Fatal startup error; no regeneration. | Store and daemon tests. |
@@ -1074,7 +1083,7 @@ Fixtures are wire packets, not KDE code:
 
 - A testkit peer restricted to TLS 1.2 completes the hello, handshake, certificate check and identity exchange.
 - A testkit peer restricted to TLS 1.3 completes the same sequence.
-- A raw TLS 1.1 ClientHello is rejected before the identity exchange.
+- A raw TLS 1.1 ClientHello is rejected at the TLS layer. Send it directly to the dialer, which is the TLS server, or to the listener after a valid plaintext hello. A raw ClientHello to the listener before the hello would fail at the plaintext identity step and would not test TLS.
 - A testkit peer with an RSA certificate and key fixture completes TLS 1.2 and TLS 1.3 handshakes. This proves the RSA signature schemes in both verifiers.
 - The accept-any verifiers' `supported_verify_schemes` includes the RSA and ECDSA schemes the provider reports.
 
@@ -1111,7 +1120,8 @@ These use the independent testkit TLS peer, not a second copy of the production 
 
 ### Daemon integration tests
 
-- Occupy the configured TCP port before starting `handfastd`. The daemon exits nonzero and does not announce.
+- Occupy TCP port 1764 and start `handfastd` with `--tcp-port 1764`. The daemon cannot scan past the range and exits nonzero without announcing. Do not occupy only the configured start port, because `bind_in_range` scans upward.
+- Occupy one in-range port and start the daemon at that port. It binds the next free port and announces the actual port in 1716-1764.
 - Start the daemon with `--tcp-port` in 1716-1764 and a free discovery port. A testkit peer announces itself. The daemon dials, completes TLS, and sends its encrypted identity. This proves bind-before-announce and the discovery-to-manager wiring.
 - Bind a second UDP socket with `SO_REUSEADDR` on the daemon's discovery port before starting it. Receive the daemon's announcement datagram, parse it with `DiscoveryAnnouncement`, and assert `tcpPort` is in 1716-1764 and not zero. This is the port-0 regression test.
 - Send a desktop-minimal UDP announcement to the daemon. The daemon persists the device and attempts a dial to the advertised port. This is the discovery compatibility integration test.
@@ -1122,12 +1132,13 @@ These use the independent testkit TLS peer, not a second copy of the production 
 - Create a state file with `identity_v1` whose device ID disagrees with `settings_v1`. The daemon exits with a clear error and does not announce.
 - An unpaired testkit peer completes the link. The daemon holds a `PendingLink`, creates no `DeviceHost`, and logs the pair request. The test can assert the peer receives no plugin packet.
 - A paired testkit peer disconnects. The daemon calls `SessionHandle::stop`; the session runs `DeviceHost::on_disconnect` before exit. Test with a recording plugin factory.
-- The existing `announced_devices_are_persisted` test uses a free daemon TCP port in 1716-1764 and a different free port for the test peer's advertised `tcpPort`. It must not hardcode 1716.
+- The existing `announced_devices_are_persisted` test must use a free daemon TCP port in 1716-1764 and a different free port for the test peer's advertised `tcpPort`. It must not hardcode 1716.
 
 ### Manager and policy tests
 
 - 42 unpaired links can be established. The 43rd is rejected before TLS.
 - A second incoming connection from one IP inside 500 ms is rejected; after 500 ms it is accepted.
+- An outbound dial does not mark the inbound per-IP window. Simultaneous discovery with two Handfast peers completes both dials; the reciprocal accepts inside 500 ms are not rejected, and last-wins converges without a deadlock.
 - An unpaired link idle for 60 s is closed by the tick; a paired idle link is not.
 - The peer table expires a stale peer after `peer_ttl`.
 - After a 256-ID discovery flood, a real testkit peer is admitted and connected. The test asserts the real peer's link event.
@@ -1250,15 +1261,15 @@ Each unit ends in a check. Do not start the next unit until the check passes.
 2. **Proto compatibility.** Add `IdentityHello` with the full identity body and string-or-number target version. Add `DiscoveryAnnouncement` with the minimal desktop shape. Add the Android, desktop connection and desktop UDP fixtures. Remove the stale TLS claim from the crate doc. Check: `cargo test -p handfast-proto` and `cargo fuzz build`.
 3. **Discovery parser.** Change `handfast-net::discovery` to parse and emit `DiscoveryAnnouncement` and accept the desktop minimal UDP fixture. Test the minimal packet and the Android full packet. This lands before the link unit, as the review requires. Check: `cargo test -p handfast-net discovery`.
 4. **Identity types and checks.** Add `Fingerprint`, `TlsIdentity`, `LocalEndpoint`, `PeerCertificate`, `PeerTrust`, `TlsError`, the certificate validity window and the pure checks. No sockets. Tests: generation, CN, validity, fingerprint, pin, malformed DER, local endpoint mismatch. Check: `cargo test -p handfast-net identity`.
-5. **TLS 1.2 and 1.3 configuration.** Add the rustls configs, `verify_tls12_signature`, `verify_tls13_signature`, RSA schemes and the accept-any verifiers. Test with a loopback server/client for both versions and with the RSA fixture. Check: TLS version and algorithm tests.
-6. **Both link roles.** Add `LinkListener::bind_in_range/accept`, `connect`, the full plaintext hello, the full local identity, the identity re-exchange, the framed link and the keepalive helper. Test with the testkit peer for TLS 1.2 and 1.3. Check: happy-path integration tests.
-7. **Negative link tests.** Add wrong CN, pin mismatch, identity mismatch, protocol mismatch, string/number target, timeouts, oversized frame, TLS 1.1 rejection and RSA. Check: `cargo test -p handfast-net --test tls_link`.
-8. **Independent testkit TLS peer.** Add `tls_peer` with TLS 1.2/1.3, RSA fixture, minimal UDP announcement and replacement mode. Add `tls-self-test`. Check: `cargo test -p handfast-testkit` and `cargo run -p handfast-testkit -- tls-self-test`.
-9. **Link manager and policy.** Add last-wins dedupe, trust snapshot, gate, admission policy (42 unpaired, per-IP 500 ms, idle 60 s), peer expiry and flood recovery, backoff, limits, events and shutdown. Tests: duplicate replacer, unpaired cap, rate limit, idle, flood recovery, shutdown. Check: `cargo test -p handfast-net --test manager`.
+5. **Independent testkit TLS peer and RSA fixture.** Add `tls_peer` with TLS 1.2/1.3, the RSA certificate and PKCS#8 key fixture, minimal UDP announcement and replacement mode. Add `tls-self-test`. This unit lands before the TLS config and link units because both use the peer and the RSA fixture. Check: `cargo test -p handfast-testkit` and `cargo run -p handfast-testkit -- tls-self-test`.
+6. **TLS 1.2 and 1.3 configuration.** Add the rustls configs, `verify_tls12_signature`, `verify_tls13_signature`, RSA schemes and the accept-any verifiers. Test with a loopback server/client for both versions and with the RSA fixture from unit 5. Check: TLS version and algorithm tests.
+7. **Both link roles.** Add `LinkListener::bind_in_range/accept`, `connect`, the full plaintext hello, the full local identity, the identity re-exchange, the framed link and the keepalive helper. Test with the testkit peer from unit 5 for TLS 1.2 and 1.3. Check: happy-path integration tests.
+8. **Negative link tests.** Add wrong CN, pin mismatch, identity mismatch, protocol mismatch, string/number target, timeouts, oversized frame, TLS 1.1 rejection and RSA. Check: `cargo test -p handfast-net --test tls_link`.
+9. **Link manager and policy.** Add last-wins dedupe, trust snapshot, gate, admission policy (42 unpaired, inbound per-IP 500 ms, idle 60 s), peer expiry and flood recovery, backoff, limits, events and shutdown. Tests: duplicate replacer, unpaired cap, inbound rate limit, simultaneous discovery, idle, flood recovery, shutdown. Check: `cargo test -p handfast-net --test manager`.
 10. **Daemon composition.** Add the port-range scan, full local endpoint, `Arc<Registry>` sessions, `SessionHandle::stop` on disconnect, discovery announcement wiring, `--print-identity` no-cert/no-bind behavior, Unix permissions and the updated discovery test ports. Tests: range, print identity, migration, desktop UDP announcement, discovery-driven dial, disconnect `on_disconnect`. Check: `cargo test -p handfast-daemon`.
 11. **CI and docs.** Update the architecture state table and the README "what works" only after the code lands. Run fmt, clippy, test, msrv, deny, docs, testkit self-test, fuzz and Windows. Check: all nine checks green.
 
-The store and proto units are data-only and can land before any TLS code. The discovery parser unit lands before the link unit. The identity and TLS config units open no listener. The socket code starts at unit 6. This ordering means a reviewer can reject the trust model and the provider before the first `TcpListener` exists.
+The store and proto units are data-only and can land before any TLS code. The discovery parser unit lands before the link unit. The identity, testkit and TLS config units open no link listener. The link listener starts at unit 7. This ordering means a reviewer can reject the trust model and the provider before the first `TcpListener` exists.
 
 ## Synthesis decision
 
@@ -1326,7 +1337,7 @@ Both candidates converged on the important security shape: ECDSA P-256, CN = dev
 
 - We accept TLS 1.2 support, including RSA signature schemes and a TLS 1.2 test peer, in exchange for compatibility with the official Android client.
 - We accept the port scan in 1716-1764, in exchange for real-peer compatibility. A user cannot bind an arbitrary TCP port.
-- We accept the unpaired cap, per-IP rate limit and unpaired idle timeout, in exchange for DoS resistance that matches the real peers. The idle timeout is a Handfast policy, not a copied peer value.
+- We accept the unpaired cap, the inbound per-IP rate limit and the unpaired idle timeout, in exchange for DoS resistance that matches the real peers. The idle timeout is a Handfast policy, not a copied peer value.
 - We accept last-successful-handshake-wins for duplicate links, in exchange for matching Android and desktop. Two simultaneous Handfast dials may take one extra reconnect to converge.
 - We accept a permissive discovery parser and a strict encrypted identity parser, in exchange for desktop UDP compatibility without weakening the authenticated path.
 - We accept a post-handshake certificate check instead of an in-handshake pin verifier, in exchange for one shared TLS config and one pure policy function. No application data is read before the check.
@@ -1358,7 +1369,7 @@ Both candidates converged on the important security shape: ECDSA P-256, CN = dev
 - Ring's C build on Windows with the static CRT is not yet proven by this document. Implementation unit 0 is the gate. If ring fails, aws-lc-rs is the fallback after a `deny.toml` and CMake/NASM review.
 - The UDP announcement test relies on two `SO_REUSEADDR` UDP sockets on the same port receiving a broadcast on the CI kernel. If the Linux runner does not deliver it, the test needs a deterministic unicast announce target, which would add test-only surface. Verify in unit 10 before writing the test.
 - The 60 s unpaired idle timeout is a Handfast policy. The real peers do not expose a matching constant in the reviewed sources. The pairing prompt unit must coordinate it with the 30 s pairing request window, or the link can close while a prompt is open.
-- The 500 ms per-IP interval is the desktop value. Android uses 1 s. Handfast chooses the stricter value. This is a deliberate divergence, not a protocol requirement.
+- The 500 ms inbound per-IP interval is the desktop value. Android uses 1 s. Handfast chooses the stricter inbound value. This is a deliberate divergence, not a protocol requirement. Outbound dials use the unpaired cap and per-peer backoff, not the IP window.
 - `x509-parser` and its `time` dependency add a moderate transitive tree. Keep the parser updated and consider a cert-parse fuzz target when the link code lands.
 - The testkit TLS peer duplicates handshake logic on purpose. It must stay independent enough to catch a production bug. This is a maintenance cost, not a one-time cost.
 - The runtime's `DeviceHost` has no event bus. This unit logs plugin events. The IPC/event surface is future work.
