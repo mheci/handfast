@@ -11,7 +11,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -146,11 +146,19 @@ impl Store {
     ///
     /// Fails when the read or write fails.
     pub fn set_paired(&self, id: &str, paired: bool) -> Result<bool> {
-        let Some(mut device) = self.device(id)? else {
-            return Ok(false);
-        };
-        device.paired = paired;
-        self.upsert_device(&device)?;
+        let write = self.database.begin_write()?;
+        {
+            let mut table = write.open_table(DEVICES)?;
+            let Some(value) = table.get(id)? else {
+                return Ok(false);
+            };
+            let mut device: DeviceRecord = serde_json::from_slice(value.value())?;
+            drop(value);
+            device.paired = paired;
+            let value = serde_json::to_vec(&device)?;
+            table.insert(id, value.as_slice())?;
+        }
+        write.commit()?;
         Ok(true)
     }
 
@@ -274,6 +282,7 @@ mod tests {
         assert_eq!(store.device("a").unwrap(), Some(record));
 
         assert!(store.set_paired("a", false).unwrap());
+        assert!(!store.device("a").unwrap().unwrap().paired);
         assert!(!store.set_paired("missing", true).unwrap());
     }
 
