@@ -85,7 +85,8 @@ mod tests {
     async fn ping_emits_event() {
         let desktop = MockDesktop::new();
         let device = device();
-        let mut ctx = context(&desktop.desktop(), &device);
+        let desktop = desktop.desktop();
+        let mut ctx = context(&desktop, &device);
         let packet = Packet::from_body(types::PING, &json!({"message": "hello"})).unwrap();
         let output = PingPlugin::new()
             .on_packet(&mut ctx, &packet)
@@ -103,7 +104,8 @@ mod tests {
     async fn ping_without_message_is_valid() {
         let desktop = MockDesktop::new();
         let device = device();
-        let mut ctx = context(&desktop.desktop(), &device);
+        let desktop = desktop.desktop();
+        let mut ctx = context(&desktop, &device);
         let packet = Packet::empty(types::PING).unwrap();
         let output = PingPlugin::new()
             .on_packet(&mut ctx, &packet)
@@ -116,7 +118,8 @@ mod tests {
     async fn foreign_packets_are_ignored() {
         let desktop = MockDesktop::new();
         let device = device();
-        let mut ctx = context(&desktop.desktop(), &device);
+        let desktop = desktop.desktop();
+        let mut ctx = context(&desktop, &device);
         let packet = Packet::empty(types::BATTERY).unwrap();
         let output = PingPlugin::new()
             .on_packet(&mut ctx, &packet)

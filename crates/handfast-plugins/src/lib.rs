@@ -1,6 +1,6 @@
 //! The 31-plugin KDE Connect roster and the implemented plugins.
 //!
-//! Only plugins with [`PluginStatus::Implemented`] are created by [`registry`]
+//! Only plugins marked `PluginStatus::Implemented` are created by [`registry`]
 //! and advertised in identity capabilities. The full roster is available from
 //! [`metas`] for the parity matrix, the CLI and future work.
 
