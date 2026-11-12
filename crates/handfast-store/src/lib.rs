@@ -11,7 +11,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

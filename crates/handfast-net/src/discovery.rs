@@ -6,7 +6,7 @@ use handfast_proto::{Identity, Packet};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 
-use crate::error::Result;
+use crate::error::{NetError, Result};
 
 /// KDE Connect's well-known discovery port.
 pub const DISCOVERY_PORT: u16 = 1716;
