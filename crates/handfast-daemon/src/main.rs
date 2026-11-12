@@ -12,7 +12,7 @@ use clap::Parser;
 use handfast_net::Discovery;
 use handfast_plugins::registry;
 use handfast_proto::{DeviceId, DeviceName, DeviceType, Identity};
-use handfast_store::{DeviceRecord, Store};
+use handfast_store::Store;
 use tracing_subscriber::EnvFilter;
 
 /// How often to announce this device over UDP discovery.
@@ -96,24 +96,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let (address, peer) = match received {
                         Ok(received) => received,
                         Err(error) => {
-                            tracing::warn!(%error, "discovery receive failed");
-                            continue;
+                            tracing::error!(%error, "discovery socket failed; stopping discovery");
+                            break;
                         }
                     };
                     if peer.device_id == local_device_id {
                         continue;
                     }
                     tracing::debug!(%address, device_id = %peer.device_id, "discovered device");
-                    let record = DeviceRecord {
-                        id: peer.device_id.as_str().to_string(),
-                        name: peer.device_name.as_str().to_string(),
-                        device_type: peer.device_type.as_str().to_string(),
-                        paired: false,
-                        last_seen: unix_now(),
-                    };
+                    let id = peer.device_id.as_str().to_string();
+                    let name = peer.device_name.as_str().to_string();
+                    let device_type = peer.device_type.as_str().to_string();
+                    let last_seen = unix_now();
                     if let Err(error) = discovery_store
                         .clone()
-                        .run_blocking(move |store| store.upsert_device(&record))
+                        .run_blocking(move |store| {
+                            store.record_discovery(&id, &name, &device_type, last_seen)
+                        })
                         .await
                     {
                         tracing::warn!(%error, "failed to persist discovered device");

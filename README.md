@@ -64,7 +64,7 @@ cargo fmt --all -- --check
 cargo run -p handfast-testkit -- self-test
 ```
 
-## What works in 0.2.0
+## What works on main
 
 - Packet framing: 4-byte big-endian length, JSON body, 1 MiB hard limit.
 - Packet validation: namespaced type, object body, payload fields that appear
@@ -81,6 +81,8 @@ cargo run -p handfast-testkit -- self-test
   Pairing updates are atomic.
 - Independent testkit, golden vectors and two fuzz targets.
 - `handfastd --print-identity` and a stable, persisted device ID.
+- UDP discovery in `handfastd`: identity announcements, peer receive and
+  device persistence.
 
 Not wired yet:
 
