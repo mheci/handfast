@@ -121,7 +121,10 @@ mod tests {
     fn encode_decode_round_trip() {
         let packet = ping();
         let frame = encode(&packet).unwrap();
-        assert_eq!(&frame[..4], &(frame.len() - 4).to_be_bytes());
+        assert_eq!(
+            &frame[..4],
+            &u32::try_from(frame.len() - 4).unwrap().to_be_bytes()
+        );
         assert_eq!(decode(&frame).unwrap(), packet);
     }
 

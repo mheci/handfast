@@ -164,7 +164,7 @@ mod tests {
     fn reject_unpairs() {
         let mut session = PairingSession::new();
         session.request(1).unwrap();
-        session.reject();
+        let _ = session.reject();
         assert_eq!(session.state(), PairingState::Unpaired);
         assert_eq!(
             session.handle(&PairingRequest::reject()).unwrap(),
