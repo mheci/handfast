@@ -122,7 +122,7 @@ jobs:
           chown -R builder:builder /home/builder/pkg
           su builder -c 'cd /home/builder/pkg && makepkg -f --noconfirm'
           mkdir -p dist
-          cp /home/builder/pkg/*.pkg.tar.* dist/
+          cp /home/builder/pkg/handfastd-bin-[0-9]*.pkg.tar.* dist/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: handfastd-archlinux-x86_64
