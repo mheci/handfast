@@ -197,7 +197,7 @@ schema. Requests are idempotent; events are broadcast.
 
 ## CI design
 
-Required jobs, all on `ubuntu-latest`:
+Required jobs:
 
 1. `fmt` - `cargo fmt --all -- --check`.
 2. `clippy` - `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
@@ -209,14 +209,32 @@ Required jobs, all on `ubuntu-latest`:
 7. `testkit-self-test` - `cargo test -p handfast-testkit` and the self-test
    binary. This tests the testkit and codec, not the daemon, until P1.
 8. `fuzz` - nightly `cargo-fuzz` smoke for the frame and identity parsers.
+9. `windows` - `cargo build --workspace --all-features --locked` on
+   `windows-latest` with the static CRT used by the MSI.
 
 Later phases add, only when the code exists:
 
-9. `wayland` - headless compositor smoke for desktop adapters.
-10. `package` - `cargo xtask package` for deb, rpm, Arch and portable tarball.
+10. `wayland` - headless compositor smoke for desktop adapters.
 
 No `continue-on-error`. A lane that is not ready is not a CI job; it is a task
 in the roadmap.
+
+## Release packaging
+
+A tag matching the workspace version runs `.github/workflows/release.yml`.
+The tag must match `[workspace.package] version`, for example
+`v0.2.0-alpha.0`. The workflow builds native packages in the target
+environment:
+
+- Debian 12 amd64 `.deb` in `rust:1.90-bookworm`.
+- Ubuntu 24.04 amd64 `.deb` on `ubuntu-24.04`.
+- Arch Linux x86_64 `handfastd-bin` `.pkg.tar.zst` in `archlinux:latest`.
+- Windows 11 x64 `.msi` with WiX, built with the static CRT.
+
+The Windows job signs `handfastd.exe` and the MSI, verifies both signatures and
+fails before building when the signing secrets are missing. The `publish` job
+attaches every asset to the GitHub release. The required secrets and the install
+commands are in [RELEASING.md](RELEASING.md).
 
 ## Migration
 

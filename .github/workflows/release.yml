@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      sign_windows:
+        description: Sign the Windows installer (requires signing secrets)
+        type: boolean
+        default: true
 
 concurrency:
   group: release-${{ github.ref }}
@@ -11,11 +17,64 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    name: build handfastd
+  version:
+    name: version
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - id: version
+        shell: bash
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ -z "$version" ]; then
+            echo "could not read the workspace version from Cargo.toml" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$version" ]; then
+              echo "tag $GITHUB_REF_NAME does not match Cargo version $version" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  debian:
+    name: debian 12 (amd64)
+    needs: version
+    runs-on: ubuntu-latest
+    container: rust:1.90-bookworm
     timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: cargo build --release --locked -p handfast-daemon
+      - name: Build Debian package
+        shell: bash
+        run: |
+          deb_version=$(printf '%s' "$VERSION" | tr '-' '~')
+          bash packaging/linux/make-deb.sh "$deb_version" 2.36 debian12 dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: handfastd-debian12-amd64
+          path: dist/*.deb
+          if-no-files-found: error
+
+  ubuntu:
+    name: ubuntu 24.04 (amd64)
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -23,8 +82,174 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build --release --locked -p handfast-daemon
+      - name: Build Ubuntu package
+        shell: bash
+        run: |
+          deb_version=$(printf '%s' "$VERSION" | tr '-' '~')
+          bash packaging/linux/make-deb.sh "$deb_version" 2.39 ubuntu24.04 dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: handfastd-linux-x86_64
-          path: target/release/handfastd
+          name: handfastd-ubuntu24.04-amd64
+          path: dist/*.deb
           if-no-files-found: error
+
+  arch:
+    name: archlinux (x86_64)
+    needs: version
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    timeout-minutes: 40
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Install git
+        run: pacman -Syu --noconfirm git
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install build tools
+        run: pacman -S --noconfirm --needed base-devel rust
+      - name: Build and package
+        shell: bash
+        run: |
+          useradd -m builder
+          cp -a "$GITHUB_WORKSPACE" /home/builder/handfast
+          chown -R builder:builder /home/builder/handfast
+          su builder -c 'cd /home/builder/handfast && cargo build --release --locked -p handfast-daemon'
+          pkgver=$(printf '%s' "$VERSION" | tr '-' '_')
+          mkdir -p /home/builder/pkg
+          cp /home/builder/handfast/target/release/handfastd /home/builder/pkg/
+          cp /home/builder/handfast/README.md /home/builder/handfast/LICENSE-MIT /home/builder/pkg/
+          sed "s/__VERSION__/${pkgver}/" /home/builder/handfast/packaging/arch/PKGBUILD > /home/builder/pkg/PKGBUILD
+          chown -R builder:builder /home/builder/pkg
+          su builder -c 'cd /home/builder/pkg && makepkg -f --noconfirm'
+          mkdir -p dist
+          cp /home/builder/pkg/*.pkg.tar.* dist/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: handfastd-archlinux-x86_64
+          path: dist/*.pkg.tar.*
+          if-no-files-found: error
+
+  windows:
+    name: windows 11 (x64)
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      RUSTFLAGS: "-C target-feature=+crt-static"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Check signing certificate
+        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        shell: pwsh
+        run: |
+          if (-not $env:WINDOWS_CERT_PFX_BASE64) { throw "Set the WINDOWS_CERT_PFX_BASE64 repository secret." }
+          if (-not $env:WINDOWS_CERT_PASSWORD) { throw "Set the WINDOWS_CERT_PASSWORD repository secret." }
+      - run: cargo build --release --locked -p handfast-daemon
+      - name: Decode signing certificate
+        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "handfast-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          "PFX_PATH=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Locate signing and WiX tools
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe not found" }
+          "SIGNTOOL=$signtool" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          $wixBin = $null
+          $candle = Get-Command candle.exe -ErrorAction SilentlyContinue
+          if ($candle) { $wixBin = Split-Path $candle.Source }
+          if (-not $wixBin) {
+            $wixBin = Get-ChildItem "${env:ProgramFiles(x86)}\WiX Toolset*" -Directory -ErrorAction SilentlyContinue |
+              Select-Object -First 1 |
+              ForEach-Object { Join-Path $_.FullName "bin" }
+          }
+          if (-not $wixBin) { throw "WiX Toolset not found" }
+          "WIX_BIN=$wixBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Sign handfastd.exe
+        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        shell: pwsh
+        run: |
+          & $env:SIGNTOOL sign /fd SHA256 /f $env:PFX_PATH /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 target\release\handfastd.exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for handfastd.exe" }
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          $msiVersion = ("${{ needs.version.outputs.version }}" -split '-')[0]
+          $binary = (Resolve-Path 'target\release\handfastd.exe').Path
+          $wixOut = Join-Path $env:RUNNER_TEMP "wix"
+          New-Item -ItemType Directory -Force -Path $wixOut, "dist" | Out-Null
+          & (Join-Path $env:WIX_BIN "candle.exe") -nologo -arch x64 -dVersion=$msiVersion -dBinaryPath="$binary" -out (Join-Path $wixOut "handfast.wixobj") packaging\windows\handfast.wxs
+          if ($LASTEXITCODE -ne 0) { throw "candle failed" }
+          & (Join-Path $env:WIX_BIN "light.exe") -nologo -arch x64 -out (Join-Path "dist" "handfast-$msiVersion-x64.msi") (Join-Path $wixOut "handfast.wixobj")
+          if ($LASTEXITCODE -ne 0) { throw "light failed" }
+      - name: Sign MSI
+        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem "dist\*.msi" | Select-Object -First 1
+          if (-not $msi) { throw "MSI not found" }
+          & $env:SIGNTOOL sign /fd SHA256 /f $env:PFX_PATH /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $msi.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for the MSI" }
+      - name: Verify signatures
+        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        shell: pwsh
+        run: |
+          & $env:SIGNTOOL verify /pa /all target\release\handfastd.exe
+          if ($LASTEXITCODE -ne 0) { throw "signature verification failed for handfastd.exe" }
+          Get-ChildItem "dist\*.msi" | ForEach-Object {
+            & $env:SIGNTOOL verify /pa /all $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $($_.Name)" }
+          }
+      - name: Remove signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:PFX_PATH -and (Test-Path $env:PFX_PATH)) { Remove-Item $env:PFX_PATH -Force }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: handfastd-windows11-x64
+          path: dist/*.msi
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [version, debian, ubuntu, arch, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -D dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" \
+              --title "Handfast $GITHUB_REF_NAME" --generate-notes
+          fi
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find dist -type f -print0 | while IFS= read -r -d '' file; do
+            gh release upload "$GITHUB_REF_NAME" "$file" -R "$GITHUB_REPOSITORY" --clobber
+          done
