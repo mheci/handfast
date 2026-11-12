@@ -45,6 +45,10 @@ pub enum ProtoError {
     /// A payload packet lacked transfer information.
     #[error("payload packet is missing payloadTransferInfo.port")]
     MissingPayloadInfo,
+
+    /// A payload size is not usable.
+    #[error("invalid payload: {0}")]
+    InvalidPayload(String),
 }
 
 /// Result alias for protocol operations.

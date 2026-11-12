@@ -144,11 +144,10 @@ pub fn decode(frame: &[u8]) -> Result<WirePacket> {
 /// Fails on a truncated or malformed frame.
 pub async fn read<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<WirePacket>> {
     let mut header = [0u8; 4];
-    match reader.read_exact(&mut header).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error.into()),
+    if reader.read(&mut header[..1]).await? == 0 {
+        return Ok(None);
     }
+    reader.read_exact(&mut header[1..]).await?;
     let size = u32::from_be_bytes(header) as usize;
     if size == 0 || size + 4 > MAX_FRAME_SIZE {
         return Err(TestkitError::Protocol("invalid frame size".to_string()));

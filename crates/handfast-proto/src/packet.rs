@@ -107,7 +107,9 @@ impl Packet {
     /// `-1`, or when the port is missing.
     pub fn with_payload(mut self, size: i64, port: u16) -> Result<Self> {
         if size < -1 {
-            return Err(ProtoError::Identity(format!("invalid payload size {size}")));
+            return Err(ProtoError::InvalidPayload(format!(
+                "invalid payload size {size}"
+            )));
         }
         self.payload_size = Some(size);
         self.payload_transfer_info = Some(PayloadTransferInfo::new(port));
@@ -132,7 +134,7 @@ impl Packet {
             .as_ref()
             .ok_or(ProtoError::MissingPayloadInfo)?;
         if size < 0 {
-            return Err(ProtoError::Identity(format!(
+            return Err(ProtoError::InvalidPayload(format!(
                 "unsupported payload size {size}"
             )));
         }
@@ -148,11 +150,12 @@ impl Packet {
         if !is_valid_packet_type(&self.ptype) {
             return Err(ProtoError::InvalidPacketType(self.ptype.clone()));
         }
-        if self.payload_size.is_some_and(|size| size < -1) {
-            return Err(ProtoError::Identity(format!(
-                "invalid payload size {}",
-                self.payload_size.unwrap_or_default()
-            )));
+        if let Some(size) = self.payload_size {
+            if size < -1 {
+                return Err(ProtoError::InvalidPayload(format!(
+                    "invalid payload size {size}"
+                )));
+            }
         }
         Ok(())
     }

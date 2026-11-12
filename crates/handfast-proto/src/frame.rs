@@ -73,11 +73,10 @@ pub fn decode(frame: &[u8]) -> Result<Packet> {
 /// Fails on a truncated header or body, an oversized frame or malformed JSON.
 pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Packet>> {
     let mut header = [0u8; 4];
-    match reader.read_exact(&mut header).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error.into()),
+    if reader.read(&mut header[..1]).await? == 0 {
+        return Ok(None);
     }
+    reader.read_exact(&mut header[1..]).await?;
     let size = u32::from_be_bytes(header) as usize;
     if size == 0 {
         return Err(ProtoError::EmptyFrame);
