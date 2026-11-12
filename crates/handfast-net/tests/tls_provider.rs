@@ -1,8 +1,8 @@
 //! Proves the rustls ring provider completes TLS 1.2 and TLS 1.3 handshakes.
 //!
-//! The Windows CI job builds this test with the static CRT. A handshake here
-//! means the provider, the certificate generator and the async TLS adapter all
-//! compiled and ran with that configuration.
+//! The Windows CI job builds the dependencies with the static CRT. The Linux
+//! test job runs this handshake, so the provider, the certificate generator and
+//! the async TLS adapter are proven on a real handshake and built for Windows.
 
 use std::sync::Arc;
 
