@@ -92,12 +92,6 @@ impl PluginOutput {
         self.events.push(event);
         self
     }
-
-    /// Merge another output into this one.
-    pub fn merge(&mut self, other: Self) {
-        self.packets.extend(other.packets);
-        self.events.extend(other.events);
-    }
 }
 
 /// Borrowed context available to a plugin invocation.
@@ -159,14 +153,6 @@ impl Registry {
         Self { factories }
     }
 
-    /// Empty registry.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self {
-            factories: Vec::new(),
-        }
-    }
-
     /// Registered factories.
     #[must_use]
     pub fn factories(&self) -> &[Box<dyn PluginFactory>] {
@@ -187,22 +173,41 @@ impl Registry {
             .collect()
     }
 
-    /// Advertised capabilities from implemented plugins only.
+    /// Advertised capabilities from implemented plugins whose desktop
+    /// adapters exist on this host.
     ///
     /// # Errors
     ///
     /// Fails if a plugin metadata table contains a malformed packet type.
-    pub fn capabilities(&self) -> Result<Capabilities, RuntimeError> {
+    pub fn capabilities(&self, desktop: &Desktop) -> Result<Capabilities, RuntimeError> {
         let mut incoming = Vec::new();
         let mut outgoing = Vec::new();
         for factory in &self.factories {
             let meta = factory.meta();
-            if meta.status != PluginStatus::Implemented {
+            if meta.status != PluginStatus::Implemented || !desktop_available(desktop, meta.desktop)
+            {
                 continue;
             }
             incoming.extend(meta.incoming.iter().copied());
             outgoing.extend(meta.outgoing.iter().copied());
         }
         Ok(Capabilities::new(incoming, outgoing)?)
+    }
+}
+
+fn desktop_available(desktop: &Desktop, requirement: DesktopRequirement) -> bool {
+    match requirement {
+        DesktopRequirement::None => true,
+        DesktopRequirement::Clipboard => desktop.clipboard.is_some(),
+        DesktopRequirement::Notifications => desktop.notifier.is_some(),
+        DesktopRequirement::Media => desktop.media.is_some(),
+        DesktopRequirement::Volume => desktop.volume.is_some(),
+        DesktopRequirement::Input => desktop.input.is_some(),
+        DesktopRequirement::Screensaver => desktop.screensaver.is_some(),
+        DesktopRequirement::Shell => desktop.shell.is_some(),
+        DesktopRequirement::Files
+        | DesktopRequirement::Telephony
+        | DesktopRequirement::Contacts
+        | DesktopRequirement::Display => false,
     }
 }

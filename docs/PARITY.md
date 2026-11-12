@@ -14,8 +14,8 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 
 | # | Plugin | Direction | Wire packets | Linux backend | Phase | Contract | Backend | E2E |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `battery` | phone -> desktop | `kdeconnect.battery`, `.battery.request` | none | P0 | yes | n/a | no |
-| 2 | `clipboard` | bidirectional | `kdeconnect.clipboard`, `.clipboard.connect`, `.clipboard.file` | Wayland data-control or X11 selection | P2 | yes | no | no |
+| 1 | `battery` | phone -> desktop | `kdeconnect.battery` | none | P0 | yes | n/a | no |
+| 2 | `clipboard` | phone -> desktop | `kdeconnect.clipboard`, `.clipboard.connect` | Wayland data-control or X11 selection | P2 | yes (text) | no | no |
 | 3 | `connectivity-report` | phone -> desktop | `kdeconnect.connectivity_report`, `.connectivity_report.request` | none | P2 | no | n/a | no |
 | 4 | `contacts` | phone -> desktop | `kdeconnect.contacts.request_all_uids_timestamps`, `.request_vcards_by_uid`, `.response_uids_timestamps`, `.response_vcards` | vCard store | P2 | no | no | no |
 | 5 | `digitizer` | phone -> desktop | `kdeconnect.digitizer`, `.digitizer.session` | libei absolute pointer with pressure | P4 | no | no | no |

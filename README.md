@@ -2,11 +2,15 @@
 
 Clean-room, Rust-native KDE Connect implementation for Linux desktops.
 
-> **Status: foundation branch.** This branch is a rewrite in progress and is not
+> **Status: P0 foundation.** This branch is a rewrite in progress and is not
 > usable as a client yet. The v1 implementation is archived at tag
 > `v1-archive`. The target is full feature parity with the 31 plugins shipped by
 > `kdeconnect-kde`, while staying wire-compatible with the official KDE Connect
 > Android and iOS apps.
+>
+> `handfastd` currently prints an identity and waits. Discovery, TLS, pairing,
+> transfers, and the 31 plugins are not wired yet. The CI job
+> `testkit-self-test` tests the testkit and codec, not the daemon.
 
 ## Why a rewrite
 
@@ -32,7 +36,7 @@ not the code:
 
 ```
 crates/
-  handfast-proto/    wire packets, framing, identity, certificates
+  handfast-proto/    wire packets, framing, identity, capabilities
   handfast-net/      UDP discovery, TCP links, pairing state machine
   handfast-runtime/  plugin trait, registry, per-device host, events, supervision
   handfast-plugins/  31-plugin roster and plugin implementations
@@ -52,7 +56,7 @@ cargo build --workspace --all-features
 cargo test --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
-cargo run -p handfast-testkit -- --self-test
+cargo run -p handfast-testkit -- self-test
 ```
 
 MSRV is Rust 1.90. CI enforces it separately from stable.

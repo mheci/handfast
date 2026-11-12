@@ -38,10 +38,6 @@ pub enum ProtoError {
     #[error("invalid identity: {0}")]
     Identity(String),
 
-    /// Certificate generation or loading failed.
-    #[error("certificate error: {0}")]
-    Certificate(String),
-
     /// A payload packet lacked transfer information.
     #[error("payload packet is missing payloadTransferInfo.port")]
     MissingPayloadInfo,

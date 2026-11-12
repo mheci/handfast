@@ -88,7 +88,7 @@ impl DeviceName {
         ];
         let mut cleaned: String = value
             .chars()
-            .filter(|ch| !ch.is_control() && !FORBIDDEN.contains(ch))
+            .filter(|ch| !is_unsafe_name_char(*ch) && !FORBIDDEN.contains(ch))
             .collect();
         cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
         cleaned = cleaned.chars().take(MAX_DEVICE_NAME_LEN).collect();
@@ -103,6 +103,17 @@ impl DeviceName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn is_unsafe_name_char(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{200B}'..='\u{200D}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
 }
 
 impl std::fmt::Display for DeviceName {
@@ -125,6 +136,21 @@ pub enum DeviceType {
     Tablet,
     /// Television.
     Tv,
+    /// A type this version does not know. Used for display only.
+    Unknown,
+}
+
+impl DeviceType {
+    fn from_wire(value: &str) -> Self {
+        match value {
+            "desktop" => Self::Desktop,
+            "laptop" => Self::Laptop,
+            "phone" => Self::Phone,
+            "tablet" => Self::Tablet,
+            "tv" => Self::Tv,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 /// Packet types a device can consume and provide.
@@ -248,8 +274,8 @@ impl Identity {
     ///
     /// # Errors
     ///
-    /// Fails when required fields are missing, the protocol version is not 7 or
-    /// 8, or the device identifier is malformed.
+    /// Fails when required fields are missing, the protocol version is not 8,
+    /// or the device identifier is malformed.
     pub fn from_packet(packet: &Packet) -> Result<Self> {
         if packet.ptype != types::IDENTITY {
             return Err(ProtoError::Identity(format!(
@@ -262,14 +288,7 @@ impl Identity {
         let device_id = DeviceId::new(device_id)?;
         let device_name = required_str(&packet.body, "deviceName")?;
         let device_name = DeviceName::new(&device_name);
-        let device_type: DeviceType = serde_json::from_value(
-            packet
-                .body
-                .get("deviceType")
-                .cloned()
-                .ok_or_else(|| ProtoError::Identity("missing deviceType".to_string()))?,
-        )
-        .map_err(|error| ProtoError::Identity(format!("invalid deviceType: {error}")))?;
+        let device_type = DeviceType::from_wire(&required_str(&packet.body, "deviceType")?);
         let incoming = required_string_array(&packet.body, "incomingCapabilities")?;
         let outgoing = required_string_array(&packet.body, "outgoingCapabilities")?;
         let capabilities = Capabilities::new(incoming, outgoing)?;
@@ -280,7 +299,7 @@ impl Identity {
             .ok_or_else(|| ProtoError::Identity("missing protocolVersion".to_string()))?;
         let protocol_version = u8::try_from(protocol_version)
             .map_err(|_| ProtoError::Identity("protocolVersion out of range".to_string()))?;
-        if protocol_version != 7 && protocol_version != PROTOCOL_VERSION {
+        if protocol_version != PROTOCOL_VERSION {
             return Err(ProtoError::Identity(format!(
                 "unsupported protocol version {protocol_version}"
             )));
@@ -295,6 +314,9 @@ impl Identity {
                     .ok_or_else(|| ProtoError::Identity("invalid tcpPort".to_string()))
             })
             .transpose()?;
+        if tcp_port == Some(0) {
+            return Err(ProtoError::Identity("tcpPort must not be 0".to_string()));
+        }
 
         Ok(Self {
             device_id,
@@ -479,10 +501,32 @@ mod tests {
     }
 
     #[test]
-    fn identity_accepts_protocol_seven() {
+    fn identity_rejects_protocol_seven() {
         let mut packet = identity().to_packet().unwrap();
         packet.body["protocolVersion"] = json!(7);
-        assert_eq!(Identity::from_packet(&packet).unwrap().protocol_version, 7);
+        assert!(Identity::from_packet(&packet).is_err());
+    }
+
+    #[test]
+    fn bidi_controls_are_removed_from_names() {
+        let name = DeviceName::new("Bank \u{202E}gpj");
+        assert!(!name.as_str().contains('\u{202E}'));
+        assert_eq!(name.as_str(), "Bank gpj");
+    }
+
+    #[test]
+    fn unknown_device_types_are_kept_for_display() {
+        let mut packet = identity().to_packet().unwrap();
+        packet.body["deviceType"] = json!("watch");
+        let decoded = Identity::from_packet(&packet).unwrap();
+        assert_eq!(decoded.device_type, DeviceType::Unknown);
+    }
+
+    #[test]
+    fn zero_tcp_port_is_rejected() {
+        let mut packet = identity().to_packet().unwrap();
+        packet.body["tcpPort"] = json!(0);
+        assert!(Identity::from_packet(&packet).is_err());
     }
 
     #[test]

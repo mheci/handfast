@@ -157,6 +157,11 @@ impl Packet {
                 )));
             }
         }
+        if self.payload_size.is_some() != self.payload_transfer_info.is_some() {
+            return Err(ProtoError::InvalidPayload(
+                "payloadSize and payloadTransferInfo must appear together".to_string(),
+            ));
+        }
         Ok(())
     }
 }
@@ -234,6 +239,14 @@ mod tests {
         let mut packet = Packet::empty(crate::types::PING).unwrap();
         packet.payload_size = Some(10);
         assert!(packet.payload().is_err());
+        assert!(packet.validate().is_err());
+    }
+
+    #[test]
+    fn transfer_info_without_size_is_rejected() {
+        let mut packet = Packet::empty(crate::types::PING).unwrap();
+        packet.payload_transfer_info = Some(PayloadTransferInfo::new(42));
+        assert!(packet.validate().is_err());
     }
 
     #[test]

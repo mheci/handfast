@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
+use std::time::Duration;
 
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
@@ -11,7 +12,10 @@ use handfast_proto::Packet;
 use crate::device::Device;
 use crate::error::{PluginError, RuntimeError};
 use crate::event::PluginEvent;
-use crate::plugin::{Plugin, PluginContext, PluginMeta, PluginOutput, PluginStatus, Registry};
+use crate::plugin::{Plugin, PluginContext, PluginOutput, PluginStatus, Registry};
+
+/// Maximum time one plugin call may run.
+const PLUGIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Result of one host operation.
 #[derive(Debug, Default)]
@@ -50,13 +54,14 @@ async fn invoke(
         Call::Packet(packet) => Box::pin(plugin.on_packet(&mut ctx, packet)),
         Call::Disconnect => Box::pin(plugin.on_disconnect(&mut ctx)),
     };
-    match AssertUnwindSafe(future).catch_unwind().await {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(source)) => Err(RuntimeError::PluginFailed {
+    match tokio::time::timeout(PLUGIN_TIMEOUT, AssertUnwindSafe(future).catch_unwind()).await {
+        Ok(Ok(Ok(output))) => Ok(output),
+        Ok(Ok(Err(source))) => Err(RuntimeError::PluginFailed {
             plugin: meta.name,
             source,
         }),
-        Err(_) => Err(RuntimeError::PluginPanicked { plugin: meta.name }),
+        Ok(Err(_)) => Err(RuntimeError::PluginPanicked { plugin: meta.name }),
+        Err(_) => Err(RuntimeError::PluginTimedOut { plugin: meta.name }),
     }
 }
 
@@ -86,17 +91,6 @@ impl DeviceHost {
             enabled,
             failed: HashSet::new(),
         }
-    }
-
-    /// Device this host belongs to.
-    #[must_use]
-    pub fn device(&self) -> &Device {
-        &self.device
-    }
-
-    /// Metadata for every plugin instance.
-    pub fn metas(&self) -> impl Iterator<Item = &'static PluginMeta> + '_ {
-        self.plugins.iter().map(|plugin| plugin.meta())
     }
 
     /// Enable or disable a plugin. Returns `false` for unknown or planned
@@ -237,10 +231,11 @@ mod tests {
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
-    fn meta(
+    fn meta_with_requirement(
         name: &'static str,
         status: PluginStatus,
         incoming: &'static [&'static str],
+        desktop: DesktopRequirement,
     ) -> &'static PluginMeta {
         Box::leak(Box::new(PluginMeta {
             name,
@@ -248,14 +243,23 @@ mod tests {
             status,
             incoming,
             outgoing: &[],
-            desktop: DesktopRequirement::None,
+            desktop,
         }))
+    }
+
+    fn meta(
+        name: &'static str,
+        status: PluginStatus,
+        incoming: &'static [&'static str],
+    ) -> &'static PluginMeta {
+        meta_with_requirement(name, status, incoming, DesktopRequirement::None)
     }
 
     struct TestPlugin {
         meta: &'static PluginMeta,
         calls: Arc<Mutex<Vec<String>>>,
         panic_on_packet: bool,
+        hang_on_packet: bool,
     }
 
     #[async_trait]
@@ -281,6 +285,9 @@ mod tests {
             if self.panic_on_packet {
                 panic!("test panic");
             }
+            if self.hang_on_packet {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
             Ok(PluginOutput::new().with_event(PluginEvent::Ping {
                 message: Some("pong".to_string()),
             }))
@@ -299,6 +306,7 @@ mod tests {
         meta: &'static PluginMeta,
         calls: Arc<Mutex<Vec<String>>>,
         panic_on_packet: bool,
+        hang_on_packet: bool,
     }
 
     impl PluginFactory for TestFactory {
@@ -311,6 +319,7 @@ mod tests {
                 meta: self.meta,
                 calls: Arc::clone(&self.calls),
                 panic_on_packet: self.panic_on_packet,
+                hang_on_packet: self.hang_on_packet,
             })
         }
     }
@@ -341,11 +350,13 @@ mod tests {
                 meta: meta("ping", PluginStatus::Implemented, &[types::PING]),
                 calls: Arc::clone(&ping_calls),
                 panic_on_packet: false,
+                hang_on_packet: false,
             }),
             Box::new(TestFactory {
                 meta: meta("battery", PluginStatus::Implemented, &[types::BATTERY]),
                 calls: Arc::clone(&battery_calls),
                 panic_on_packet: false,
+                hang_on_packet: false,
             }),
         ]);
 
@@ -363,8 +374,10 @@ mod tests {
             meta: meta("planned", PluginStatus::Planned, &[types::PING]),
             calls: Arc::clone(&calls),
             panic_on_packet: false,
+            hang_on_packet: false,
         })]);
-        let capabilities = registry.capabilities().unwrap();
+        let desktop = MockDesktop::new().desktop();
+        let capabilities = registry.capabilities(&desktop).unwrap();
         assert!(!capabilities.accepts(types::PING));
 
         let mut host = DeviceHost::new(device(), &registry, MockDesktop::new().desktop());
@@ -381,6 +394,7 @@ mod tests {
             meta: meta("ping", PluginStatus::Implemented, &[types::PING]),
             calls: Arc::clone(&calls),
             panic_on_packet: false,
+            hang_on_packet: false,
         })]);
         assert!(host.is_enabled("ping"));
         assert!(host.set_enabled("ping", false));
@@ -401,11 +415,13 @@ mod tests {
                 meta: meta("panics", PluginStatus::Implemented, &[types::PING]),
                 calls: Arc::clone(&panic_calls),
                 panic_on_packet: true,
+                hang_on_packet: false,
             }),
             Box::new(TestFactory {
                 meta: meta("ping", PluginStatus::Implemented, &[types::PING]),
                 calls: Arc::clone(&good_calls),
                 panic_on_packet: false,
+                hang_on_packet: false,
             }),
         ]);
 
@@ -428,6 +444,7 @@ mod tests {
             meta: meta("ping", PluginStatus::Implemented, &[types::PING]),
             calls: Arc::clone(&calls),
             panic_on_packet: false,
+            hang_on_packet: false,
         })]);
         host.on_connect().await;
         host.on_disconnect().await;
@@ -435,5 +452,55 @@ mod tests {
             *calls.lock().unwrap(),
             vec!["connect".to_string(), "disconnect".to_string()]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hanging_plugin_times_out_and_is_disabled() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut host = host(vec![Box::new(TestFactory {
+            meta: meta("slow", PluginStatus::Implemented, &[types::PING]),
+            calls: Arc::clone(&calls),
+            panic_on_packet: false,
+            hang_on_packet: true,
+        })]);
+
+        let first = host.dispatch(&ping()).await;
+        assert_eq!(first.errors.len(), 1);
+        assert!(matches!(
+            &first.errors[0],
+            RuntimeError::PluginTimedOut { plugin } if *plugin == "slow"
+        ));
+
+        let second = host.dispatch(&ping()).await;
+        assert!(second.errors.is_empty());
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn capabilities_require_the_desktop_adapter() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let registry = Registry::new(vec![Box::new(TestFactory {
+            meta: meta_with_requirement(
+                "clipboard",
+                PluginStatus::Implemented,
+                &[types::CLIPBOARD],
+                DesktopRequirement::Clipboard,
+            ),
+            calls,
+            panic_on_packet: false,
+            hang_on_packet: false,
+        })]);
+
+        let empty = Desktop::default();
+        assert!(!registry
+            .capabilities(&empty)
+            .unwrap()
+            .accepts(types::CLIPBOARD));
+
+        let mock = MockDesktop::new();
+        assert!(registry
+            .capabilities(&mock.desktop())
+            .unwrap()
+            .accepts(types::CLIPBOARD));
     }
 }

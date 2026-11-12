@@ -6,14 +6,12 @@
 
 #![deny(missing_docs)]
 
-pub mod cert;
 pub mod error;
 pub mod frame;
 pub mod identity;
 pub mod packet;
 pub mod types;
 
-pub use cert::TlsIdentity;
 pub use error::{ProtoError, Result};
 pub use frame::{decode, encode, read_frame, write_frame, MAX_FRAME_SIZE};
 pub use identity::{

@@ -29,6 +29,13 @@ pub enum RuntimeError {
         plugin: &'static str,
     },
 
+    /// A plugin exceeded its time budget. It is disabled for this device.
+    #[error("plugin {plugin} timed out")]
+    PluginTimedOut {
+        /// Plugin name.
+        plugin: &'static str,
+    },
+
     /// A plugin returned an error. It is disabled for this device.
     #[error("plugin {plugin} failed: {source}")]
     PluginFailed {
