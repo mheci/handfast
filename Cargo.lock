@@ -345,7 +345,6 @@ dependencies = [
  "handfast-proto",
  "rcgen",
  "rustls",
- "rustls-pki-types",
  "serde_json",
  "socket2",
  "thiserror",
