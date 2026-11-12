@@ -6,6 +6,7 @@ Current state:
 
 - `v0.2.0` is the latest stable release. It has native Debian 12, Ubuntu 24.04 and Arch Linux packages plus an unsigned Windows MSI.
 - Discovery landed on `main` in `6f85e3f` with an independent verifier pass. `handfastd` announces, receives peers and persists devices without clearing pairing.
+- The TLS link design landed on `main` in `c5a288e` after two adversarial reviews and three verifier rounds. The design is `docs/design/p1-tls-link.md`.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -19,7 +20,7 @@ Program rules:
 P1 plan:
 
 1. Discovery wired into `handfastd`. Done in `6f85e3f`.
-2. TLS link, certificate persistence and identity re-exchange. Design in flight.
+2. TLS link, certificate persistence and identity re-exchange. Design done in `c5a288e`; implementation in flight.
 3. Pairing prompt and persistent trust.
 4. TCP link and ping end to end.
 5. Battery and share/file payload transfer.
@@ -36,18 +37,33 @@ Discovery follow-ups:
 - Supervise discovery after a socket read error instead of stopping until daemon restart.
 - The identity now advertises `tcpPort`; the link unit must actually bind and test that port.
 
+TLS implementation sequence:
+
+0. Provider spike: rustls with ring and `tls12`, minimal inline TLS 1.2 and 1.3 loopback, Windows static CRT build.
+1. Store `identity_v1`, optional peer pin, trust updates and migration tests.
+2. `IdentityHello` and `DiscoveryAnnouncement` in proto with real Android and desktop packet fixtures.
+3. Discovery compatibility for the desktop UDP packet.
+4. Fingerprint and peer-trust policy, including CN and identity correlation.
+5. Independent testkit TLS peer and RSA fixture.
+6. TLS 1.2 and 1.3 configs and TLS-only tests.
+7. Framed TLS link, hello and identity re-exchange.
+8. Link manager limits, dedupe, rate limits, keepalive and shutdown.
+9. Daemon composition and startup ordering.
+10. Docs, CI and real-client P1 interop.
+
 Active work:
 
-- Branch: `design/tls-link`
-- Owner: architect design worker, to be spawned
+- Branch: `spike/tls-provider`
+- Owner: code worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: a design package with usage sketch, module map, type signatures, certificate and trust model, failure modes, test plan and sequencing, grounded with `how` and sketched with `architect`/`arena`. Independent verifier review before merge. Only one model is configured, so model diversity is not established.
+- Evidence: `cargo test -p handfast-net --all-features` runs a real TLS 1.2 and TLS 1.3 loopback, the Windows CI job builds the same dependencies with the static CRT, and all 9 checks pass.
 
-Design scope for the TLS unit:
+Design risks carried into implementation:
 
-- TLS 1.3 with rustls, self-signed device certificates and pinned peer certificates.
-- Certificate generation, persistence in the redb store, fingerprinting and identity re-add.
-- TCP listener and connector, identity exchange over TLS, protocol-8 re-exchange validation, frame limits and link lifecycle.
-- The pairing boundary is designed here but implemented in the next unit.
-- Testkit and integration tests, including a wrong-certificate and identity-mismatch case.
+- Real Android TLS 1.2 and desktop TLS 1.3 interop, including an RSA peer, is unverified until the P1 exit.
+- `ring` on Windows with the static CRT is proven only by unit 0.
+- The UDP broadcast test assumes the CI kernel delivers a broadcast to two reuse-addr sockets.
+- Pairing clock skew, Windows state-file ACLs and private-key zeroization remain open.
+- The unpaired idle timeout must not close a link inside the 30-second pairing window.
+- The testkit TLS peer duplicates handshake logic on purpose.
