@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::frame::{read, write, Result, TestkitError, WirePacket};
 
@@ -237,19 +237,6 @@ where
         .await
         .map_err(|_| TestkitError::Timeout)?
         .map_err(TestkitError::Io)
-}
-
-/// Send one UDP discovery announcement.
-///
-/// # Errors
-///
-/// Fails when the socket cannot be created or the datagram cannot be sent.
-pub async fn announce_once(target: SocketAddr, config: &PeerConfig) -> Result<()> {
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
-    let packet = config.identity_packet();
-    let bytes = serde_json::to_vec(&packet)?;
-    socket.send_to(&bytes, target).await?;
-    Ok(())
 }
 
 #[cfg(test)]

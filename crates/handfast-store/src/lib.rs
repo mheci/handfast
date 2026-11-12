@@ -9,6 +9,7 @@
 #![deny(missing_docs)]
 
 use std::path::Path;
+use std::sync::Arc;
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -20,8 +21,6 @@ const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices_v1")
 const PLUGIN_STATE: TableDefinition<&str, u8> = TableDefinition::new("plugin_state_v1");
 /// Settings, keyed by name.
 const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings_v1");
-/// Daemon identity, singleton key `1`.
-const IDENTITY: TableDefinition<u8, &[u8]> = TableDefinition::new("identity_v1");
 
 /// Store errors.
 #[derive(Debug, Error)]
@@ -53,6 +52,10 @@ pub enum StoreError {
     /// The requested state is invalid.
     #[error("data: {0}")]
     Data(String),
+
+    /// A blocking store task failed to join.
+    #[error("blocking task failed: {0}")]
+    TaskJoin(String),
 }
 
 /// Result alias for store operations.
@@ -71,17 +74,6 @@ pub struct DeviceRecord {
     pub paired: bool,
     /// Last seen Unix timestamp in seconds.
     pub last_seen: Option<i64>,
-}
-
-/// Persisted daemon identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentityRecord {
-    /// Device identifier.
-    pub device_id: String,
-    /// DER-encoded certificate.
-    pub cert_der: Vec<u8>,
-    /// DER-encoded private key.
-    pub key_der: Vec<u8>,
 }
 
 /// Embedded state.
@@ -113,7 +105,6 @@ impl Store {
             let _ = write.open_table(DEVICES)?;
             let _ = write.open_table(PLUGIN_STATE)?;
             let _ = write.open_table(SETTINGS)?;
-            let _ = write.open_table(IDENTITY)?;
         }
         write.commit()?;
         Ok(())
@@ -147,27 +138,6 @@ impl Store {
             return Ok(None);
         };
         Ok(Some(serde_json::from_slice(value.value())?))
-    }
-
-    /// List devices ordered by name and ID.
-    ///
-    /// # Errors
-    ///
-    /// Fails when a stored record cannot be decoded.
-    pub fn list_devices(&self) -> Result<Vec<DeviceRecord>> {
-        let read = self.database.begin_read()?;
-        let table = read.open_table(DEVICES)?;
-        let mut devices = Vec::new();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            devices.push(serde_json::from_slice(value.value())?);
-        }
-        devices.sort_by(|left: &DeviceRecord, right: &DeviceRecord| {
-            left.name
-                .cmp(&right.name)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        Ok(devices)
     }
 
     /// Set a device's pairing state.
@@ -245,34 +215,22 @@ impl Store {
         Ok(())
     }
 
-    /// Load the persisted daemon identity.
+    /// Run a blocking store operation on the blocking pool.
+    ///
+    /// Use this from async device tasks. Direct calls block the Tokio worker
+    /// while redb waits for the write lock.
     ///
     /// # Errors
     ///
-    /// Fails when the stored record cannot be decoded.
-    pub fn load_identity(&self) -> Result<Option<IdentityRecord>> {
-        let read = self.database.begin_read()?;
-        let table = read.open_table(IDENTITY)?;
-        let Some(value) = table.get(&1u8)? else {
-            return Ok(None);
-        };
-        Ok(Some(serde_json::from_slice(value.value())?))
-    }
-
-    /// Store the daemon identity, replacing any previous value.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the record cannot be serialized or written.
-    pub fn save_identity(&self, record: &IdentityRecord) -> Result<()> {
-        let value = serde_json::to_vec(record)?;
-        let write = self.database.begin_write()?;
-        {
-            let mut table = write.open_table(IDENTITY)?;
-            table.insert(&1u8, value.as_slice())?;
-        }
-        write.commit()?;
-        Ok(())
+    /// Fails when the operation fails or the blocking task cannot be joined.
+    pub async fn run_blocking<T, F>(self: Arc<Self>, operation: F) -> Result<T>
+    where
+        F: FnOnce(&Store) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        tokio::task::spawn_blocking(move || operation(&self))
+            .await
+            .map_err(|error| StoreError::TaskJoin(error.to_string()))?
     }
 }
 
@@ -317,21 +275,6 @@ mod tests {
 
         assert!(store.set_paired("a", false).unwrap());
         assert!(!store.set_paired("missing", true).unwrap());
-        assert_eq!(store.list_devices().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn device_list_is_sorted_by_name() {
-        let (_directory, store) = test_store();
-        store.upsert_device(&device("b", "Zulu")).unwrap();
-        store.upsert_device(&device("a", "Alpha")).unwrap();
-        let names: Vec<String> = store
-            .list_devices()
-            .unwrap()
-            .into_iter()
-            .map(|record| record.name)
-            .collect();
-        assert_eq!(names, vec!["Alpha", "Zulu"]);
     }
 
     #[test]
@@ -361,17 +304,16 @@ mod tests {
         assert_eq!(store.setting("device_id").unwrap().as_deref(), Some("def"));
     }
 
-    #[test]
-    fn identity_round_trip() {
+    #[tokio::test]
+    async fn blocking_operations_can_run_off_the_async_worker() {
         let (_directory, store) = test_store();
-        let record = IdentityRecord {
-            device_id: "a".repeat(32),
-            cert_der: vec![1, 2, 3],
-            key_der: vec![4, 5, 6],
-        };
-        assert_eq!(store.load_identity().unwrap(), None);
-        store.save_identity(&record).unwrap();
-        assert_eq!(store.load_identity().unwrap(), Some(record));
+        let store = Arc::new(store);
+        store
+            .clone()
+            .run_blocking(|store| store.set_setting("mode", "async"))
+            .await
+            .unwrap();
+        assert_eq!(store.setting("mode").unwrap().as_deref(), Some("async"));
     }
 
     #[test]

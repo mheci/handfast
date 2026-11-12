@@ -1,6 +1,6 @@
 //! Per-device runtime state.
 
-use handfast_proto::{DeviceId, DeviceName, DeviceType, Identity};
+use handfast_proto::{DeviceId, DeviceName, DeviceType};
 
 /// A known device.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,15 +28,5 @@ impl Device {
             paired: false,
             connected: false,
         }
-    }
-
-    /// Build from a decoded identity.
-    #[must_use]
-    pub fn from_identity(identity: &Identity) -> Self {
-        Self::new(
-            identity.device_id.clone(),
-            identity.device_name.clone(),
-            identity.device_type,
-        )
     }
 }

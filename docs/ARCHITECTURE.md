@@ -41,7 +41,7 @@ production codec must not be the only implementation used to test itself.
 
 | Crate | Responsibility | Must not depend on |
 | --- | --- | --- |
-| `handfast-proto` | Packet model, framing, identity, capabilities, certificates, fingerprints | networking, desktop |
+| `handfast-proto` | Packet model, framing, identity, capabilities | networking, desktop |
 | `handfast-net` | UDP discovery, TCP links, pairing state machine | plugins, desktop |
 | `handfast-runtime` | Plugin trait, registry, per-device host, events, supervision | concrete plugins |
 | `handfast-plugins` | 31-plugin roster and plugin implementations | daemon, UI |
@@ -86,7 +86,7 @@ One `handfastd` process owns:
 - the discovery socket and all device links;
 - one `DeviceHost` per connected device;
 - the plugin registry and enabled-plugin set;
-- the SQLite store;
+- the redb store;
 - the desktop adapters;
 - the IPC socket for `hfctl` and the GUI.
 
@@ -152,9 +152,9 @@ announced to a peer and never receives packets.
 | `Screensaver` | screensaver-inhibit | `org.freedesktop.login1` over zbus |
 | `Shell` | share URL, findthisdevice | xdg-open via `std::process::Command` |
 
-Traits return `Result` and are `Send + Sync`. The daemon composes a `Desktop`
-from optional adapters. A plugin whose required adapter is missing is not
-advertised on that host.
+Traits return `Result` and are `Send + Sync`. In P1 the daemon composes a
+`Desktop` from optional adapters. A plugin whose required adapter is missing is
+not advertised on that host; the registry already filters by `Desktop`.
 
 `MockDesktop` implements every trait with in-memory recording. Plugin contract
 tests use it; Linux backends get their own integration tests behind `cfg(target_os = "linux")`.
@@ -169,8 +169,7 @@ Tables:
 - `devices_v1`: device records keyed by ID.
 - `plugin_state_v1`: per-device enable/disable.
 - `settings_v1`: key/value.
-- `identity_v1`: daemon certificate material.
-- Later: notifications, contacts and transfers, keyed per device.
+- Later: notifications, contacts, transfers and TLS material, keyed per device.
 
 Schemas are versioned by table name and migrated with copy-on-open. The
 database lives at `$XDG_DATA_HOME/handfast/state.redb`.
@@ -187,7 +186,7 @@ schema. Requests are idempotent; events are broadcast.
 - TLS 1.3 with pinned peer certificates.
 - Protocol-8 re-exchange validation: plaintext and encrypted identity must match.
 - Pairing requests carry a timestamp and are bound to the TLS certificate.
-  Pairing codes are derived from both certificate fingerprints.
+  Pairing code derivation lands in P1.
 - Unpaired devices can send only identity and pair packets. Every other packet is
   dropped before the plugin layer.
 - Frame size, payload size and JSON nesting are capped before allocation.
@@ -207,12 +206,13 @@ Required jobs, all on `ubuntu-latest`:
 5. `deny` - `cargo-deny` for advisories, licenses, bans and sources. One
    security gate, not two overlapping ones.
 6. `docs` - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
-7. `conformance` - `cargo test -p handfast-testkit` and the self-test binary.
+7. `testkit-self-test` - `cargo test -p handfast-testkit` and the self-test
+   binary. This tests the testkit and codec, not the daemon, until P1.
+8. `fuzz` - nightly `cargo-fuzz` smoke for the frame and identity parsers.
 
 Later phases add, only when the code exists:
 
-8. `wayland` - headless compositor smoke for desktop adapters.
-9. `fuzz` - nightly `cargo-fuzz` smoke for frame, JSON and identity parsers.
+9. `wayland` - headless compositor smoke for desktop adapters.
 10. `package` - `cargo xtask package` for deb, rpm, Arch and portable tarball.
 
 No `continue-on-error`. A lane that is not ready is not a CI job; it is a task
@@ -221,9 +221,9 @@ in the roadmap.
 ## Migration
 
 - v1 remains at tag `v1-archive`.
-- v2 is developed on `rewrite/v2` and replaces `main` only after the P1 exit
-  criteria pass: discovery, TLS, pairing, ping, battery, share and file transfer
-  against a real KDE Connect client.
+- v2 replaced `main` as the P0 foundation. It is alpha and not a usable client
+  until the P1 exit criteria pass: discovery, TLS, pairing, ping, battery, share
+  and file transfer against a real KDE Connect client.
 - No v1 source is copied into v2. Protocol behavior is re-derived from the KDE
   protocol reference and the official client behavior.
 

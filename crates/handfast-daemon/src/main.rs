@@ -15,10 +15,6 @@ use tracing_subscriber::EnvFilter;
 #[derive(Debug, Parser)]
 #[command(name = "handfastd", version, about = "Handfast KDE Connect daemon")]
 struct Args {
-    /// TCP control port announced to peers.
-    #[arg(long, default_value_t = 1716)]
-    tcp_port: u16,
-
     /// State directory. Defaults to the XDG data directory.
     #[arg(long)]
     data_dir: Option<PathBuf>,
@@ -52,13 +48,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&data_dir)?;
     let store = Store::open(data_dir.join("state.db"))?;
     let device_id = load_or_create_device_id(&store)?;
-    let capabilities = registry().capabilities()?;
+    let capabilities = registry().capabilities(&Default::default())?;
     let identity = Identity::new(
         device_id,
         DeviceName::new(&device_name()),
         DeviceType::Desktop,
         capabilities,
-        Some(args.tcp_port),
+        None,
     );
 
     if args.print_identity {
@@ -68,7 +64,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(
         device_id = %identity.device_id,
-        tcp_port = args.tcp_port,
         "handfastd P0 starting; link layer lands in P1"
     );
     tokio::signal::ctrl_c().await?;

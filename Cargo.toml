@@ -24,10 +24,10 @@ repository = "https://github.com/mheci/handfast"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "wrap_help"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+if-addrs = "0.14"
 redb = "4.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
 socket2 = "0.6"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
@@ -49,7 +49,6 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"
 
 [profile.bench]
 inherits = "release"

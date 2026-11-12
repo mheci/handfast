@@ -1,0 +1,27 @@
+[package]
+name = "handfast-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+handfast-proto = { path = "../crates/handfast-proto" }
+serde_json = "1"
+
+[[bin]]
+name = "frame_decode"
+path = "fuzz_targets/frame_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "identity_json"
+path = "fuzz_targets/identity_json.rs"
+test = false
+doc = false
+
+[workspace]

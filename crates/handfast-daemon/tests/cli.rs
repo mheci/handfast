@@ -31,7 +31,8 @@ fn print_identity_is_stable_and_advertises_implemented_plugins() {
         );
         let incoming = packet["body"]["incomingCapabilities"].as_array().unwrap();
         assert!(incoming.contains(&Value::String("kdeconnect.ping".to_string())));
-        assert!(incoming.contains(&Value::String("kdeconnect.clipboard".to_string())));
+        assert!(!incoming.contains(&Value::String("kdeconnect.clipboard".to_string())));
+        assert!(packet["body"].get("tcpPort").is_none());
         packet["body"]["deviceId"].as_str().unwrap().to_string()
     };
 

@@ -12,7 +12,7 @@ pub const BATTERY: PluginMeta = PluginMeta {
     title: "Battery monitor",
     status: IMPLEMENTED,
     incoming: &[types::BATTERY],
-    outgoing: &[types::BATTERY_REQUEST],
+    outgoing: &[],
     desktop: DesktopRequirement::None,
 };
 
@@ -21,16 +21,8 @@ pub const CLIPBOARD: PluginMeta = PluginMeta {
     name: "clipboard",
     title: "Clipboard synchronization",
     status: IMPLEMENTED,
-    incoming: &[
-        types::CLIPBOARD,
-        types::CLIPBOARD_CONNECT,
-        types::CLIPBOARD_FILE,
-    ],
-    outgoing: &[
-        types::CLIPBOARD,
-        types::CLIPBOARD_CONNECT,
-        types::CLIPBOARD_FILE,
-    ],
+    incoming: &[types::CLIPBOARD, types::CLIPBOARD_CONNECT],
+    outgoing: &[],
     desktop: DesktopRequirement::Clipboard,
 };
 

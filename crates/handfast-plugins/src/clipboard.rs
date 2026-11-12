@@ -45,17 +45,9 @@ impl Plugin for ClipboardPlugin {
     ) -> Result<PluginOutput, PluginError> {
         if !matches!(
             packet.ptype.as_str(),
-            types::CLIPBOARD | types::CLIPBOARD_CONNECT | types::CLIPBOARD_FILE
+            types::CLIPBOARD | types::CLIPBOARD_CONNECT
         ) {
             return Ok(PluginOutput::new());
-        }
-
-        if packet.ptype == types::CLIPBOARD_FILE {
-            return Ok(PluginOutput::new().with_event(PluginEvent::Log {
-                level: LogLevel::Info,
-                message: "clipboard file payloads are a v2 extension and not applied yet"
-                    .to_string(),
-            }));
         }
 
         let Some(content) = packet.body.get("content").and_then(Value::as_str) else {

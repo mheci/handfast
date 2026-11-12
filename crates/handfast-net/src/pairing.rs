@@ -3,12 +3,17 @@
 //! The daemon owns the user-facing prompt. This type only tracks protocol
 //! state and the 30-second request convention.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use handfast_proto::PairingRequest;
 
 use crate::error::{NetError, Result};
 
 /// Protocol pairing timeout in seconds.
 pub const PAIRING_TIMEOUT_SECS: i64 = 30;
+
+/// Allowed clock difference between peers, in seconds.
+pub const MAX_CLOCK_SKEW_SECS: i64 = 300;
 
 /// Pairing state for one device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,21 +108,45 @@ impl PairingSession {
         matches!(
             self.state,
             PairingState::Requested { timestamp }
-                if now_secs.saturating_sub(timestamp) > PAIRING_TIMEOUT_SECS
+                if timestamp > now_secs.saturating_add(MAX_CLOCK_SKEW_SECS)
+                    || now_secs.saturating_sub(timestamp) > PAIRING_TIMEOUT_SECS
         )
     }
 
-    /// Apply an inbound pairing packet.
+    /// Apply an inbound pairing packet using the current clock.
     ///
     /// # Errors
     ///
-    /// Fails when a peer accepts without a pending local request.
+    /// Fails when a peer accepts without a pending local request, or when a
+    /// request timestamp is outside the allowed clock skew.
     pub fn handle(&mut self, request: &PairingRequest) -> Result<Option<PairingAction>> {
+        self.handle_at(request, unix_now())
+    }
+
+    /// Apply an inbound pairing packet with an explicit clock.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a peer accepts without a pending local request, or when a
+    /// request timestamp is outside the allowed clock skew.
+    pub fn handle_at(
+        &mut self,
+        request: &PairingRequest,
+        now_secs: i64,
+    ) -> Result<Option<PairingAction>> {
         if !request.pair {
             self.state = PairingState::Unpaired;
             return Ok(Some(PairingAction::Rejected));
         }
         if let Some(timestamp) = request.timestamp {
+            if self.state == PairingState::Paired {
+                return Ok(None);
+            }
+            if timestamp.saturating_sub(now_secs).saturating_abs() > MAX_CLOCK_SKEW_SECS {
+                return Err(NetError::Pairing(
+                    "pairing timestamp outside allowed clock skew".to_string(),
+                ));
+            }
             self.state = PairingState::Requested { timestamp };
             return Ok(Some(PairingAction::RequestReceived));
         }
@@ -132,6 +161,13 @@ impl PairingSession {
             )),
         }
     }
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -152,11 +188,34 @@ mod tests {
     fn inbound_request_then_local_accept() {
         let mut session = PairingSession::new();
         let action = session
-            .handle(&PairingRequest::request(200))
+            .handle_at(&PairingRequest::request(200), 200)
             .unwrap()
             .unwrap();
         assert_eq!(action, PairingAction::RequestReceived);
         session.accept().unwrap();
+        assert_eq!(session.state(), PairingState::Paired);
+    }
+
+    #[test]
+    fn future_timestamp_is_rejected() {
+        let mut session = PairingSession::new();
+        assert!(session
+            .handle_at(&PairingRequest::request(i64::MAX), 1_000)
+            .is_err());
+        assert_eq!(session.state(), PairingState::Unpaired);
+    }
+
+    #[test]
+    fn paired_peer_cannot_reset_to_requested() {
+        let mut session = PairingSession::new();
+        session.request(1_000).unwrap();
+        session.handle_at(&PairingRequest::accept(), 1_000).unwrap();
+        assert_eq!(session.state(), PairingState::Paired);
+
+        let action = session
+            .handle_at(&PairingRequest::request(1_001), 1_001)
+            .unwrap();
+        assert_eq!(action, None);
         assert_eq!(session.state(), PairingState::Paired);
     }
 
