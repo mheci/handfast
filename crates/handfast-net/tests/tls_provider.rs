@@ -87,6 +87,7 @@ fn client_config(
     rustls::ClientConfig::builder_with_provider(Arc::clone(provider))
         .with_protocol_versions(&[version])
         .expect("the ring provider has cipher suites for the requested TLS version")
+        .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert(Arc::clone(provider))))
         .with_no_client_auth()
 }
