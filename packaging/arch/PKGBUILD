@@ -9,6 +9,7 @@ license=('MIT')
 depends=('glibc' 'gcc-libs')
 provides=('handfastd')
 conflicts=('handfastd')
+options=('!debug')
 source=('handfastd' 'README.md' 'LICENSE-MIT')
 sha256sums=('SKIP' 'SKIP' 'SKIP')
 
