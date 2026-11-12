@@ -1,0 +1,9 @@
+{
+  "id": 0,
+  "type": "kdeconnect.telephony",
+  "body": {
+    "event": "ringing",
+    "phoneNumber": "+1234567890",
+    "contactName": "Contact One"
+  }
+}

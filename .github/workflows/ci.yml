@@ -1,16 +1,8 @@
-# CI for Handfast — Linux-targeted Rust workspace.
-#
-# Stages: fmt, clippy, test, audit (RustSec), cargo-deny, release-build,
-#         arch-build (makepkg), fuzz-smoke, wayland-smoke,
-#         android-interop-smoke. All lanes are required gates (no
-#         continue-on-error) so regressions surface here instead of silently
-#         rotting.
-
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "rewrite/**"]
   pull_request:
 
 concurrency:
@@ -24,368 +16,78 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ------------------------------------------------------------------ fmt --
   fmt:
-    name: fmt (rustfmt)
+    name: fmt
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-  # ------------------------------------------------------------------ msrv --
-  # Guards the declared rust-version floor (1.90): dependency bumps that
-  # silently raise the MSRV fail here instead of on end-user machines.
-  msrv:
-    name: msrv (rust 1.90)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.90.0
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install system deps (wayland / xkbcommon)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev
-      - name: Check workspace at MSRV (locked)
-        run: cargo check --locked --workspace --all-features
-
-  # --------------------------------------------------------------- clippy --
   clippy:
-    name: clippy (-D warnings)
+    name: clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      # Needed by the wayland/xkbcommon crates at build time (pkg-config probes).
-      - name: Install system deps (wayland / xkbcommon)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev
-      - name: Lint workspace
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  # ----------------------------------------------------------------- test --
-  # Split so the GUI's heavy wgpu/iced dependency tree cannot starve the rest:
-  # parallel jobs, isolated caches, independent timeouts.
-  test-core:
-    name: test (workspace minus gui/ipc; ipc runs serially below)
+  test:
+    name: test
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features --all-targets
+      - run: cargo test --workspace --all-features --doc
 
-      - name: Install system deps (wayland / xkbcommon)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev
-      - name: Run tests
-        env:
-          RUST_LOG: trace
-        run: |
-          cargo test --workspace --all-features --exclude handfast-gui --exclude handfast-ipc -- --nocapture
-          cargo test -p handfast-ipc --all-features -- --test-threads=1 --nocapture
-
-  test-gui:
-    name: test (handfast-gui)
+  msrv:
+    name: msrv (1.90)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0
       - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --workspace --all-features
 
-      # gui -> ipc -> core -> rusqlite links the system SQLite; wayland/xkbcommon
-      # are needed by handfast-wayland in the dependency graph.
-      - name: Install system deps (wayland / xkbcommon / sqlite)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev
-      - name: Run tests
-        run: cargo test -p handfast-gui --all-features -- --nocapture
-
-  # ------------------------------------------------- packaging-smoke --------
-  # Assembles the Debian/Ubuntu .deb and Fedora .rpm from a debug build so
-  # packaging regressions (spec/control drift, missing files, completions)
-  # surface on every PR instead of only at release time.
-  packaging-smoke:
-    name: packaging-smoke (deb + rpm)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install system deps (wayland / xkbcommon / sqlite / rpm)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev rpm
-      - name: Build debug binaries
-        run: cargo build --workspace --all-features -p handfastd -p handfast-tui -p handfast-gui
-      - name: Assemble .deb
-        run: |
-          mkdir -p dist
-          bash scripts/package-deb.sh 0.0.0 "$PWD/target/debug" "$PWD/dist"
-          dpkg-deb --info dist/*.deb | grep -E "Package|Version|Architecture"
-      - name: Assemble .rpm
-        run: |
-          mkdir -p dist
-          bash scripts/package-rpm.sh 0.0.0 "$PWD/target/debug" "$PWD/dist"
-          test -s dist/handfast-0.0.0-1.x86_64.rpm
-      - name: Upload smoke packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: packaging-smoke
-          path: dist/*.deb*
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------- audit --
-  audit:
-    name: audit (RustSec)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v5
-      # cargo-audit CLI: fails the job on vulnerable deps without needing the
-      # check-run write permission that rustsec/audit-check requires.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-audit
-      - run: cargo audit
-
-  # ----------------------------------------------------------------- deny --
   deny:
-    name: deny (cargo-deny)
+    name: deny
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-      # Uses the committed deny.toml (licenses / bans / sources / advisories).
       - uses: EmbarkStudios/cargo-deny-action@v2
 
-  # -------------------------------------------------------- release-build --
-  release-build:
-    name: release-build (linux-x86_64)
+  docs:
+    name: docs
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install system deps (wayland / xkbcommon)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev
-      - name: Build optimized binaries
-        run: cargo build --release --workspace --all-features
-      - name: Upload binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-linux-x86_64
-          path: |
-            target/release/handfastd
-            target/release/hfctl
-            target/release/handfast-gui
-          if-no-files-found: error
-
-  # ----------------------------------------------------------- arch-build --
-  arch-build:
-    # PR-time PKGBUILD validation on a bare archlinux:base-devel container.
-    # The distro rust toolchain drops native static-archive members at final
-    # link, so the job installs the SAME rustup toolchain the ubuntu jobs use
-    # and links with bfd + --no-gc-sections (see the RUSTFLAGS below); with
-    # that workaround the lane is deterministic and required. The release
-    # .pkg.tar.zst is assembled natively in release.yml's arch-package job.
-    name: arch-build (makepkg)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    container:
-      image: archlinux:base-devel
-    steps:
-      # NOTE for packaging/arch/PKGBUILD authors: the PKGBUILD must support
-      # env HF_LOCAL_SRC=1 — i.e. build from a local copy of the repo staged at
-      # $srcdir/handfast instead of downloading a release tarball. This job
-      # stages exactly that layout before invoking makepkg.
-      - name: Install toolchain + package deps
-        # Distro rust links native -sys archives differently than rustup
-        # (system-wide lld defaults drop them), which broke every allocator /
-        # ring / sqlite link. Install the SAME rustup toolchain the ubuntu
-        # jobs use so packaging validates an identical environment, and the
-        # PKGBUILD's declared deps (wayland, libxkbcommon, sqlite) so the
-        # container mirrors a real build machine and sqlite links the system
-        # shared library instead of a bundled static fallback.
-        run: |
-          pacman -Syu --noconfirm git pkg-config libxkbcommon wayland sqlite sudo curl
-          useradd -m builder
-      - uses: actions/checkout@v5   # lands root-owned under /__w/...
-      - name: Create unprivileged builder user
-        run: |
-          chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
-      - name: Install rustup toolchain as builder (matches ubuntu jobs)
-        run: |
-          runuser -u builder -- bash -lc 'curl https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable'
-          echo "PATH=/home/builder/.cargo/bin:$PATH" >> "$GITHUB_ENV"
-      - name: Stage repo into makepkg srcdir layout
-        run: |
-          STAGE=/tmp/makepkg-stage
-          mkdir -p "$STAGE/src"
-          cp -a "$GITHUB_WORKSPACE" "$STAGE/src/handfast"
-          cp "$GITHUB_WORKSPACE/packaging/arch/PKGBUILD" "$STAGE/PKGBUILD"
-          chown -R builder:builder "$STAGE"
-      - name: Build package as builder (HF_LOCAL_SRC=1)
-        working-directory: /tmp/makepkg-stage
-        run: |
-          sudo -u builder env HOME=/home/builder PATH="/home/builder/.cargo/bin:$PATH" \
-            RUSTFLAGS="-C link-self-contained=off -C link-arg=-fuse-ld=bfd -C link-arg=-Wl,--no-gc-sections" \
-            HF_LOCAL_SRC=1 makepkg -f --nodeps
-      - name: Collect built package
-        run: |
-          mkdir -p dist
-          cp /tmp/makepkg-stage/*.pkg.tar.zst dist/
-      - name: Upload package
-        uses: actions/upload-artifact@v4
-        with:
-          name: handfast-arch-pkg
-          path: dist/*.pkg.tar.zst
-          if-no-files-found: error
-
-  # ----------------------------------------------------------- fuzz-smoke --
-  fuzz-smoke:
-    # Smoke-only fuzzing: every committed target runs 20s under cargo-fuzz.
-    # Runs on nightly (cargo-fuzz requires -Z sanitizer flags); failures are
-    # real signal now that the targets are stable, so the lane is required.
-    name: fuzz-smoke (nightly, 20s/target)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
-      # The committed rust-toolchain.toml pins stable for normal builds;
-      # cargo-fuzz requires nightly (-Z sanitizer flags), so override here.
-      RUSTUP_TOOLCHAIN: nightly
+      RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps --all-features
 
-      - name: Install system deps (wayland / xkbcommon)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev
-      - name: Install cargo-fuzz
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-fuzz
-      - name: Build fuzz targets (optimized)
-        run: cargo fuzz build -O --sanitizer=none --target x86_64-unknown-linux-gnu  # asan off; gnu host target (no musl cross-toolchain needed)
-      - name: Smoke-run every fuzz target (20s each)
-        run: |
-          set -u
-          shopt -s nullglob
-          targets=(fuzz/fuzz_targets/*.rs)
-          if [ "${#targets[@]}" -eq 0 ]; then
-            echo "No targets in fuzz/fuzz_targets — nothing to smoke."
-            exit 0
-          fi
-          status=0
-          for f in "${targets[@]}"; do
-            t="$(basename "$f" .rs)"
-            echo "::group::cargo fuzz run ${t} (20s)"
-            cargo fuzz run "$t" --sanitizer=none --target x86_64-unknown-linux-gnu -- -max_total_time=20 || status=1
-            echo "::endgroup::"
-          done
-          exit "$status"
-
-  # --------------------------------------------------------- wayland-smoke --
-  # Headless-compositor smoke lane. The D-Bus portal connect used to block
-  # indefinitely without a session bus; that hang is bounded (5s timeout in
-  # handfast-wayland's PortalInput::connect), so the lane is deterministic
-  # and required.
-  wayland-smoke:
-    name: wayland-smoke (headless sway)
+  conformance:
+    name: conformance
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
-      # Weston's headless backend is the most reliable no-seat compositor for
-      # ephemeral CI containers; the sway/hyprland/KWin matrix runs on
-      # self-hosted runners in Phase 4.
-      - name: Install weston + system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev weston
-      # One self-contained step: launch, wait, exercise. Keeping everything in
-      # a single shell avoids cross-step process reaping of the compositor.
-      - name: Headless Wayland session + smoke checks
-        env:
-          XDG_RUNTIME_DIR: /tmp/runtime
-          WAYLAND_DISPLAY: hf-smoke
-        run: |
-          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
-          setsid nohup weston --backend=headless-backend.so \
-            --socket="$WAYLAND_DISPLAY" --idle-time=0 \
-            > /tmp/weston.log 2>&1 &
-          ok=0
-          for i in $(seq 1 20); do
-            if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
-              echo "compositor socket ready after ${i}s"
-              ok=1
-              break
-            fi
-            sleep 1
-          done
-          if [ "$ok" != "1" ]; then
-            echo "no WAYLAND_DISPLAY socket '$WAYLAND_DISPLAY'; weston log follows:" >&2
-            cat /tmp/weston.log >&2 || true
-            exit 1
-          fi
-          cargo test -p handfast-wayland --lib detect -- --nocapture
-          cargo run --bin handfastd -- --version
-
-  # -------------------------------------------------- android-interop-smoke --
-  # The acceptance test for "actually connects with the Android client": a
-  # Python peer that re-implements the android LanLinkProvider/LanLink wire
-  # protocol from upstream (plaintext identity first, inverted TLS roles,
-  # protocol-8 secure identity re-exchange, payload + empty-file shares)
-  # drives a real handfastd over loopback. Fails if any byte contract
-  # drifts from what the Android app expects.
-  android-interop-smoke:
-    name: android-interop-smoke (python peer)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libsqlite3-dev openssl
-
-      - name: Build + run Android interop smoke (inbound)
-        run: bash tools/interop/run.sh
-
-      - name: Build + run Android interop smoke (dial-out + pairing answer)
-        run: bash tools/interop/run_dialout.sh
-
-      - name: Build + run two-daemon full-mesh E2E
-        run: bash tools/interop/run_mesh.sh
+      - run: cargo test -p handfast-testkit --all-features
+      - run: cargo run -p handfast-testkit -- self-test

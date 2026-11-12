@@ -1,0 +1,9 @@
+{
+  "id": 0,
+  "type": "kdeconnect.battery",
+  "body": {
+    "currentCharge": 15,
+    "isCharging": false,
+    "thresholdEvent": 1
+  }
+}

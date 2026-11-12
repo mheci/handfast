@@ -1,328 +1,71 @@
-# Handfast
+# Handfast v2
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
-[![Latest release](https://img.shields.io/github/v/release/mheci/handfast)](https://github.com/mheci/handfast/releases/latest)
-[![CI](https://github.com/mheci/handfast/actions/workflows/ci.yml/badge.svg)](https://github.com/mheci/handfast/actions/workflows/ci.yml)
-[![Rust](https://img.shields.io/badge/MSRV-1.90-blueviolet)](Cargo.toml)
+Clean-room, Rust-native KDE Connect implementation for Linux desktops.
 
-Connect your Android phone to your Linux desktop over your local network — no cloud,
-no account, no phone vendor in the loop. Handfast speaks the **KDE Connect wire
-protocol**, so it pairs with the standard [KDE Connect](https://kdeconnect.kde.org/)
-Android app and interoperates with other KDE Connect clients.
+> **Status: foundation branch.** This branch is a rewrite in progress and is not
+> usable as a client yet. The v1 implementation is archived at tag
+> `v1-archive`. The target is full feature parity with the 31 plugins shipped by
+> `kdeconnect-kde`, while staying wire-compatible with the official KDE Connect
+> Android and iOS apps.
 
-Handfast is a **from-scratch, Rust-native implementation**: it shares zero code with
-the KDE projects (`kdeconnect-kde`, `kdeconnect-android`, libkdeconnect) and is not
-affiliated with KDE e.V. The GUI, the TUI/CLI, the daemon, the protocol codec, the CI —
-everything is Rust.
+## Why a rewrite
 
-Built **Wayland-first**: the daemon talks to your display server through a small
-Wayland bridge (virtual input, clipboard, idle inhibit), and the desktop app is an
-Iced GUI that runs natively on Wayland.
+v1 proved the hard part: KDE Connect discovery, TLS, pairing and payload transfer
+can be implemented in Rust. It also accumulated stubs, partial features and a CI
+that mixed Python and shell tooling with the Rust build. v2 keeps the lessons,
+not the code:
 
-> Personal project, experimental. Anything can change or break without notice.
-> Expect rough edges while the protocol surface matures.
+- One workspace, one runtime, one plugin model.
+- Every plugin declares its packet contract and its desktop backend.
+- Rust owns the protocol, the daemon, the CLI, the tests and the release tooling.
+- CI is a small number of deterministic Rust jobs, not a collection of
+  best-effort lanes.
 
----
+## Documentation
 
-## What you can do today
+- [Parity matrix](docs/PARITY.md) - the 31 plugins, their packets, Linux
+  backends, phases and test status.
+- [Architecture](docs/ARCHITECTURE.md) - crate layout, runtime, plugin model,
+  desktop adapters, security and CI.
 
-| Area | Status |
-| --- | --- |
-| Device discovery (UDP broadcast) + pairing + unpairing | ✅ Live |
-| TLS connections with **certificate pinning** | ✅ Live |
-| Notifications relay — desktop ⇄ phone, with reply/dismiss routing | ✅ Live |
-| Battery status (request + periodic reports) | ✅ Live |
-| Ping, find-my-phone, pause-music, run-commands, system volume | ✅ Live |
-| Share requests — URL / text | ✅ Live |
-| **File transfer** (send + receive, wire-compatible with the KDE Connect Android app) | ✅ Live |
-| File-manager context menus (Nautilus, Dolphin, Nemo, Thunar, PCManFM, Caja) | ✅ Live via `hfctl filemanager install` |
-| GVFS (GNOME) + KIO (KDE) backend support for send sources & receive destinations | ✅ Live (gio / kioclient5) |
-| SMS sending from the desktop (via paired phone) | ✅ Live |
-| TUI (`hfctl tui`) + rich CLI + Iced GUI | ✅ Live |
-| Mousepad input, full two-way clipboard sync, contacts, connectivity report | 🚧 Phase 3–4 |
-
-## Architecture
-
-Handfast is a 9-crate Cargo workspace:
+## Workspace
 
 ```
 crates/
-├── core/       Event bus, SQLite state store, paths, supervisor (panic-restart + backoff)
-├── protocol/   KDE Connect-compatible wire protocol: packet framing, identity, TLS, transfer
-├── plugins/    Plugin registry + implementations (battery, notifications, share, run-commands, …)
-├── wayland/    Wayland bridge: virtual input, clipboard watch, idle inhibit, portal EI
-├── ipc/        Local IPC: typed JSON frames over a Unix domain socket (peercred-checked)
-├── daemon/     handfastd — the pairing/routing daemon (discovery, handshake, device manager)
-├── tui/        hfctl — ratatui TUI + full CLI
-├── gui/        handfast-gui — Iced desktop app (Wayland-native)
-└── xtask/      Release tooling: dist packaging, shell completions
+  handfast-proto/    wire packets, framing, identity, certificates
+  handfast-net/      UDP discovery, TCP links, pairing state machine
+  handfast-runtime/  plugin trait, registry, per-device host, events, supervision
+  handfast-plugins/  31-plugin roster and plugin implementations
+  handfast-desktop/  Linux desktop adapter traits and mock backend
+  handfast-store/    redb state, settings, migrations
+  handfast-testkit/  independent Rust wire peer and golden vectors
+  handfast-daemon/   handfastd binary
+xtask/               Rust developer and release tasks
 ```
 
-The daemon is the only process that talks to the display server and owns the
-network + SQLite state; `hfctl` and `handfast-gui` talk to it over a local Unix
-socket. Plugins are **fault-isolated packet transformers**: if one panics, the
-supervisor restarts it with exponential backoff instead of killing the session.
+Planned crates: `handfast-ipc`, `handfast-cli`, `handfast-tui`, `handfast-gui`.
 
-## Install
-
-Prebuilt packages are attached to every [release](https://github.com/mheci/handfast/releases):
-
-| Distro | Package | File (from latest release) |
-| --- | --- | --- |
-| Arch Linux | `handfast` | `handfast-<version>-1-x86_64.pkg.tar.zst` (since 0.1.0) |
-| Debian / Ubuntu | `handfast` | `handfast_<version>-1_amd64.deb` (since 0.1.1) |
-| Fedora | `handfast` | `handfast-<version>-1.x86_64.rpm` (since 0.1.1) |
-| Any Linux | portable | `handfast-<version>-x86_64-unknown-linux-gnu.tar.zst` |
-
-### Arch Linux — prebuilt package
+## Build and test
 
 ```sh
-pacman -U handfast-*-x86_64.pkg.tar.zst
-```
-
-### Arch Linux — build it yourself (AUR-style)
-
-Use the shipped `PKGBUILD` (also attached to every release):
-
-```sh
-curl -LO https://github.com/mheci/handfast/releases/latest/download/PKGBUILD
-makepkg -si
-```
-
-### Debian / Ubuntu — prebuilt package
-
-```sh
-sudo apt install ./handfast_<version>-1_amd64.deb
-```
-
-Installs `handfastd` / `hfctl` / `handfast-gui`, the systemd user unit, desktop
-file, icon, and shell completions. Runtime deps (`libwayland-client0`,
-`libxkbcommon0`, `libsqlite3-0`) are pulled in automatically.
-
-### Fedora — prebuilt package
-
-```sh
-sudo dnf install ./handfast-<version>-1.x86_64.rpm
-```
-
-### Any distro — portable binaries
-
-Download `handfast-<version>-x86_64-unknown-linux-gnu.tar.zst`, unpack, and run
-`handfastd` / `hfctl` / `handfast-gui` from wherever you like. A `systemd` user unit,
-desktop file, and icon are included under `packaging/`.
-
-### From source
-
-Prerequisites: a Rust toolchain (**1.90+**; see [MSRV](#development)) plus the
-development headers for Wayland, xkbcommon, and SQLite
-(Debian/Ubuntu: `libwayland-dev libxkbcommon-dev libsqlite3-dev`; Arch: `wayland libxkbcommon sqlite`).
-
-```sh
-git clone https://github.com/mheci/handfast && cd handfast
-cargo build --release --locked --all-features \
-  -p handfastd -p handfast-tui -p handfast-gui
-```
-
-Binaries land in `target/release/`.
-
-## Getting started
-
-1. Install **KDE Connect** on your Android phone and make sure both devices are on
-   the same Wi-Fi network.
-2. Start the daemon:
-
-   ```sh
-   systemctl --user enable --now handfast.service   # packaged installs
-   # or directly:
-   ./handfastd &
-   ```
-
-3. Pair from either side:
-
-   ```sh
-   hfctl devices        # your phone shows up here
-   hfctl pair <device-id>
-   ```
-
-4. Use it:
-
-   ```sh
-   hfctl tui            # full-screen terminal UI
-   handfast-gui         # desktop app
-   ```
-
-Need help reading logs? `RUST_LOG=debug ./handfastd`.
-
-## CLI reference (`hfctl`)
-
-| Command | What it does |
-| --- | --- |
-| `hfctl tui` | Interactive terminal UI (default) |
-| `hfctl status` | Print daemon identity/ping summary, exit |
-| `hfctl devices` | List known devices (id, name, type, paired, state) |
-| `hfctl pair <id>` / `hfctl unpair <id>` | Start / revoke pairing |
-| `hfctl plugins` | Inspect or toggle per-device plugins |
-| `hfctl send -d <id> <file…>` | Send local files (or GVFS/KIO URIs) to a device |
-| `hfctl send --pick <file…>` | Send files to an interactively chosen device |
-| `hfctl filemanager install` / `update` / `remove` | Install/refresh/remove "Send to device" context menus in Nautilus, Dolphin, Nemo, Thunar, PCManFM and Caja |
-| `hfctl transfers` / `transfer-cancel <id>` | Inspect / cancel transfers |
-| `hfctl notifications` | Inspect or dismiss mirrored notifications |
-| `hfctl clipboard` | Read or overwrite the local clipboard text |
-| `hfctl volume` | Read or change the local output volume |
-| `hfctl battery <id>` | Ask a device for battery state |
-| `hfctl sms <id> <number> <text>` | Send an SMS from the paired phone |
-| `hfctl runcommand <id>` | Inspect commands executable on a device |
-| `hfctl share-text <id> --text <t>` / `share-url <id> --url <u>` | Push text / open a URL on a device |
-| `hfctl logs` | Capture recent daemon log records from the event stream |
-| `hfctl completions <shell>` | Emit a shell completion script (bash/zsh/fish/…) |
-
-Run `hfctl <command> --help` for per-command options.
-
-## File transfer
-
-Handfast speaks the upstream KDE Connect payload protocol: a `kdeconnect.share.request`
-header announces `payloadSize` + `payloadTransferInfo.port` over the control link, and
-the file bytes stream raw over a second TLS connection — exactly what the Android app
-and kdeconnect-kde do, so transfers interoperate with both directions.
-
-* **Send:** `hfctl send -d <DEVICE_ID> <PATH…>` (or `--pick` for an interactive device
-  picker). Paths may be plain files or `gvfs://` / `smb://` / `sftp://` / `dav(s)://` /
-  `kdeconnect://`… URIs; non-local sources are materialized through `gio` (GNOME) or
-  `kioclient5` (KDE) before streaming.
-* **Receive:** incoming files land in `transfer.save_dir` (default `~/Downloads`); a
-  `gvfs://` or KIO URI there is honored — the engine stages locally and copies the
-  finished file into the URI.
-* **Track:** `hfctl transfers`, cancel with `hfctl transfer-cancel <id>`; the TUI and
-  GUI show live progress.
-
-### File-manager integration
-
-`hfctl filemanager install` writes context menus into every major file manager.
-Formats and locations follow the current upstream docs (nautilus-python ≥ 4.0
-with Nautilus ≥ 43.beta, Nemo 3.0 `nemo-python`, MATE `python-caja`, KDE
-`ServiceTypes=KonqPopupMenu/Plugin` servicemenus, Xfce Thunar `uca.xml`, LXDE
-PCManFM DES-EMA actions):
-
-| File manager | Desktop | Mechanism | User location |
-| --- | --- | --- | --- |
-| Nautilus | GNOME | `nautilus-python` extension, live per-device submenu | `~/.local/share/nautilus-python/extensions/` |
-| Nemo | Cinnamon | `nemo-python` extension, live per-device submenu | `~/.local/share/nemo-python/extensions/` |
-| Caja | MATE | `caja-python` extension, live per-device submenu | `~/.local/share/caja-python/extensions/` |
-| Dolphin | KDE Plasma | KService servicemenu (per-device actions + `--pick` fallback) | `~/.local/share/kio/servicemenus/` |
-| Thunar | Xfce | `uca.xml` custom action (merged, preserving your actions) | `~/.config/Thunar/uca.xml` |
-| PCManFM | LXDE | DES-EMA file-manager action (`--pick`) | `~/.local/share/file-manager/actions/` |
-
-Run `hfctl filemanager update` after pairing changes to refresh Dolphin's per-device
-entries, and `hfctl filemanager remove` to uninstall. Add `--system` to install for all
-users (`/usr/share`, needs root). Thunar is the one exception — it only reads
-`~/.config/Thunar/uca.xml` and has no system-wide file, so `--system` skips it
-with a notice. Restart the file manager after installing.
-
-## Configuration
-
-The daemon persists state under XDG dirs:
-
-- **State (SQLite):** `$XDG_DATA_HOME/handfast/state.db` (`~/.local/share/handfast`)
-- **Config:** `$XDG_CONFIG_HOME/handfast/` (plugin enable/disable, pairing policy)
-- **Cache:** `$XDG_CACHE_HOME/handfast/`
-- **IPC socket:** `$XDG_RUNTIME_DIR/handfast` (see `handfast_ipc::default_socket_path`)
-
-Logging follows `RUST_LOG` (`info` default; `debug` for protocol tracing).
-
-`handfastd` accepts `--tcp-port` (default 1716, the KDE Connect well-known
-port) so a second instance can coexist on one host — e.g. for the mesh E2E or
-testing against a different port in the upstream 1716–1764 range. The
-discovery socket shares UDP 1716 across instances (SO_REUSEADDR, mirroring
-Android's `ShareAddress`).
-
-## Development
-
-```sh
-# Build & test
 cargo build --workspace --all-features
-cargo test --workspace --all-features --exclude handfast-gui --exclude handfast-ipc
-cargo test -p handfast-ipc --all-features -- --test-threads=1   # serial: shared socket
-cargo test -p handfast-gui --all-features
-
-# Lint (CI enforces -D warnings)
-cargo fmt --all -- --check
+cargo test --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-# Android interop smoke: independent python peer implementing the android
-# LanLinkProvider wire protocol (plaintext identity, inverted TLS roles,
-# secure re-exchange, payload + empty-file shares) against a real handfastd
-bash tools/interop/run.sh
-
-# Dial-out interop: handfast dials the android-shaped peer (UDP announce ->
-# outbound control handshake -> interactive pairing answer via
-# `hfctl pair-answer` -> payload send -> reconnect with cert pinning)
-bash tools/interop/run_dialout.sh
-
-# Two-daemon full-mesh E2E: two real handfastd instances discover each other
-# over shared UDP 1716 (SO_REUSEADDR, like android's ShareAddress), pair via
-# the interactive IPC path, and transfer files in both directions
-bash tools/interop/run_mesh.sh
-
-# Fuzzing (nightly toolchain)
-cargo +nightly fuzz build -O --sanitizer=none
-cargo +nightly fuzz run <target> --sanitizer=none -- -max_total_time=60
-
-# Benchmarks (criterion)
-cargo bench -p handfast-protocol
-
-# Idle-resource targets (peak RSS < 40 MB, avg CPU < 1 %)
-./scripts/perf.sh
-
-# Release tooling
-cargo run -p xtask -- --help
+cargo fmt --all -- --check
+cargo run -p handfast-testkit -- --self-test
 ```
 
-**MSRV.** The workspace targets **Rust 1.90** (`rust-version` in `Cargo.toml`), enforced
-by the `msrv` CI job against the locked dependency tree. Bumping dependencies that
-raise the floor will fail CI, not your users' machines.
+MSRV is Rust 1.90. CI enforces it separately from stable.
 
-## CI / CD
+## Protocol target
 
-Three GitHub Actions workflows:
-
-- **CI** — fmt, clippy (`-D warnings`), tests (split core/GUI/IPC), RustSec audit,
-  cargo-deny, release build, Arch `makepkg` smoke, fuzz smoke, headless Wayland smoke.
-  The Arch/fuzz/Wayland lanes are *tolerated* (`continue-on-error`) while they mature.
-- **Release** — release-please versioning on `main`; on `v*` tags builds native
-  binaries, assembles the Arch package + PKGBUILD natively, and publishes to a
-  GitHub Release (AUR sync gated on a secret).
-- **Monitor** — self-healing watcher that files `[ci-failure]` tracking issues for
-  red runs on `main`; fixes reference the issue via a `Fixes:` trailer.
-
-## Security & privacy
-
-- **No cloud.** Discovery, pairing, and all traffic stay on your LAN.
-- **Certificate pinning.** TLS peers are authenticated by pinned certificates
-  exchanged during pairing, so a rogue device on the network cannot impersonate a
-  paired peer.
-- **Fault isolation.** Plugins run behind a supervisor that restarts panicking
-  instances; oversized IPC frames and hostile packet lengths are rejected before
-  allocation.
-- The daemon unit uses `NoNewPrivileges`, `ProtectSystem=strict`, and a restricted
-  address family set (see `packaging/systemd/handfast.service`).
-
-## Troubleshooting
-
-- **`hfctl` says "daemon not reachable"** — is `handfastd` running? Check
-  `systemctl --user status handfast` or run it in a terminal with `RUST_LOG=debug`.
-- **Phone never appears in `hfctl devices`** — same Wi-Fi network? Multicast/broadcast
-  allowed by the router? Firewall rules that block **UDP/TCP port 1716** (the KDE
-  Connect discovery/data port) will hide devices.
-- **Pairs but no notifications** — notification sync needs the desktop D-Bus
-  session; start the daemon from your graphical session (not a bare SSH shell).
-
-## Contributing
-
-PRs welcome. Conventional commits; `cargo fmt` + `clippy -D warnings` must stay
-clean. Found a bug or want a feature? Open an
-[issue](https://github.com/mheci/handfast/issues).
+- KDE Connect protocol version 8.
+- Packet framing: 4-byte big-endian length, JSON body, 1 MiB hard limit.
+- UDP discovery on port 1716, TCP control and payload links in the 1714-1764
+  range.
+- TLS 1.3 with certificate pinning and protocol-8 identity re-exchange.
 
 ## License
 
-MIT — see [LICENSE-MIT](LICENSE-MIT). Handfast speaks the KDE Connect protocol but
-contains no upstream KDE code and is not affiliated with KDE e.V.
+MIT. Handfast speaks the KDE Connect wire protocol but shares no code with the
+KDE projects and is not affiliated with KDE e.V.

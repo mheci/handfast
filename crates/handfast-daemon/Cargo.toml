@@ -1,0 +1,24 @@
+[package]
+name = "handfast-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "handfastd"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+handfast-plugins = { path = "../handfast-plugins" }
+handfast-proto = { path = "../handfast-proto" }
+handfast-store = { path = "../handfast-store" }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

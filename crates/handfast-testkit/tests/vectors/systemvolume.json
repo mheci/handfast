@@ -1,0 +1,10 @@
+{
+  "id": 0,
+  "type": "kdeconnect.systemvolume",
+  "body": {
+    "direction": "in",
+    "sink_description": "Built-in Audio",
+    "volume": 55,
+    "mute": false
+  }
+}

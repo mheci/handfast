@@ -1,0 +1,23 @@
+{
+  "id": 0,
+  "type": "kdeconnect.identity",
+  "body": {
+    "deviceId": "740bd4b9b4184ee497d6caf1da8151be",
+    "deviceName": "FOSS Phone",
+    "deviceType": "phone",
+    "incomingCapabilities": [
+      "kdeconnect.ping",
+      "kdeconnect.battery",
+      "kdeconnect.clipboard",
+      "kdeconnect.share.request"
+    ],
+    "outgoingCapabilities": [
+      "kdeconnect.ping",
+      "kdeconnect.battery",
+      "kdeconnect.clipboard",
+      "kdeconnect.share.request"
+    ],
+    "protocolVersion": 8,
+    "tcpPort": 1716
+  }
+}

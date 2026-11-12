@@ -4,6 +4,7 @@
 **/*.rs.bk
 *.db3
 *.db3-journal
+*.redb
 *.sock
 .DS_Store
 Thumbs.db

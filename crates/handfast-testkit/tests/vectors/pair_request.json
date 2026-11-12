@@ -1,0 +1,8 @@
+{
+  "id": 0,
+  "type": "kdeconnect.pair",
+  "body": {
+    "pair": true,
+    "timestamp": 1700000000
+  }
+}
