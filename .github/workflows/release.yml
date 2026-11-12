@@ -62,7 +62,7 @@ jobs:
         run: |
           deb_version=$(printf '%s' "$VERSION" | tr '-' '~')
           bash packaging/linux/make-deb.sh "$deb_version" 2.36 debian12 dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: handfastd-debian12-amd64
           path: dist/*.deb
@@ -87,7 +87,7 @@ jobs:
         run: |
           deb_version=$(printf '%s' "$VERSION" | tr '-' '~')
           bash packaging/linux/make-deb.sh "$deb_version" 2.39 ubuntu24.04 dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: handfastd-ubuntu24.04-amd64
           path: dist/*.deb
@@ -123,7 +123,7 @@ jobs:
           su builder -c 'cd /home/builder/pkg && makepkg -f --noconfirm'
           mkdir -p dist
           cp /home/builder/pkg/handfastd-bin-[0-9]*.pkg.tar.* dist/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: handfastd-archlinux-x86_64
           path: dist/*.pkg.tar.*
@@ -218,7 +218,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:PFX_PATH -and (Test-Path $env:PFX_PATH)) { Remove-Item $env:PFX_PATH -Force }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: handfastd-windows11-x64
           path: dist/*.msi
