@@ -8,6 +8,7 @@ Current state:
 - Discovery landed on `main` in `6f85e3f` with an independent verifier pass. `handfastd` announces, receives peers and persists devices without clearing pairing.
 - The TLS link design landed on `main` in `c5a288e` after two adversarial reviews and three verifier rounds. The design is `docs/design/p1-tls-link.md`.
 - The provider gate landed on `main` in `0dacce2`. rustls with ring and `tls12` builds on Windows with the static CRT, and real TLS 1.2 and 1.3 loopback tests pass on Linux.
+- Unit 1 landed on `main` in `cd47f52`. The store persists `identity_v1`, peer pins, atomic trust, authenticated identity updates and 0.2.0 plus pre-audit migrations.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -41,8 +42,8 @@ Discovery follow-ups:
 TLS implementation sequence:
 
 0. Provider spike: done in `0dacce2`.
-1. Store `identity_v1`, optional peer pin, trust updates and migration tests. In flight.
-2. `IdentityHello` and `DiscoveryAnnouncement` in proto with real Android and desktop packet fixtures.
+1. Store `identity_v1`, optional peer pin, trust updates and migration tests. Done in `cd47f52`.
+2. `IdentityHello` and `DiscoveryAnnouncement` in proto with real Android and desktop packet fixtures. In flight.
 3. Discovery compatibility for the desktop UDP packet.
 4. Fingerprint and peer-trust policy, including CN and identity correlation.
 5. Independent testkit TLS peer and RSA fixture.
@@ -52,18 +53,19 @@ TLS implementation sequence:
 9. Daemon composition and startup ordering.
 10. Docs, CI and real-client P1 interop.
 
+Store follow-ups:
+
+- `set_paired` is test-only but leaves a pin in place when called with `false`; the pairing unit must use `set_trusted` and the legacy method should be removed or marked deprecated.
+- Corrupt-identity and device-ID-versus-settings startup tests belong with the daemon unit.
+- Private-key zeroization and Windows state-file ACLs remain open.
+
 Active work:
 
-- Branch: `feat/store-identity`
-- Owner: store identity worker, to be spawned
+- Branch: `feat/proto-hello`
+- Owner: proto worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: store tests for `identity_v1` round-trip and persistence, a pre-audit `identity_v1` migration, a 0.2.0 state file opening cleanly, peer pin preservation through `record_discovery`, no `Debug` on the private-key record, and all 9 checks.
-
-Provider follow-ups:
-
-- The provider test comment should say Windows builds the dependencies, not the test binary.
-- Remove the direct `rustls-pki-types` dependency if the identity module does not use it.
+- Evidence: `IdentityHello` parses real Android and desktop connection packets, including string and numeric `targetProtocolVersion`; `DiscoveryAnnouncement` parses the desktop UDP packet with only deviceId, deviceName, protocolVersion and tcpPort; strict encrypted `Identity` parsing is unchanged; proto tests cover missing fields and out-of-range ports; all 9 checks.
 
 Design risks carried into implementation:
 
