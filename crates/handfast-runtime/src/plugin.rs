@@ -195,7 +195,7 @@ impl Registry {
     }
 }
 
-fn desktop_available(desktop: &Desktop, requirement: DesktopRequirement) -> bool {
+pub(crate) fn desktop_available(desktop: &Desktop, requirement: DesktopRequirement) -> bool {
     match requirement {
         DesktopRequirement::None => true,
         DesktopRequirement::Clipboard => desktop.clipboard.is_some(),

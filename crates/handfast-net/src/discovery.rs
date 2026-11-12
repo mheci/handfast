@@ -6,7 +6,7 @@ use handfast_proto::{Identity, Packet};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 
-use crate::error::{NetError, Result};
+use crate::error::Result;
 
 /// KDE Connect's well-known discovery port.
 pub const DISCOVERY_PORT: u16 = 1716;
@@ -81,20 +81,6 @@ impl Discovery {
             .await
     }
 
-    /// Send an announcement to every interface broadcast address, then the
-    /// limited broadcast address as a fallback.
-    ///
-    /// # Errors
-    ///
-    /// Fails when interfaces cannot be read or a datagram cannot be sent.
-    pub async fn announce_interfaces(&self) -> Result<()> {
-        for broadcast in interface_broadcasts()? {
-            self.announce(SocketAddr::from((broadcast, self.port)))
-                .await?;
-        }
-        self.announce_broadcast().await
-    }
-
     /// Receive the next valid identity announcement.
     ///
     /// Malformed datagrams are ignored. Wrap this call in a timeout to bound
@@ -122,20 +108,6 @@ impl Discovery {
             }
         }
     }
-}
-
-fn interface_broadcasts() -> Result<Vec<Ipv4Addr>> {
-    let interfaces =
-        if_addrs::get_if_addrs().map_err(|error| NetError::Discovery(error.to_string()))?;
-    let mut broadcasts = Vec::new();
-    for interface in interfaces {
-        if let if_addrs::IfAddr::V4(address) = interface.addr {
-            if let Some(broadcast) = address.broadcast {
-                broadcasts.push(broadcast);
-            }
-        }
-    }
-    Ok(broadcasts)
 }
 
 #[cfg(test)]

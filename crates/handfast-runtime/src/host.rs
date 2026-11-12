@@ -12,7 +12,9 @@ use handfast_proto::Packet;
 use crate::device::Device;
 use crate::error::{PluginError, RuntimeError};
 use crate::event::PluginEvent;
-use crate::plugin::{Plugin, PluginContext, PluginOutput, PluginStatus, Registry};
+use crate::plugin::{
+    desktop_available, Plugin, PluginContext, PluginOutput, PluginStatus, Registry,
+};
 
 /// Maximum time one plugin call may run.
 const PLUGIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -81,7 +83,10 @@ impl DeviceHost {
         let plugins = registry.create_all();
         let enabled = plugins
             .iter()
-            .filter(|plugin| plugin.meta().status == PluginStatus::Implemented)
+            .filter(|plugin| {
+                plugin.meta().status == PluginStatus::Implemented
+                    && desktop_available(&desktop, plugin.meta().desktop)
+            })
             .map(|plugin| plugin.meta().name)
             .collect();
         Self {
@@ -502,5 +507,11 @@ mod tests {
             .capabilities(&mock.desktop())
             .unwrap()
             .accepts(types::CLIPBOARD));
+
+        let host = DeviceHost::new(device(), &registry, Desktop::default());
+        assert!(!host.is_enabled("clipboard"));
+
+        let host = DeviceHost::new(device(), &registry, MockDesktop::new().desktop());
+        assert!(host.is_enabled("clipboard"));
     }
 }
