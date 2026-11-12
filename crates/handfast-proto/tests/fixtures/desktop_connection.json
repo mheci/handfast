@@ -1,0 +1,11 @@
+{
+  "id": 0,
+  "type": "kdeconnect.identity",
+  "body": {
+    "deviceId": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "deviceName": "kde-desktop",
+    "protocolVersion": 8,
+    "targetDeviceId": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "targetProtocolVersion": 8
+  }
+}
