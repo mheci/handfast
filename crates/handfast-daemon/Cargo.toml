@@ -12,9 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
-handfast-plugins = { path = "../handfast-plugins", version = "0.2.0-alpha.0" }
-handfast-proto = { path = "../handfast-proto", version = "0.2.0-alpha.0" }
-handfast-store = { path = "../handfast-store", version = "0.2.0-alpha.0" }
+handfast-plugins = { path = "../handfast-plugins", version = "0.2.0" }
+handfast-proto = { path = "../handfast-proto", version = "0.2.0" }
+handfast-store = { path = "../handfast-store", version = "0.2.0" }
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

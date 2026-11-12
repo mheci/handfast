@@ -8,9 +8,9 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-handfast-desktop = { path = "../handfast-desktop", version = "0.2.0-alpha.0" }
-handfast-proto = { path = "../handfast-proto", version = "0.2.0-alpha.0" }
-handfast-runtime = { path = "../handfast-runtime", version = "0.2.0-alpha.0" }
+handfast-desktop = { path = "../handfast-desktop", version = "0.2.0" }
+handfast-proto = { path = "../handfast-proto", version = "0.2.0" }
+handfast-runtime = { path = "../handfast-runtime", version = "0.2.0" }
 serde_json.workspace = true
 
 [dev-dependencies]

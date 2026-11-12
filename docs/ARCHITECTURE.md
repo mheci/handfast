@@ -223,7 +223,7 @@ in the roadmap.
 
 A tag matching the workspace version runs `.github/workflows/release.yml`.
 The tag must match `[workspace.package] version`, for example
-`v0.2.0-alpha.0`. The workflow builds native packages in the target
+`v0.2.0`. The workflow builds native packages in the target
 environment:
 
 - Debian 12 amd64 `.deb` in `rust:1.90-bookworm`.
@@ -231,10 +231,10 @@ environment:
 - Arch Linux x86_64 `handfastd-bin` `.pkg.tar.zst` in `archlinux:latest`.
 - Windows 11 x64 `.msi` with WiX, built with the static CRT.
 
-The Windows job signs `handfastd.exe` and the MSI, verifies both signatures and
-fails before building when the signing secrets are missing. The `publish` job
-attaches every asset to the GitHub release. The required secrets and the install
-commands are in [RELEASING.md](RELEASING.md).
+The Windows job signs `handfastd.exe` and the MSI when the signing secrets are
+configured, verifies both signatures and otherwise publishes an unsigned MSI.
+The `publish` job attaches every asset to the GitHub release. The required
+secrets and the install commands are in [RELEASING.md](RELEASING.md).
 
 ## Migration
 

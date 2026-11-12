@@ -1,7 +1,7 @@
 # Releasing
 
 Releases are cut from a tag. The tag must match the workspace version in
-`Cargo.toml`, for example `v0.2.0-alpha.0`.
+`Cargo.toml`, for example `v0.2.0`.
 
 ## Assets
 
@@ -13,14 +13,15 @@ Releases are cut from a tag. The tag must match the workspace version in
 | Windows 11, x64 | `handfast-<msi-version>-x64.msi` | `windows-latest` |
 
 The Debian package version replaces `-` with `~`. The Arch package version
-replaces `-` with `_`. The MSI version drops the pre-release suffix, so
-`0.2.0-alpha.0` becomes MSI version `0.2.0`.
+replaces `-` with `_`. The MSI version drops any pre-release suffix. For
+`0.2.0` all four assets use `0.2.0`.
 
 ## Signing secrets
 
-The Windows job signs both `handfastd.exe` and the MSI, then runs
-`signtool verify /pa /all`. The release fails before building when either
-secret is missing.
+The Windows job signs both `handfastd.exe` and the MSI when both secrets are
+present, then runs `signtool verify /pa /all`. Without them it builds an
+unsigned MSI and the release still includes it. Set both secrets for a signed
+release. The 0.2.0 release is unsigned.
 
 | Secret | Value |
 | --- | --- |
@@ -53,31 +54,31 @@ only to the runner's temporary directory and is removed by the `always()` step.
 4. Tag the commit and push the tag:
 
    ```sh
-   git tag v0.2.0-alpha.0
-   git push origin v0.2.0-alpha.0
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
 
 5. The Release workflow checks the tag against `Cargo.toml`, builds the four
-   packages, signs the Windows files and attaches every asset to the GitHub
-   release.
+   packages, signs the Windows files when the secrets are present and attaches
+   every asset to the GitHub release.
 
 A manual `workflow_dispatch` run builds and uploads run artifacts. Set
-`sign_windows` to false to build an unsigned MSI for a pipeline check without
-the signing secrets. The publish job only runs on a tag push, so a manual run
-never publishes.
+`sign_windows` to false to build an unsigned MSI without the signing secrets.
+A tag push is also unsigned when the secrets are absent. The publish job only
+runs on a tag push, so a manual run never publishes.
 
 ## Install
 
 Debian and Ubuntu:
 
 ```sh
-sudo apt install ./handfastd_0.2.0~alpha.0_debian12_amd64.deb
+sudo apt install ./handfastd_0.2.0_debian12_amd64.deb
 ```
 
 Arch Linux:
 
 ```sh
-sudo pacman -U handfastd-bin-0.2.0_alpha.0-1-x86_64.pkg.tar.zst
+sudo pacman -U handfastd-bin-0.2.0-1-x86_64.pkg.tar.zst
 ```
 
 Windows 11: open the MSI. It installs `handfastd.exe` to

@@ -144,15 +144,31 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # A tag push signs when a certificate is configured. Without one, the
+      # release still publishes an unsigned MSI.
+      - name: Decide signing
+        id: signing
+        shell: pwsh
+        run: |
+          $sign = $false
+          if ("${{ github.event_name }}" -eq "push" -and $env:WINDOWS_CERT_PFX_BASE64) {
+            $sign = $true
+          }
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.sign_windows }}" -eq "true") {
+            $sign = $true
+          }
+          $signValue = if ($sign) { "true" } else { "false" }
+          "sign=$signValue" >> $env:GITHUB_OUTPUT
+
       - name: Check signing certificate
-        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        if: steps.signing.outputs.sign == 'true'
         shell: pwsh
         run: |
           if (-not $env:WINDOWS_CERT_PFX_BASE64) { throw "Set the WINDOWS_CERT_PFX_BASE64 repository secret." }
           if (-not $env:WINDOWS_CERT_PASSWORD) { throw "Set the WINDOWS_CERT_PASSWORD repository secret." }
       - run: cargo build --release --locked -p handfast-daemon
       - name: Decode signing certificate
-        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        if: steps.signing.outputs.sign == 'true'
         shell: pwsh
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP "handfast-signing.pfx"
@@ -179,7 +195,7 @@ jobs:
           if (-not $wixBin) { throw "WiX Toolset not found" }
           "WIX_BIN=$wixBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Sign handfastd.exe
-        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        if: steps.signing.outputs.sign == 'true'
         shell: pwsh
         run: |
           & $env:SIGNTOOL sign /fd SHA256 /f $env:PFX_PATH /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 target\release\handfastd.exe
@@ -196,7 +212,7 @@ jobs:
           & (Join-Path $env:WIX_BIN "light.exe") -nologo -out (Join-Path "dist" "handfast-$msiVersion-x64.msi") (Join-Path $wixOut "handfast.wixobj")
           if ($LASTEXITCODE -ne 0) { throw "light failed" }
       - name: Sign MSI
-        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        if: steps.signing.outputs.sign == 'true'
         shell: pwsh
         run: |
           $msi = Get-ChildItem "dist\*.msi" | Select-Object -First 1
@@ -204,7 +220,7 @@ jobs:
           & $env:SIGNTOOL sign /fd SHA256 /f $env:PFX_PATH /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $msi.FullName
           if ($LASTEXITCODE -ne 0) { throw "signtool failed for the MSI" }
       - name: Verify signatures
-        if: ${{ github.event_name == 'push' || inputs.sign_windows }}
+        if: steps.signing.outputs.sign == 'true'
         shell: pwsh
         run: |
           & $env:SIGNTOOL verify /pa /all target\release\handfastd.exe

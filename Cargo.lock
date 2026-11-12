@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-daemon"
-version = "0.2.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "handfast-plugins",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-desktop"
-version = "0.2.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-net"
-version = "0.2.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "handfast-proto",
  "serde_json",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-plugins"
-version = "0.2.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "handfast-desktop",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-proto"
-version = "0.2.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-runtime"
-version = "0.2.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-store"
-version = "0.2.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "redb",
  "serde",
@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-testkit"
-version = "0.2.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "handfast-proto",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "clap",
 ]

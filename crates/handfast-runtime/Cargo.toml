@@ -9,8 +9,8 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 futures-util.workspace = true
-handfast-desktop = { path = "../handfast-desktop", version = "0.2.0-alpha.0" }
-handfast-proto = { path = "../handfast-proto", version = "0.2.0-alpha.0" }
+handfast-desktop = { path = "../handfast-desktop", version = "0.2.0" }
+handfast-proto = { path = "../handfast-proto", version = "0.2.0" }
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
