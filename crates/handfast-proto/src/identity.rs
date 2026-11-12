@@ -141,6 +141,19 @@ pub enum DeviceType {
 }
 
 impl DeviceType {
+    /// The wire name of this device type.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Laptop => "laptop",
+            Self::Phone => "phone",
+            Self::Tablet => "tablet",
+            Self::Tv => "tv",
+            Self::Unknown => "unknown",
+        }
+    }
+
     fn from_wire(value: &str) -> Self {
         match value {
             "desktop" => Self::Desktop,
@@ -512,6 +525,16 @@ mod tests {
         let name = DeviceName::new("Bank \u{202E}gpj");
         assert!(!name.as_str().contains('\u{202E}'));
         assert_eq!(name.as_str(), "Bank gpj");
+    }
+
+    #[test]
+    fn device_types_have_wire_names() {
+        assert_eq!(DeviceType::Desktop.as_str(), "desktop");
+        assert_eq!(DeviceType::Laptop.as_str(), "laptop");
+        assert_eq!(DeviceType::Phone.as_str(), "phone");
+        assert_eq!(DeviceType::Tablet.as_str(), "tablet");
+        assert_eq!(DeviceType::Tv.as_str(), "tv");
+        assert_eq!(DeviceType::Unknown.as_str(), "unknown");
     }
 
     #[test]

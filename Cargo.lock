@@ -199,6 +199,7 @@ name = "handfast-daemon"
 version = "0.2.0"
 dependencies = [
  "clap",
+ "handfast-net",
  "handfast-plugins",
  "handfast-proto",
  "handfast-store",
