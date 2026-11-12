@@ -30,5 +30,19 @@ P2 to P4 follow the parity matrix in `docs/PARITY.md`.
 Active work:
 
 - Branch: `feat/discovery-daemon`
+- Owner: background session `ses_e311577f8ffezU3Jp14F7T6jrT`
 - PR: pending
 - Verifier: pending
+- Evidence: CI `test` job plus the new `crates/handfast-daemon/tests/discovery.rs` assertions on the store record.
+
+Verifier checklist for the discovery unit:
+
+- Read the PR diff, not only the owner summary.
+- Confirm `handfastd` binds UDP discovery, announces, receives a peer identity and upserts a device record.
+- Confirm the integration test starts the real binary, sends a real announcement, restarts the store and asserts the record. A type check is not enough.
+- Confirm `--print-identity` now advertises `tcpPort` 1716 and the CLI test asserts it.
+- Confirm no TLS, pairing, TCP listener, payload, version bump, release workflow or `notes.md` changes.
+- Confirm the README and architecture text match the new behavior and that the 0.2.0 release is described as predating discovery.
+- Check the CI run at the current head. Post a pass or a concrete failure. Do not edit or merge.
+
+Next after this merge: TLS link design with the architect skill, then pairing, then the TCP link.
