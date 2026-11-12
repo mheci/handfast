@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+handfast-net = { path = "../handfast-net", version = "0.2.0" }
 handfast-plugins = { path = "../handfast-plugins", version = "0.2.0" }
 handfast-proto = { path = "../handfast-proto", version = "0.2.0" }
 handfast-store = { path = "../handfast-store", version = "0.2.0" }

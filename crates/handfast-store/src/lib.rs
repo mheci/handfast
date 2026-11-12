@@ -126,6 +126,40 @@ impl Store {
         Ok(())
     }
 
+    /// Record a discovery sighting, preserving the stored pairing state.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the existing record cannot be read, or the update cannot be
+    /// serialized or written.
+    pub fn record_discovery(
+        &self,
+        id: &str,
+        name: &str,
+        device_type: &str,
+        last_seen: Option<i64>,
+    ) -> Result<()> {
+        let write = self.database.begin_write()?;
+        {
+            let mut table = write.open_table(DEVICES)?;
+            let paired = match table.get(id)? {
+                Some(value) => serde_json::from_slice::<DeviceRecord>(value.value())?.paired,
+                None => false,
+            };
+            let device = DeviceRecord {
+                id: id.to_string(),
+                name: name.to_string(),
+                device_type: device_type.to_string(),
+                paired,
+                last_seen,
+            };
+            let value = serde_json::to_vec(&device)?;
+            table.insert(id, value.as_slice())?;
+        }
+        write.commit()?;
+        Ok(())
+    }
+
     /// Read one device.
     ///
     /// # Errors
@@ -284,6 +318,24 @@ mod tests {
         assert!(store.set_paired("a", false).unwrap());
         assert!(!store.device("a").unwrap().unwrap().paired);
         assert!(!store.set_paired("missing", true).unwrap());
+    }
+
+    #[test]
+    fn discovery_update_preserves_pairing() {
+        let (_directory, store) = test_store();
+        store.upsert_device(&device("a", "Phone")).unwrap();
+        assert!(store.set_paired("a", true).unwrap());
+
+        store
+            .record_discovery("a", "Renamed", "laptop", Some(1_700_000_100))
+            .unwrap();
+
+        let record = store.device("a").unwrap().unwrap();
+        assert!(record.paired);
+        assert_eq!(record.id, "a");
+        assert_eq!(record.name, "Renamed");
+        assert_eq!(record.device_type, "laptop");
+        assert_eq!(record.last_seen, Some(1_700_000_100));
     }
 
     #[test]

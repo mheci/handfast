@@ -2,10 +2,11 @@
 
 Clean-room, Rust-native KDE Connect implementation.
 
-> **0.2.0 foundation release.** Handfast is not a usable KDE Connect client yet.
-> `handfastd` prints its identity and waits. Discovery, TLS, the link layer,
-> pairing prompts, payload transfer and most plugins are not wired.
-> This release is a foundation and packaging milestone.
+> **0.2.0 foundation release.** In the 0.2.0 packages `handfastd` prints its
+> identity and waits. Discovery is wired into `handfastd` on `main` after the
+> 0.2.0 release. TLS, the link layer, pairing prompts, payload transfer and
+> most plugins are still not wired. This release is a foundation and packaging
+> milestone.
 
 ## Install
 
@@ -63,7 +64,7 @@ cargo fmt --all -- --check
 cargo run -p handfast-testkit -- self-test
 ```
 
-## What works in 0.2.0
+## What works on main
 
 - Packet framing: 4-byte big-endian length, JSON body, 1 MiB hard limit.
 - Packet validation: namespaced type, object body, payload fields that appear
@@ -80,10 +81,12 @@ cargo run -p handfast-testkit -- self-test
   Pairing updates are atomic.
 - Independent testkit, golden vectors and two fuzz targets.
 - `handfastd --print-identity` and a stable, persisted device ID.
+- UDP discovery in `handfastd`: identity announcements, peer receive and
+  device persistence.
 
 Not wired yet:
 
-- Discovery and the TCP link layer in the daemon.
+- The TCP link layer in the daemon.
 - TLS 1.3 with pinned certificates.
 - Pairing prompts and certificate binding.
 - Payload and file transfer.
@@ -91,8 +94,10 @@ Not wired yet:
   and the remaining plugins.
 - The other 28 plugins.
 
-The P0 daemon opens no network sockets. It prints an identity and waits for
-Ctrl+C.
+The 0.2.0 daemon opens no network sockets. It prints an identity and waits for
+Ctrl+C. On `main` after the release, `handfastd` announces its identity over
+UDP discovery on port 1716, records discovered devices in its state file and
+runs until Ctrl+C.
 
 ## Architecture
 

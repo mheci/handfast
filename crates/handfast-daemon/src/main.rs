@@ -1,16 +1,22 @@
 //! `handfastd` composition root.
 //!
-//! P0 exposes a stable identity and capability set. The discovery, TLS and
-//! link tasks land in P1.
+//! P0 exposes a stable identity and capability set. Discovery is wired here;
+//! TLS, pairing and the link layer land in P1.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
+use handfast_net::Discovery;
 use handfast_plugins::registry;
 use handfast_proto::{DeviceId, DeviceName, DeviceType, Identity};
 use handfast_store::Store;
 use tracing_subscriber::EnvFilter;
+
+/// How often to announce this device over UDP discovery.
+const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Parser)]
 #[command(name = "handfastd", version, about = "Handfast KDE Connect daemon")]
@@ -18,6 +24,14 @@ struct Args {
     /// State directory. Defaults to the XDG data directory.
     #[arg(long)]
     data_dir: Option<PathBuf>,
+
+    /// TCP control port announced to peers.
+    #[arg(long, default_value_t = 1716)]
+    tcp_port: u16,
+
+    /// UDP discovery port.
+    #[arg(long, default_value_t = handfast_net::DISCOVERY_PORT)]
+    discovery_port: u16,
 
     /// Print this device's identity packet and exit.
     #[arg(long)]
@@ -46,7 +60,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let data_dir = args.data_dir.unwrap_or_else(default_data_dir);
     std::fs::create_dir_all(&data_dir)?;
-    let store = Store::open(data_dir.join("state.db"))?;
+    let store = Arc::new(Store::open(data_dir.join("state.db"))?);
     let device_id = load_or_create_device_id(&store)?;
     let capabilities = registry().capabilities(&Default::default())?;
     let identity = Identity::new(
@@ -54,7 +68,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         DeviceName::new(&device_name()),
         DeviceType::Desktop,
         capabilities,
-        None,
+        Some(args.tcp_port),
     );
 
     if args.print_identity {
@@ -62,13 +76,63 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    tracing::info!(
-        device_id = %identity.device_id,
-        "handfastd P0 starting; link layer lands in P1"
-    );
+    tracing::info!(device_id = %identity.device_id, "handfastd starting");
+    let discovery = Discovery::bind(identity.clone(), args.discovery_port, args.tcp_port).await?;
+    let local_addr = discovery.local_addr()?;
+    tracing::info!(address = %local_addr, "discovery listening");
+
+    let local_device_id = identity.device_id.clone();
+    let discovery_store = Arc::clone(&store);
+    let discovery_task = tokio::spawn(async move {
+        let mut announce = tokio::time::interval(ANNOUNCE_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = announce.tick() => {
+                    if let Err(error) = discovery.announce_broadcast().await {
+                        tracing::warn!(%error, "discovery announcement failed");
+                    }
+                }
+                received = discovery.recv() => {
+                    let (address, peer) = match received {
+                        Ok(received) => received,
+                        Err(error) => {
+                            tracing::error!(%error, "discovery socket failed; stopping discovery");
+                            break;
+                        }
+                    };
+                    if peer.device_id == local_device_id {
+                        continue;
+                    }
+                    tracing::debug!(%address, device_id = %peer.device_id, "discovered device");
+                    let id = peer.device_id.as_str().to_string();
+                    let name = peer.device_name.as_str().to_string();
+                    let device_type = peer.device_type.as_str().to_string();
+                    let last_seen = unix_now();
+                    if let Err(error) = discovery_store
+                        .clone()
+                        .run_blocking(move |store| {
+                            store.record_discovery(&id, &name, &device_type, last_seen)
+                        })
+                        .await
+                    {
+                        tracing::warn!(%error, "failed to persist discovered device");
+                    }
+                }
+            }
+        }
+    });
+
     tokio::signal::ctrl_c().await?;
+    discovery_task.abort();
     tracing::info!("shutting down");
     Ok(())
+}
+
+fn unix_now() -> Option<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
 }
 
 fn load_or_create_device_id(store: &Store) -> Result<DeviceId, Box<dyn std::error::Error>> {
