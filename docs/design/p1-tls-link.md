@@ -628,7 +628,7 @@ impl LinkManagerHandle {
 }
 ```
 
-`LinkLimits` is passed to the manager, `accept` and `connect`. The listener does not hide it. `LinkPolicy` is the admission owner for unpaired slots and per-IP rate limits.
+`LinkLimits` is passed to the manager, `accept` and `connect`. The listener does not hide it. `LinkPolicy` is the admission owner for unpaired slots and inbound per-IP rate limits.
 
 ```rust
 // handfast-store
@@ -1041,7 +1041,7 @@ The test plan is written as the set of checks the implementation unit must pass.
 
 - Add rustls 0.23 with `ring` and `tls12`, tokio-rustls with `ring` and `tls12`, rcgen with `ring`.
 - Build on Linux and on `windows-latest` with `RUSTFLAGS=-C target-feature=+crt-static`.
-- A test constructs the ring `CryptoProvider`, builds a TLS 1.2 and TLS 1.3 `ServerConfig` and `ClientConfig`, and completes a loopback handshake with the testkit.
+- A test constructs the ring `CryptoProvider`, builds a TLS 1.2 and TLS 1.3 `ServerConfig` and `ClientConfig`, and completes a loopback handshake with a minimal inline rustls client/server pair. The spike does not use the testkit peer, which lands in unit 5.
 - If the Windows static build fails, try aws-lc-rs only after a `deny.toml` license review and a CMake/NASM build check. Record the result before the link unit starts.
 
 ### Proto and fixture tests
@@ -1055,6 +1055,7 @@ The test plan is written as the set of checks the implementation unit must pass.
 - It rejects a hello whose device ID equals the target.
 - `DiscoveryAnnouncement` accepts the desktop UDP fixture with only `deviceId`, `deviceName`, `protocolVersion` and `tcpPort`.
 - `DiscoveryAnnouncement` accepts the Android full UDP fixture and ignores the extra fields.
+- `DiscoveryAnnouncement` rejects a missing `tcpPort`.
 - `DiscoveryAnnouncement` rejects a port outside 1716-1764 and a protocol version other than 8.
 - `Identity::from_packet` still rejects the desktop UDP fixture. The permissive parser is only for discovery.
 
@@ -1081,10 +1082,12 @@ Fixtures are wire packets, not KDE code:
 
 ### TLS version and algorithm tests
 
-- A testkit peer restricted to TLS 1.2 completes the hello, handshake, certificate check and identity exchange.
-- A testkit peer restricted to TLS 1.3 completes the same sequence.
-- A raw TLS 1.1 ClientHello is rejected at the TLS layer. Send it directly to the dialer, which is the TLS server, or to the listener after a valid plaintext hello. A raw ClientHello to the listener before the hello would fail at the plaintext identity step and would not test TLS.
-- A testkit peer with an RSA certificate and key fixture completes TLS 1.2 and TLS 1.3 handshakes. This proves the RSA signature schemes in both verifiers.
+These are TLS-only loopback tests. They do not run the plaintext hello, certificate check or identity exchange, which belong to the link unit.
+
+- A minimal rustls client/server pair restricted to TLS 1.2 completes a handshake.
+- A minimal rustls client/server pair restricted to TLS 1.3 completes a handshake.
+- A raw TLS 1.1 ClientHello is rejected at the TLS layer. Send it directly to the TLS server side of the loopback pair. This test does not go through the link handshake, which would fail at the plaintext hello first.
+- A rustls client/server pair using the RSA certificate and PKCS#8 key fixture completes TLS 1.2 and TLS 1.3 handshakes. This proves the RSA signature schemes in both accept-any verifiers.
 - The accept-any verifiers' `supported_verify_schemes` includes the RSA and ECDSA schemes the provider reports.
 
 ### Link integration tests
@@ -1092,6 +1095,9 @@ Fixtures are wire packets, not KDE code:
 These use the independent testkit TLS peer, not a second copy of the production code.
 
 - A dialer and listener complete the hello, TLS handshake, certificate check and identity exchange, then exchange a ping.
+- A testkit peer restricted to TLS 1.2 completes the hello, certificate check and identity exchange.
+- A testkit peer restricted to TLS 1.3 completes the same sequence.
+- A testkit peer with an RSA certificate completes the full link over TLS 1.2 and TLS 1.3.
 - The dialer's hello contains the full identity and the target fields. The listener accepts it.
 - A desktop-shaped hello with no type or capabilities is accepted.
 - A listener presents a certificate whose CN is a different device ID. The dialer closes before identity.
@@ -1121,7 +1127,7 @@ These use the independent testkit TLS peer, not a second copy of the production 
 ### Daemon integration tests
 
 - Occupy TCP port 1764 and start `handfastd` with `--tcp-port 1764`. The daemon cannot scan past the range and exits nonzero without announcing. Do not occupy only the configured start port, because `bind_in_range` scans upward.
-- Occupy one in-range port and start the daemon at that port. It binds the next free port and announces the actual port in 1716-1764.
+- Occupy an in-range port below 1764 and start the daemon at that port. It binds the next free port and announces the actual port in 1716-1764.
 - Start the daemon with `--tcp-port` in 1716-1764 and a free discovery port. A testkit peer announces itself. The daemon dials, completes TLS, and sends its encrypted identity. This proves bind-before-announce and the discovery-to-manager wiring.
 - Bind a second UDP socket with `SO_REUSEADDR` on the daemon's discovery port before starting it. Receive the daemon's announcement datagram, parse it with `DiscoveryAnnouncement`, and assert `tcpPort` is in 1716-1764 and not zero. This is the port-0 regression test.
 - Send a desktop-minimal UDP announcement to the daemon. The daemon persists the device and attempts a dial to the advertised port. This is the discovery compatibility integration test.
@@ -1138,7 +1144,7 @@ These use the independent testkit TLS peer, not a second copy of the production 
 
 - 42 unpaired links can be established. The 43rd is rejected before TLS.
 - A second incoming connection from one IP inside 500 ms is rejected; after 500 ms it is accepted.
-- An outbound dial does not mark the inbound per-IP window. Simultaneous discovery with two Handfast peers completes both dials; the reciprocal accepts inside 500 ms are not rejected, and last-wins converges without a deadlock.
+- An outbound dial does not mark the inbound per-IP window. Simultaneous discovery with two Handfast peers completes both dials; both reciprocal `accept` calls return `Ok(Link)` inside 500 ms, and last-wins converges without a deadlock.
 - An unpaired link idle for 60 s is closed by the tick; a paired idle link is not.
 - The peer table expires a stale peer after `peer_ttl`.
 - After a 256-ID discovery flood, a real testkit peer is admitted and connected. The test asserts the real peer's link event.
@@ -1262,8 +1268,8 @@ Each unit ends in a check. Do not start the next unit until the check passes.
 3. **Discovery parser.** Change `handfast-net::discovery` to parse and emit `DiscoveryAnnouncement` and accept the desktop minimal UDP fixture. Test the minimal packet and the Android full packet. This lands before the link unit, as the review requires. Check: `cargo test -p handfast-net discovery`.
 4. **Identity types and checks.** Add `Fingerprint`, `TlsIdentity`, `LocalEndpoint`, `PeerCertificate`, `PeerTrust`, `TlsError`, the certificate validity window and the pure checks. No sockets. Tests: generation, CN, validity, fingerprint, pin, malformed DER, local endpoint mismatch. Check: `cargo test -p handfast-net identity`.
 5. **Independent testkit TLS peer and RSA fixture.** Add `tls_peer` with TLS 1.2/1.3, the RSA certificate and PKCS#8 key fixture, minimal UDP announcement and replacement mode. Add `tls-self-test`. This unit lands before the TLS config and link units because both use the peer and the RSA fixture. Check: `cargo test -p handfast-testkit` and `cargo run -p handfast-testkit -- tls-self-test`.
-6. **TLS 1.2 and 1.3 configuration.** Add the rustls configs, `verify_tls12_signature`, `verify_tls13_signature`, RSA schemes and the accept-any verifiers. Test with a loopback server/client for both versions and with the RSA fixture from unit 5. Check: TLS version and algorithm tests.
-7. **Both link roles.** Add `LinkListener::bind_in_range/accept`, `connect`, the full plaintext hello, the full local identity, the identity re-exchange, the framed link and the keepalive helper. Test with the testkit peer from unit 5 for TLS 1.2 and 1.3. Check: happy-path integration tests.
+6. **TLS 1.2 and 1.3 configuration.** Add the rustls configs, `verify_tls12_signature`, `verify_tls13_signature`, RSA schemes and the accept-any verifiers. Test with a minimal TLS-only loopback client/server for both versions and with the RSA fixture from unit 5. Check: the TLS-only version and algorithm tests. They do not use the testkit peer or the link handshake.
+7. **Both link roles.** Add `LinkListener::bind_in_range/accept`, `connect`, the full plaintext hello, the full local identity, the identity re-exchange, the framed link and the keepalive helper. Test with the testkit peer from unit 5 for TLS 1.2 and 1.3. Check: the full-link happy-path tests for hello, certificate check and identity exchange.
 8. **Negative link tests.** Add wrong CN, pin mismatch, identity mismatch, protocol mismatch, string/number target, timeouts, oversized frame, TLS 1.1 rejection and RSA. Check: `cargo test -p handfast-net --test tls_link`.
 9. **Link manager and policy.** Add last-wins dedupe, trust snapshot, gate, admission policy (42 unpaired, inbound per-IP 500 ms, idle 60 s), peer expiry and flood recovery, backoff, limits, events and shutdown. Tests: duplicate replacer, unpaired cap, inbound rate limit, simultaneous discovery, idle, flood recovery, shutdown. Check: `cargo test -p handfast-net --test manager`.
 10. **Daemon composition.** Add the port-range scan, full local endpoint, `Arc<Registry>` sessions, `SessionHandle::stop` on disconnect, discovery announcement wiring, `--print-identity` no-cert/no-bind behavior, Unix permissions and the updated discovery test ports. Tests: range, print identity, migration, desktop UDP announcement, discovery-driven dial, disconnect `on_disconnect`. Check: `cargo test -p handfast-daemon`.
