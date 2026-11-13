@@ -103,6 +103,9 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build --workspace --all-features --locked
+      # The socket-option read-back test is Windows-specific. Keep the build
+      # job as the provider gate and run the net tests on the same runner.
+      - run: cargo test -p handfast-net --all-features
 
   testkit-self-test:
     name: testkit self-test
@@ -114,8 +117,9 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      # This proves the testkit and codec agree. It does not test handfastd
-      # until the P1 link layer exists.
+      # This proves the testkit and codec agree and that the independent TLS
+      # peer completes TLS 1.2 and TLS 1.3 with ECDSA and RSA certificates.
+      # The daemon integration tests run in the `test` job.
       - run: cargo test -p handfast-testkit --all-features
       - run: cargo run -p handfast-testkit -- self-test
       - run: cargo run -p handfast-testkit -- tls-self-test
@@ -137,7 +141,7 @@ jobs:
       # musl target, where ASan cannot link. Force the gnu target.
       - run: cargo fuzz build --sanitizer=address --target x86_64-unknown-linux-gnu
       - run: |
-          for target in frame_decode identity_json; do
+          for target in frame_decode identity_json identity_hello_json discovery_announcement_json; do
             echo "::group::cargo fuzz run $target (20s)"
             cargo fuzz run "$target" --sanitizer=address --target x86_64-unknown-linux-gnu -- -max_total_time=20
             echo "::endgroup::"
