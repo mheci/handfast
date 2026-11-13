@@ -8,8 +8,9 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+fs4.workspace = true
 serde.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
 tokio.workspace = true
+uuid.workspace = true
