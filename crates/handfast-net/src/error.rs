@@ -39,6 +39,10 @@ pub enum NetError {
     /// The peer closed before the handshake finished.
     #[error("link closed")]
     LinkClosed,
+
+    /// The admission policy rejected a link before the TLS handshake.
+    #[error("admission: {0}")]
+    Admission(String),
 }
 
 /// Errors from the certificate and peer trust policy.

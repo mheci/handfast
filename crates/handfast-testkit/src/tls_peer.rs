@@ -107,6 +107,8 @@ pub struct TlsPeerConfig {
     /// TLS versions this peer offers.
     pub version: TlsVersion,
     credentials: TestCredentials,
+    encrypted_device_id: Option<String>,
+    encrypted_protocol_version: Option<u8>,
 }
 
 impl TlsPeerConfig {
@@ -116,11 +118,27 @@ impl TlsPeerConfig {
     ///
     /// Fails when the provider cannot generate the key or certificate.
     pub fn ecdsa(identity: PeerConfig, version: TlsVersion) -> Result<Self> {
-        let credentials = TestCredentials::ecdsa(&identity.device_id)?;
+        let common_name = identity.device_id.clone();
+        Self::ecdsa_with_common_name(identity, version, &common_name)
+    }
+
+    /// Build an ECDSA P-256 peer whose certificate CN differs from its identity.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the provider cannot generate the key or certificate.
+    pub fn ecdsa_with_common_name(
+        identity: PeerConfig,
+        version: TlsVersion,
+        common_name: &str,
+    ) -> Result<Self> {
+        let credentials = TestCredentials::ecdsa(common_name)?;
         Ok(Self {
             identity,
             version,
             credentials,
+            encrypted_device_id: None,
+            encrypted_protocol_version: None,
         })
     }
 
@@ -139,7 +157,36 @@ impl TlsPeerConfig {
             identity,
             version,
             credentials: TestCredentials::rsa(),
+            encrypted_device_id: None,
+            encrypted_protocol_version: None,
         }
+    }
+
+    /// Send an encrypted identity that names a different device than the hello.
+    #[must_use]
+    pub fn with_encrypted_device_id(mut self, device_id: &str) -> Self {
+        self.encrypted_device_id = Some(device_id.to_string());
+        self
+    }
+
+    /// Send an encrypted identity with a protocol version other than 8.
+    #[must_use]
+    pub fn with_encrypted_protocol_version(mut self, version: u8) -> Self {
+        self.encrypted_protocol_version = Some(version);
+        self
+    }
+
+    fn local_identity_packet(&self) -> WirePacket {
+        let mut packet = self.identity.identity_packet();
+        if let Some(device_id) = &self.encrypted_device_id {
+            packet.body.insert("deviceId".to_string(), json!(device_id));
+        }
+        if let Some(version) = self.encrypted_protocol_version {
+            packet
+                .body
+                .insert("protocolVersion".to_string(), json!(version));
+        }
+        packet
     }
 
     /// The full identity hello with a numeric `targetProtocolVersion`.
@@ -320,6 +367,17 @@ impl TlsPeer {
         within_timeout(frame::read(&mut self.stream)).await
     }
 
+    /// Write a frame header that declares more than the 1 MiB cap, with no body.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the header write fails.
+    pub async fn send_oversized_frame_header(&mut self, size: u32) -> Result<()> {
+        self.stream.write_all(&size.to_be_bytes()).await?;
+        self.stream.flush().await?;
+        Ok(())
+    }
+
     /// Send TLS close-notify and close the link.
     ///
     /// # Errors
@@ -370,7 +428,7 @@ pub async fn dial_with_hello(
     let mut stream: tokio_rustls::TlsStream<TcpStream> = stream.into();
     let protocol_version = negotiated_version(&stream)?;
 
-    let local_identity = config.identity.identity_packet();
+    let local_identity = config.local_identity_packet();
     within_timeout(frame::write(&mut stream, &local_identity)).await?;
     let peer_identity = within_timeout(frame::read(&mut stream))
         .await?
@@ -384,6 +442,17 @@ pub async fn dial_with_hello(
         peer_identity,
         local_identity,
     })
+}
+
+/// Open a TCP connection and send nothing, for the handshake-timeout test.
+///
+/// # Errors
+///
+/// Fails when the TCP connection fails.
+pub async fn connect_silent(address: SocketAddr) -> Result<TcpStream> {
+    let tcp = within_timeout(TcpStream::connect(address)).await?;
+    tcp.set_nodelay(true)?;
+    Ok(tcp)
 }
 
 /// Accept a dialer and act as the TLS client.
@@ -414,7 +483,7 @@ pub async fn accept(listener: &TcpListener, config: &TlsPeerConfig) -> Result<Tl
         .await?
         .ok_or_else(|| TestkitError::Protocol("dialer closed before its identity".to_string()))?;
     check_identity(&peer_identity, &hello_device_id)?;
-    let local_identity = config.identity.identity_packet();
+    let local_identity = config.local_identity_packet();
     within_timeout(frame::write(&mut stream, &local_identity)).await?;
 
     Ok(TlsPeer {

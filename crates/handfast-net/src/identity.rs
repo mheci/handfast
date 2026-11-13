@@ -5,6 +5,7 @@
 //! device, and only then exchanges the encrypted identity. The store owns the
 //! pins; this crate never depends on it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use handfast_proto::{DeviceId, Identity, PROTOCOL_VERSION};
@@ -357,6 +358,36 @@ pub enum PeerTrust {
     Unpaired,
     /// The certificate fingerprint the user accepted.
     Pinned(Fingerprint),
+}
+
+/// The in-memory pin snapshot the link layer checks.
+///
+/// The store owns durable pins. The daemon loads them once at startup and is
+/// the only writer of this table and the store, so the two cannot diverge. A
+/// clone is a snapshot: a handshake task keeps checking the pins it started
+/// with even if the table changes.
+#[derive(Debug, Clone, Default)]
+pub struct TrustTable(Arc<HashMap<DeviceId, Fingerprint>>);
+
+impl TrustTable {
+    /// The trust state for one peer. A missing pin is never trust.
+    #[must_use]
+    pub fn trust(&self, id: &DeviceId) -> PeerTrust {
+        self.0
+            .get(id)
+            .copied()
+            .map_or(PeerTrust::Unpaired, PeerTrust::Pinned)
+    }
+
+    /// Pin a peer certificate.
+    pub fn set(&mut self, id: DeviceId, pin: Fingerprint) {
+        Arc::make_mut(&mut self.0).insert(id, pin);
+    }
+
+    /// Remove a peer pin.
+    pub fn remove(&mut self, id: &DeviceId) {
+        Arc::make_mut(&mut self.0).remove(id);
+    }
 }
 
 struct ParsedCertificate {
@@ -880,5 +911,37 @@ mod tests {
                 got: 7
             })
         ));
+    }
+
+    #[test]
+    fn trust_table_starts_unpaired_and_pins_a_peer() {
+        let mut trust = TrustTable::default();
+        let id = device_id(DEVICE_A);
+        assert_eq!(trust.trust(&id), PeerTrust::Unpaired);
+
+        let pin = Fingerprint::of_certificate(b"certificate");
+        trust.set(id.clone(), pin);
+        assert_eq!(trust.trust(&id), PeerTrust::Pinned(pin));
+
+        trust.remove(&id);
+        assert_eq!(trust.trust(&id), PeerTrust::Unpaired);
+    }
+
+    #[test]
+    fn trust_table_clone_is_a_snapshot() {
+        let mut trust = TrustTable::default();
+        let snapshot = trust.clone();
+        let id = device_id(DEVICE_A);
+        trust.set(id.clone(), Fingerprint::of_certificate(b"certificate"));
+
+        assert_eq!(
+            trust.trust(&id),
+            PeerTrust::Pinned(Fingerprint::of_certificate(b"certificate"))
+        );
+        assert_eq!(
+            snapshot.trust(&id),
+            PeerTrust::Unpaired,
+            "a handshake keeps the pins it started with"
+        );
     }
 }
