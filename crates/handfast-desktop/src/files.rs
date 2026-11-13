@@ -720,6 +720,7 @@ fn hard_link_unsupported(error: &io::Error) -> bool {
             | io::ErrorKind::PermissionDenied
             | io::ErrorKind::CrossesDevices
     ) || is_enosys(error)
+        || is_windows_unsupported(error)
 }
 
 #[cfg(target_os = "linux")]
@@ -729,6 +730,18 @@ fn is_enosys(error: &io::Error) -> bool {
 
 #[cfg(not(target_os = "linux"))]
 fn is_enosys(_error: &io::Error) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn is_windows_unsupported(error: &io::Error) -> bool {
+    // CreateHardLinkW returns ERROR_INVALID_FUNCTION (1) or ERROR_NOT_SUPPORTED
+    // (50) on FAT and exFAT; Rust maps both to ErrorKind::Uncategorized.
+    matches!(error.raw_os_error(), Some(1) | Some(50))
+}
+
+#[cfg(not(windows))]
+fn is_windows_unsupported(_error: &io::Error) -> bool {
     false
 }
 
@@ -914,6 +927,29 @@ mod tests {
         let second = candidate_name(&base, 1, 100);
         assert_eq!(second.len(), 104);
         assert!(second.ends_with(" (1)"));
+    }
+
+    #[test]
+    fn hard_link_unsupported_classifier() {
+        assert!(hard_link_unsupported(&io::Error::from(
+            io::ErrorKind::Unsupported
+        )));
+        assert!(hard_link_unsupported(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        assert!(hard_link_unsupported(&io::Error::from(
+            io::ErrorKind::CrossesDevices
+        )));
+        assert!(!hard_link_unsupported(&io::Error::from(
+            io::ErrorKind::NotFound
+        )));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_hard_link_unsupported_errors_fall_back_to_copy() {
+        assert!(hard_link_unsupported(&io::Error::from_raw_os_error(1)));
+        assert!(hard_link_unsupported(&io::Error::from_raw_os_error(50)));
     }
 
     #[tokio::test]
