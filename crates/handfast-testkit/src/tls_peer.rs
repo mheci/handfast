@@ -187,7 +187,19 @@ impl TlsPeerConfig {
         Ok(())
     }
 
-    fn server_config(&self) -> Result<ServerConfig> {
+    /// The peer's DER certificate, for seeding a pin before the handshake.
+    #[must_use]
+    pub fn cert_der(&self) -> &[u8] {
+        &self.credentials.cert_der
+    }
+
+    /// The rustls server configuration. The dialing side is the TLS server.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the provider has no cipher suites for the offered TLS
+    /// versions or the certificate and key are not a valid pair.
+    pub fn server_config(&self) -> Result<ServerConfig> {
         let provider = crypto_provider();
         ServerConfig::builder_with_provider(Arc::clone(&provider))
             .with_protocol_versions(self.version.protocol_versions())
@@ -200,7 +212,13 @@ impl TlsPeerConfig {
             .map_err(|error| TestkitError::Protocol(format!("server certificate: {error}")))
     }
 
-    fn client_config(&self) -> Result<ClientConfig> {
+    /// The rustls client configuration. The accepting side is the TLS client.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the provider has no cipher suites for the offered TLS
+    /// versions or the certificate and key are not a valid pair.
+    pub fn client_config(&self) -> Result<ClientConfig> {
         let provider = crypto_provider();
         ClientConfig::builder_with_provider(Arc::clone(&provider))
             .with_protocol_versions(self.version.protocol_versions())
