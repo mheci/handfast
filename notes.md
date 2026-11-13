@@ -77,8 +77,8 @@ Active work:
 
 - Branch: `feat/desktop-files`
 - Owner: desktop files worker `ses_e2a0d3c48ffeDWtw695mT5zqkH`
-- PR: [#197](https://github.com/mheci/handfast/pull/197), head `163f72c`
-- Verifier: `ses_e29da1fddffeQ7IbLkSm6Yz50E`, running
+- PR: [#197](https://github.com/mheci/handfast/pull/197), head `40fa0e0`
+- Verifier: `ses_e29da1fddffeQ7IbLkSm6Yz50E`, re-checking the Windows classifier fix
 - Evidence: sanitizer table, temp and commit tests including concurrent duplicates and both commit strategies, sweep scope and user-file safety, free-space math, `.handfast-tmp` startup failure, outgoing file checks, Unix and Windows default resolution, and Unix permissions; all 9 checks.
 
 Share design decisions:
