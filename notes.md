@@ -13,6 +13,7 @@ Current state:
 - Unit 3 landed on `main` in `e892f7f`. Discovery returns `DiscoveryAnnouncement`, accepts the desktop four-field UDP packet and the Android full packet, and the daemon persists both.
 - Unit 4 landed on `main` in `b354f43`. `handfast-net` has the certificate fingerprint, local endpoint, peer certificate, peer trust and the three-way identity correlation policy.
 - Unit 5 landed on `main` in `4fa5c58`. The independent testkit TLS peer covers TLS 1.2 and 1.3 with ECDSA and RSA, and the CI testkit job runs `tls-self-test`.
+- Unit 6 landed on `main` in `d26b8df`. TLS 1.2 and 1.3 configs, mutual TLS, the accept-any chain verifier with signature proof, `PeerCertificate::check` and the raw TLS 1.1 rejection test.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -51,8 +52,8 @@ TLS implementation sequence:
 3. Discovery compatibility for the desktop UDP packet. Done in `e892f7f`.
 4. Fingerprint and peer-trust policy, including CN and identity correlation. Done in `b354f43`.
 5. Independent testkit TLS peer and RSA fixture. Done in `4fa5c58`.
-6. TLS 1.2 and 1.3 configs and TLS-only tests. In flight.
-7. Framed TLS link, hello and identity re-exchange.
+6. TLS 1.2 and 1.3 configs and TLS-only tests. Done in `d26b8df`.
+7. Framed TLS link, hello and identity re-exchange. In flight.
 8. Link manager limits, dedupe, rate limits, keepalive and shutdown.
 9. Daemon composition and startup ordering.
 10. Docs, CI and real-client P1 interop.
@@ -71,11 +72,11 @@ Hardening follow-ups:
 
 Active work:
 
-- Branch: `feat/tls-configs`
-- Owner: TLS config worker, to be spawned
+- Branch: `feat/tls-link`
+- Owner: link worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: TLS 1.2 and 1.3 server and client configs with the ring provider, the accept-any verifier that still checks TLS 1.2 and 1.3 signatures and then applies `PeerCertificate::check`, ECDSA and RSA loopbacks against the independent testkit peer, and all 9 checks.
+- Evidence: the dialer sends the plaintext hello, both roles complete TLS, exchange encrypted identities, apply `PeerCertificate::check` and `check_identity` before any frame, and then exchange framed packets. Full-link tests use the independent testkit peer for TLS 1.2/1.3 and ECDSA/RSA. All 9 checks.
 
 Testkit follow-ups:
 
