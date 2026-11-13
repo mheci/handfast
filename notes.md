@@ -19,6 +19,7 @@ Current state:
 - Unit 9 landed on `main` in `2cb871b`. The daemon composes the store, local identity, TCP listener, discovery, manager, device sessions, pairing gate and shutdown. The first runnable link daemon exists.
 - Unit 10 landed on `main` in `8e40668`. The TLS design is closed: Windows and fuzz CI, zeroization, prompt queue, migration and on_disconnect tests, P1 docs and the manual interop checklist.
 - Share unit 1 landed on `main` in `91bd6bb`. Proto has the share wire types, custom `-1` serde, validated payload offers, builders and five golden vectors.
+- Share unit 2 landed on `main` in `8feb182`. The desktop Files adapter has the sanitizer, private temp directory, safe no-clobber commit, free-space math, sweep, mock files and platform defaults.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -75,11 +76,11 @@ P1 security follow-ups:
 
 Active work:
 
-- Branch: `feat/desktop-files`
-- Owner: desktop files worker `ses_e2a0d3c48ffeDWtw695mT5zqkH`
-- PR: [#197](https://github.com/mheci/handfast/pull/197), head `40fa0e0`
-- Verifier: `ses_e29da1fddffeQ7IbLkSm6Yz50E`, re-checking the Windows classifier fix
-- Evidence: sanitizer table, temp and commit tests including concurrent duplicates and both commit strategies, sweep scope and user-file safety, free-space math, `.handfast-tmp` startup failure, outgoing file checks, Unix and Windows default resolution, and Unix permissions; all 9 checks.
+- Branch: `feat/testkit-payload`
+- Owner: testkit payload worker `ses_e29baf3e7ffeUZ7B6VzuNlFcPD`
+- PR: pending
+- Verifier: pending
+- Evidence: loopback payload self-test for 0, 1, 1 MiB and 8 MiB over TLS 1.2 and 1.3 with ECDSA and RSA; failure knobs for truncate, extra, wrong certificate, missing client certificate, raw TCP, accept timeout, slow read, pause and receiver timeout; `cargo run -p handfast-testkit -- payload-self-test` in CI; all 9 checks.
 
 Share design decisions:
 
@@ -100,10 +101,8 @@ Share design findings at `5c1a941`, all sent to the owner:
 Share implementation sequence:
 
 1. Share schema and golden vectors in proto. Done in `91bd6bb`.
-2. Files adapter and safe save in desktop. In flight.
-
-Unit 2 decision: the primary commit path is a safe `std::fs::hard_link` on every platform, with `create_new` plus copy as the fallback. The design's `renameat2`/`MoveFileExW` primary needs new unsafe FFI; the hard link is already atomic and no-clobber and is the design's own step 3. The owner must test both strategies and state the deviation in the PR.
-3. Independent testkit payload peer with `payload-self-test`.
+2. Files adapter and safe save in desktop. Done in `8feb182`.
+3. Independent testkit payload peer with `payload-self-test`. In flight.
 4. Payload service in net.
 5. Transfer intent and `Files` mapping in runtime.
 6. Share plugin and roster.
@@ -113,16 +112,20 @@ Unit 2 decision: the primary commit path is a safe `std::fs::hard_link` on every
 10. Local control channel and `hfctl`.
 11. Daemon composition, docs and CI.
 
-Share unit 1 verifier checklist:
+Share implementation notes:
+
+- Unit 2 commit primary is a safe `std::fs::hard_link` on every platform, with `create_new` plus copy as the fallback. Windows raw errors 1 and 50 route to the fallback for FAT and exFAT.
+- Parked for hardening: existing root permissions, free-space measured on the temp filesystem, short-NAME_MAX coverage, copy-fallback crash atomicity, Windows ACLs.
+
+Share unit 3 verifier checklist:
 
 - Read the PR diff, not only the owner summary.
-- Confirm `payloadSize` serializes as a JSON number with `-1` for `Unknown`, not an externally tagged enum.
-- Confirm the file body uses `creationTime` and `lastModified` in milliseconds, `open` defaults false, and the batch fields appear only as a pair.
-- Confirm an empty file parses as `Known(0)` with no offer, and a non-zero size without a port is rejected.
-- Confirm ports 1739 and 1764 are accepted and 0, 1716 and 1765 are rejected by both `ShareRequest` and `Packet::payload_offer`.
-- Confirm `payload_offer` returns `None` for metadata-only and zero-size packets and does not change `payload()`.
-- Confirm the five golden vectors exist and the testkit vector command lists them, with the testkit normal build still free of `handfast-proto`.
-- Confirm no transport, daemon, desktop, runtime, plugin, version, release or notes changes.
+- Confirm the payload sender binds, exposes the port before start, is the TLS server and writes raw bytes; the receiver dials, is the TLS client and reads to EOF.
+- Confirm the testkit normal build has no `handfast-proto` or `handfast-net` dependency.
+- Confirm every failure knob is real: truncate, extra, wrong certificate, missing client certificate, raw TCP, accept timeout, slow read, pause second until first completes, and a 10 s receiver timeout.
+- Confirm the self-test covers 0, 1, 1 MiB and 8 MiB over TLS 1.2 and 1.3 with ECDSA and RSA, and fails on a byte or EOF mismatch.
+- Confirm the CI `testkit self-test` job runs `payload-self-test`, and the test job runs the new payload peer tests.
+- Confirm no production payload service, daemon, desktop, runtime, plugin, proto, store, version, release or notes changes.
 - Confirm all 9 checks pass at the head.
 - Post PASS or FAIL. Do not edit or merge.
 
