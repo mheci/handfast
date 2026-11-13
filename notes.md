@@ -14,6 +14,7 @@ Current state:
 - Unit 4 landed on `main` in `b354f43`. `handfast-net` has the certificate fingerprint, local endpoint, peer certificate, peer trust and the three-way identity correlation policy.
 - Unit 5 landed on `main` in `4fa5c58`. The independent testkit TLS peer covers TLS 1.2 and 1.3 with ECDSA and RSA, and the CI testkit job runs `tls-self-test`.
 - Unit 6 landed on `main` in `d26b8df`. TLS 1.2 and 1.3 configs, mutual TLS, the accept-any chain verifier with signature proof, `PeerCertificate::check` and the raw TLS 1.1 rejection test.
+- Unit 7 landed on `main` in `69f17a4`. The framed TLS link handles both roles, plaintext hello, encrypted identity re-exchange, certificate and identity checks before frames, keepalive and explicit Unix port reuse.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -53,8 +54,8 @@ TLS implementation sequence:
 4. Fingerprint and peer-trust policy, including CN and identity correlation. Done in `b354f43`.
 5. Independent testkit TLS peer and RSA fixture. Done in `4fa5c58`.
 6. TLS 1.2 and 1.3 configs and TLS-only tests. Done in `d26b8df`.
-7. Framed TLS link, hello and identity re-exchange. In flight.
-8. Link manager limits, dedupe, rate limits, keepalive and shutdown.
+7. Framed TLS link, hello and identity re-exchange. Done in `69f17a4`.
+8. Link manager limits, dedupe, rate limits, keepalive and shutdown. In flight.
 9. Daemon composition and startup ordering.
 10. Docs, CI and real-client P1 interop.
 
@@ -72,11 +73,11 @@ Hardening follow-ups:
 
 Active work:
 
-- Branch: `feat/tls-link`
-- Owner: link worker, to be spawned
+- Branch: `feat/link-manager`
+- Owner: manager worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: the dialer sends the plaintext hello, both roles complete TLS, exchange encrypted identities, apply `PeerCertificate::check` and `check_identity` before any frame, and then exchange framed packets. Full-link tests use the independent testkit peer for TLS 1.2/1.3 and ECDSA/RSA. All 9 checks.
+- Evidence: `TrustTable`, `LinkPolicy`, `AdmissionPermit` and `NetError::Admission`; pending cap 64; 42 unpaired slots; inbound 500 ms per-IP limit; peer TTL and eviction; last-successful-handshake-wins with a replacing peer; backoff; keepalive supervision; ordered `LinkEvent`s; shutdown; and end-to-end wrong CN, pin, identity, protocol, silent-handshake and oversized-frame tests with testkit knobs. All 9 checks.
 
 Testkit follow-ups:
 
