@@ -312,6 +312,22 @@ impl TlsPeerConfig {
             )
             .map_err(|error| TestkitError::Protocol(format!("client certificate: {error}")))
     }
+
+    /// The rustls client configuration without a client certificate.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the provider has no cipher suites for the offered TLS
+    /// versions.
+    pub fn client_config_without_certificate(&self) -> Result<ClientConfig> {
+        let provider = crypto_provider();
+        Ok(ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_protocol_versions(self.version.protocol_versions())
+            .map_err(|error| TestkitError::Protocol(format!("TLS versions: {error}")))?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert { provider }))
+            .with_no_client_auth())
+    }
 }
 
 /// One established testkit TLS link.
@@ -606,7 +622,9 @@ fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-fn negotiated_version(stream: &tokio_rustls::TlsStream<TcpStream>) -> Result<ProtocolVersion> {
+pub(crate) fn negotiated_version(
+    stream: &tokio_rustls::TlsStream<TcpStream>,
+) -> Result<ProtocolVersion> {
     stream
         .get_ref()
         .1
@@ -614,7 +632,7 @@ fn negotiated_version(stream: &tokio_rustls::TlsStream<TcpStream>) -> Result<Pro
         .ok_or_else(|| TestkitError::Protocol("TLS handshake without a version".to_string()))
 }
 
-fn negotiated_name(version: ProtocolVersion) -> String {
+pub(crate) fn negotiated_name(version: ProtocolVersion) -> String {
     match version {
         ProtocolVersion::TLSv1_2 => "TLSv1.2".to_string(),
         ProtocolVersion::TLSv1_3 => "TLSv1.3".to_string(),

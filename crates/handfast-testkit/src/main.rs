@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use handfast_testkit::{peer::run_self_test, tls_peer::run_tls_self_test, vectors::load_dir};
+use handfast_testkit::{
+    payload_peer::run_payload_self_test, peer::run_self_test, tls_peer::run_tls_self_test,
+    vectors::load_dir,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -23,6 +26,8 @@ enum Command {
     SelfTest,
     /// Run TLS 1.2 and 1.3 handshakes with ECDSA and RSA certificates.
     TlsSelfTest,
+    /// Run the loopback payload sender and receiver self-test.
+    PayloadSelfTest,
     /// Validate golden vectors.
     Vectors {
         /// Vector directory. Defaults to the crate's tests/vectors.
@@ -51,6 +56,10 @@ async fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::TlsSelfTest => {
             let report = run_tls_self_test().await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::PayloadSelfTest => {
+            let report = run_payload_self_test().await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Vectors { dir } => {

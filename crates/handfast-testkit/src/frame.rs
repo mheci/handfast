@@ -55,6 +55,14 @@ pub enum TestkitError {
     /// The peer did not finish in time.
     #[error("timed out")]
     Timeout,
+
+    /// The payload exceeded the configured maximum.
+    #[error("payload exceeds {0} bytes")]
+    TooLarge(u64),
+
+    /// The peer certificate did not match the expected certificate.
+    #[error("peer certificate mismatch")]
+    PeerCertificate,
 }
 
 /// Result alias.
