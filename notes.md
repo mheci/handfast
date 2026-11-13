@@ -18,6 +18,7 @@ Current state:
 - Unit 8 landed on `main` in `79d3bb9`. The link manager owns admission, caps, per-IP limits, peer TTL, last-wins dedupe, backoff, keepalive supervision, ordered events and shutdown.
 - Unit 9 landed on `main` in `2cb871b`. The daemon composes the store, local identity, TCP listener, discovery, manager, device sessions, pairing gate and shutdown. The first runnable link daemon exists.
 - Unit 10 landed on `main` in `8e40668`. The TLS design is closed: Windows and fuzz CI, zeroization, prompt queue, migration and on_disconnect tests, P1 docs and the manual interop checklist.
+- Share unit 1 landed on `main` in `91bd6bb`. Proto has the share wire types, custom `-1` serde, validated payload offers, builders and five golden vectors.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -74,11 +75,11 @@ P1 security follow-ups:
 
 Active work:
 
-- Branch: `feat/proto-share`
-- Owner: proto share worker `ses_e2a2ffc73ffe5JjNDOpNAZ34Fx`
-- PR: [#196](https://github.com/mheci/handfast/pull/196), head `c70d905`
-- Verifier: `ses_e2a1af972ffeO7kBoBQO0I8ObV`, running
-- Evidence: `cargo test -p handfast-proto` covers the share round trips, `-1`, empty file, port bounds, batch and malformed bodies; `cargo run -p handfast-testkit -- vectors` lists all five share vectors; all 9 checks.
+- Branch: `feat/desktop-files`
+- Owner: desktop files worker `ses_e2a0d3c48ffeDWtw695mT5zqkH`
+- PR: pending
+- Verifier: pending
+- Evidence: sanitizer table, temp and commit tests including concurrent duplicates and both commit strategies, sweep scope and user-file safety, free-space math, `.handfast-tmp` startup failure, outgoing file checks, Unix and Windows default resolution, and Unix permissions; all 9 checks.
 
 Share design decisions:
 
@@ -98,8 +99,10 @@ Share design findings at `5c1a941`, all sent to the owner:
 
 Share implementation sequence:
 
-1. Share schema and golden vectors in proto. In flight.
-2. Files adapter and safe save in desktop.
+1. Share schema and golden vectors in proto. Done in `91bd6bb`.
+2. Files adapter and safe save in desktop. In flight.
+
+Unit 2 decision: the primary commit path is a safe `std::fs::hard_link` on every platform, with `create_new` plus copy as the fallback. The design's `renameat2`/`MoveFileExW` primary needs new unsafe FFI; the hard link is already atomic and no-clobber and is the design's own step 3. The owner must test both strategies and state the deviation in the PR.
 3. Independent testkit payload peer with `payload-self-test`.
 4. Payload service in net.
 5. Transfer intent and `Files` mapping in runtime.
