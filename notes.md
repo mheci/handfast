@@ -31,11 +31,13 @@ Program rules:
 P1 plan:
 
 1. Discovery wired into `handfastd`. Done in `6f85e3f`.
-2. TLS link, certificate persistence and identity re-exchange. Design done in `c5a288e`; implementation in flight.
-3. Pairing prompt and persistent trust.
-4. TCP link and ping end to end.
-5. Battery and share/file payload transfer.
-6. Testkit integration and security tests.
+2. TLS link, certificate persistence and identity re-exchange. Done: design `c5a288e`, units 0-10 through `8e40668`.
+3. Pairing prompt and persistent trust. Done in `2cb871b` and hardened in `8e40668`.
+4. TCP link and ping end to end. Done in `69f17a4` and `2cb871b`.
+5. Share/file payload transfer. Design in review at PR #195; implementation not started.
+6. Real Android and desktop interop exit. Manual, checklist in `docs/INTEROP.md`.
+7. Windows state-file and incoming-file ACLs. P1 release blocker, not implemented.
+8. Battery and the remaining plugins.
 
 P2 to P4 follow the parity matrix in `docs/PARITY.md`.
 
@@ -62,49 +64,46 @@ TLS implementation sequence:
 9. Daemon composition and startup ordering. Done in `2cb871b`.
 10. Docs, CI and real-client P1 interop. Done in `8e40668`; the real-client run remains manual.
 
-Store follow-ups:
-
-- `set_paired` is test-only but leaves a pin in place when called with `false`; the pairing unit must use `set_trusted` and the legacy method should be removed or marked deprecated.
-- Corrupt-identity and device-ID-versus-settings startup tests belong with the daemon unit.
-- Private-key zeroization and Windows state-file ACLs remain open.
-
-Hardening follow-ups:
-
-- Add fuzz targets for `IdentityHello` and `DiscoveryAnnouncement`; the current fuzz target only covers the strict `Identity`.
-- Make the desktop fixtures use an epoch `id` instead of 0; no parser reads it.
-- Remove or deprecate `set_paired`; the pairing unit must use `set_trusted`.
-
-Daemon obligations from unit 8:
-
-- Coordinate the 60 s unpaired idle timeout with the 30 s pairing window, including an outbound request sent late.
-- Size and drain the link event channel; do not let `send().await` backpressure stall the manager.
-- Consume or move `PendingLink` into the daemon session.
-- Add the peer TTL, pin-release, replacement-packet and outbound-backoff-reset coverage.
-- Fix the `NetError::Admission` doc nit if the daemon classifies it.
-
-Unit 9 verifier follow-ups:
-
-- Discovery tests still hardcode 1716; use free daemon and peer ports.
-- Add a daemon on_disconnect test with a recording plugin factory.
-- Add a v0.2.0 daemon migration integration test with a discovered device and restart reuse.
-- Serialize pairing prompts through one queue so a timed-out stdin read cannot consume a later answer.
-- Clear trust before sending reject on unpair; clean up trust if accept packet construction fails.
-- Windows state-file ACLs and private-key zeroization remain P1 security work.
-
 P1 security follow-ups:
 
 - Windows state-file ACLs remain the P1 release blocker; the exact API and test are in `docs/ARCHITECTURE.md`.
+- Windows incoming-file ACLs for `~/Downloads/Handfast` and its temp directory.
 - The store record's private-key copy is not zeroized; the long-lived `TlsIdentity` copy is.
-- Add unpair and accept-rollback regression tests, a positive control in the self-announce test, and reduce the 5 s stdin shutdown cost.
+- Add unpair and accept-rollback regression tests and a positive control in the self-announce test.
 - Fix the small doc nits: 1714 versus 1716, the interop log format, and stale zeroization notes.
 
 Active work:
 
 - Branch: `design/share-file`
-- Owner: share design worker, to be spawned
-- PR: pending
-- Verifier: pending
-- Evidence: a design package for P1 share/file payload transfer with usage, module map, types, security, failure modes, test plan and implementation sequence. No production code. Independent review before merge.
+- Owner: share design worker `ses_e2c5b0f8bffeC2Y2DTYXtbX1MB`
+- PR: [#195](https://github.com/mheci/handfast/pull/195), head `5c1a941` at review
+- Verifier: fresh independent verifier after the fix round head lands
+- Evidence: a design package for P1 share/file payload transfer with usage, module map, types, security, failure modes, test plan and implementation sequence. No production code.
+
+Share design decisions:
+
+- Payload is TLS, not plain TCP. The sender listens on 1739-1764 and is the TLS server; the receiver dials and is the TLS client. Pinned certificate and client certificate on both sides.
+- Empty files carry no payload fields. Completion is EOF. The declared size is only a check.
+- Incoming directory: `$XDG_DOWNLOAD_DIR/Handfast`, else `~/Downloads/Handfast`; Windows `%USERPROFILE%\Downloads\Handfast`; 0700; `--incoming-dir` override.
+- Extra bytes: accept the declared size, cap extra at 64 MiB, fail beyond and delete the temp. The free-space check includes the extra cap and the reserve.
+- Batches use per-file payload ports. The `open` flag is parsed but ignored. No auto-open for URL-like text.
+- Outbound real-client check needs a minimal local control channel (Unix socket or Windows named pipe) or is blocked on `handfast-ipc`. The one-shot `handfastd share` flag is rejected: redb locks the store and a second process cannot reach the running session.
+- Shape B is accepted: the plugin returns transfer intents, the session owns lifecycle, `handfast-net` moves bytes, the desktop saves.
+
+Share design findings at `5c1a941`, all sent to the owner:
+
+- Security: check-then-rename overwrite, sweep deleting user files, extra bytes consuming the reserve, 30 s outbound timeout exceeding Android's 10 s, filename suffix overflow, listener open before `start`, lossy share packet delivery, impossible one-shot outbound trigger.
+- Architecture: mock Files `tempfile` dev-dependency, `DesktopRequirement::Files` mapping false, queued receive missing the accept deadline, outbound empty file binding a listener, firewall range excluding 1716, `--print-identity` creating the incoming directory, Windows incoming default using `HOME`, silent 65th-packet drop, clipboard text in daemon logs.
+- Verified payload facts kept: sender TLS server, receiver TLS client, port 1739-1764, empty files without payload, EOF completion, Android TLS 1.2 and desktop TLS 1.3.
+
+Share design verifier checklist:
+
+- Read the new head, not the owner summary.
+- Confirm every security and architecture finding is resolved in the design, and the decisions above are encoded.
+- Confirm the no-clobber commit, dedicated temp directory, free-space math, Android 10 s timeout, suffix reservation, listener deadline, reliable share delivery, control channel unit, Files mapping, empty-file path, firewall range, print-identity order, Windows incoming default, session queue failure event and full text redaction.
+- Confirm the payload TLS facts still match the official Android and desktop sources.
+- Confirm all 9 checks pass at the new head and the diff is docs-only.
+- Post PASS or FAIL. Do not edit or merge.
 
 After the share design:
 
@@ -113,23 +112,10 @@ After the share design:
 - P2 to P4 parity.
 - P1 security hardening and a new stable release.
 
-Testkit follow-ups:
-
-- Add the minimal UDP announcement before the unit 10 discovery-driven dial test.
-- Add the wrong-CN, pin, identity, protocol, silent-handshake and oversized-frame knobs in unit 8.
-- Update the testkit CI comment, which still says codec only.
-
-Trust hardening follow-ups:
-
-- Enforce P-256 on `TlsIdentity::from_parts`, not only on generation.
-- Add a trailing-key-bytes test if strict stored-key DER consumption matters.
-- Zeroize the private key on drop before the link unit ships.
-- `TrustTable` and `NetError::Tls` land with the link or manager caller.
-
 Design risks carried into implementation:
 
 - Real Android TLS 1.2 and desktop TLS 1.3 interop, including an RSA peer, is unverified until the P1 exit.
 - The UDP broadcast test assumes the CI kernel delivers a broadcast to two reuse-addr sockets.
-- Pairing clock skew, Windows state-file ACLs and private-key zeroization remain open.
+- Pairing clock skew and Windows state-file and incoming-file ACLs remain open.
 - The unpaired idle timeout must not close a link inside the 30-second pairing window.
 - The testkit TLS peer duplicates handshake logic on purpose.
