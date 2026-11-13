@@ -6,6 +6,7 @@
 #![deny(missing_docs)]
 
 pub mod error;
+pub mod files;
 pub mod mock;
 pub mod model;
 pub mod traits;
@@ -13,6 +14,10 @@ pub mod traits;
 use std::sync::Arc;
 
 pub use error::{DesktopError, Result};
+pub use files::{
+    default_incoming_dir, sanitize_filename, FileLimits, Files, FilesError, IncomingFile,
+    IncomingRequest, LocalFiles, OutgoingFile, SweepReport,
+};
 pub use mock::MockDesktop;
 pub use model::{
     KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerEvent, VolumeState,
@@ -36,6 +41,8 @@ pub struct DesktopCapabilities {
     pub screensaver: bool,
     /// URL and file opening is available.
     pub shell: bool,
+    /// File receive and send is available.
+    pub files: bool,
 }
 
 /// A composed desktop backend.
@@ -55,6 +62,8 @@ pub struct Desktop {
     pub screensaver: Option<Arc<dyn Screensaver>>,
     /// Shell integration adapter.
     pub shell: Option<Arc<dyn Shell>>,
+    /// File receive and send adapter.
+    pub files: Option<Arc<dyn Files>>,
 }
 
 impl std::fmt::Debug for Desktop {
@@ -77,6 +86,7 @@ impl Desktop {
             input: self.input.is_some(),
             screensaver: self.screensaver.is_some(),
             shell: self.shell.is_some(),
+            files: self.files.is_some(),
         }
     }
 }

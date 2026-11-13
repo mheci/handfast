@@ -106,6 +106,8 @@ jobs:
       # The socket-option read-back test is Windows-specific. Keep the build
       # job as the provider gate and run the net tests on the same runner.
       - run: cargo test -p handfast-net --all-features
+      # The save policy is cross-platform; run the desktop tests here too.
+      - run: cargo test -p handfast-desktop --all-features
 
   testkit-self-test:
     name: testkit self-test
