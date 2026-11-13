@@ -216,6 +216,7 @@ impl TlsPeerConfig {
 }
 
 /// One established testkit TLS link.
+#[derive(Debug)]
 pub struct TlsPeer {
     stream: tokio_rustls::TlsStream<TcpStream>,
     protocol_version: ProtocolVersion,
