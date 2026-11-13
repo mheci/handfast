@@ -142,7 +142,9 @@ impl TlsPeerConfig {
         }
     }
 
-    fn hello_packet(&self, target_device_id: &str) -> WirePacket {
+    /// The full identity hello with a numeric `targetProtocolVersion`.
+    #[must_use]
+    pub fn hello_packet(&self, target_device_id: &str) -> WirePacket {
         let mut hello = self.identity.identity_packet();
         hello
             .body
@@ -152,6 +154,38 @@ impl TlsPeerConfig {
             json!(self.identity.protocol_version),
         );
         hello
+    }
+
+    /// The Android-shaped hello with `targetProtocolVersion` as a string.
+    #[must_use]
+    pub fn android_hello_packet(&self, target_device_id: &str) -> WirePacket {
+        let mut hello = self.hello_packet(target_device_id);
+        hello.body.insert(
+            "targetProtocolVersion".to_string(),
+            json!(self.identity.protocol_version.to_string()),
+        );
+        hello
+    }
+
+    /// The desktop-shaped hello: no type or capability fields.
+    #[must_use]
+    pub fn desktop_hello_packet(&self, target_device_id: &str) -> WirePacket {
+        WirePacket {
+            id: 0,
+            ptype: "kdeconnect.identity".to_string(),
+            body: json!({
+                "deviceId": self.identity.device_id,
+                "deviceName": self.identity.device_name,
+                "protocolVersion": self.identity.protocol_version,
+                "targetDeviceId": target_device_id,
+                "targetProtocolVersion": self.identity.protocol_version,
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            payload_size: None,
+            payload_transfer_info: None,
+        }
     }
 
     fn check_hello(&self, hello: &WirePacket) -> Result<()> {
@@ -238,6 +272,7 @@ impl TlsPeerConfig {
 pub struct TlsPeer {
     stream: tokio_rustls::TlsStream<TcpStream>,
     protocol_version: ProtocolVersion,
+    hello: Option<WirePacket>,
     peer_identity: WirePacket,
     local_identity: WirePacket,
 }
@@ -247,6 +282,12 @@ impl TlsPeer {
     #[must_use]
     pub fn protocol_version(&self) -> ProtocolVersion {
         self.protocol_version
+    }
+
+    /// The plaintext hello this peer received, when it accepted a dialer.
+    #[must_use]
+    pub fn peer_hello(&self) -> Option<&WirePacket> {
+        self.hello.as_ref()
     }
 
     /// Identity the peer sent over TLS.
@@ -302,13 +343,27 @@ pub async fn dial(
     target_device_id: &str,
     config: &TlsPeerConfig,
 ) -> Result<TlsPeer> {
+    let hello = config.hello_packet(target_device_id);
+    dial_with_hello(address, target_device_id, config, &hello).await
+}
+
+/// Dial a listener with a caller-built plaintext hello.
+///
+/// `expected_device_id` is the listener this peer targets; the hello must name
+/// the same device.
+///
+/// # Errors
+///
+/// Fails on IO, a TLS handshake failure, a hello mismatch or a timeout.
+pub async fn dial_with_hello(
+    address: SocketAddr,
+    expected_device_id: &str,
+    config: &TlsPeerConfig,
+    hello: &WirePacket,
+) -> Result<TlsPeer> {
     let mut tcp = within_timeout(TcpStream::connect(address)).await?;
     tcp.set_nodelay(true)?;
-    within_timeout(frame::write(
-        &mut tcp,
-        &config.hello_packet(target_device_id),
-    ))
-    .await?;
+    within_timeout(frame::write(&mut tcp, hello)).await?;
 
     let acceptor = TlsAcceptor::from(Arc::new(config.server_config()?));
     let stream = within_timeout(acceptor.accept(tcp)).await?;
@@ -320,11 +375,12 @@ pub async fn dial(
     let peer_identity = within_timeout(frame::read(&mut stream))
         .await?
         .ok_or_else(|| TestkitError::Protocol("peer closed before its identity".to_string()))?;
-    check_identity(&peer_identity, target_device_id)?;
+    check_identity(&peer_identity, expected_device_id)?;
 
     Ok(TlsPeer {
         stream,
         protocol_version,
+        hello: None,
         peer_identity,
         local_identity,
     })
@@ -364,6 +420,7 @@ pub async fn accept(listener: &TcpListener, config: &TlsPeerConfig) -> Result<Tl
     Ok(TlsPeer {
         stream,
         protocol_version,
+        hello: Some(hello),
         peer_identity,
         local_identity,
     })

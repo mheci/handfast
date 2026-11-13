@@ -27,6 +27,18 @@ pub enum NetError {
     /// Pairing state machine rejected a transition.
     #[error("pairing: {0}")]
     Pairing(String),
+
+    /// TLS configuration, certificate or identity policy failed.
+    #[error("tls: {0}")]
+    Tls(#[from] TlsError),
+
+    /// A handshake phase did not finish in time.
+    #[error("timeout: {0}")]
+    Timeout(&'static str),
+
+    /// The peer closed before the handshake finished.
+    #[error("link closed")]
+    LinkClosed,
 }
 
 /// Errors from the certificate and peer trust policy.
