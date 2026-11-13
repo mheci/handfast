@@ -360,6 +360,7 @@ dependencies = [
 name = "handfast-daemon"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "clap",
  "handfast-desktop",
  "handfast-net",
@@ -368,6 +369,7 @@ dependencies = [
  "handfast-runtime",
  "handfast-store",
  "handfast-testkit",
+ "redb",
  "serde_json",
  "tempfile",
  "tokio",
@@ -402,6 +404,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]

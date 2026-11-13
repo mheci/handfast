@@ -27,10 +27,12 @@ The wire contract is frozen independently of the implementation:
   size 1 MiB.
 - UDP discovery on port 1716. TCP control and payload links use the 1714-1764
   range.
-- TLS 1.3. Certificates are self-signed, the device ID is the certificate common
-  name, and peers pin the certificate fingerprint learned during pairing.
-- Protocol-8 identity re-exchange: the plaintext identity and the TLS identity
-  must agree on device ID and protocol version. A mismatch aborts the link.
+- TLS 1.2 and TLS 1.3. Certificates are self-signed, the device ID is the
+  certificate common name, and peers pin the certificate fingerprint learned
+  during pairing. TLS 1.2 is required by the official Android client.
+- Protocol-8 identity re-exchange: the plaintext identity, the certificate CN
+  and the TLS identity must agree on device ID, and every protocol version must
+  be 8. A mismatch aborts the link.
 - Payload transfers use a second TCP connection to the port announced in
   `payloadTransferInfo.port`.
 
@@ -84,7 +86,9 @@ cycle-checking tool.
 One `handfastd` process owns:
 
 - the discovery socket and all device links;
-- one `DeviceHost` per connected device;
+- one `LinkManager` actor, which owns the TCP listener, admission policy, trust
+  snapshot, duplicate resolution and link lifecycle;
+- one `DeviceHost` per paired connected device;
 - the plugin registry and enabled-plugin set;
 - the redb store;
 - the desktop adapters;
@@ -94,6 +98,23 @@ Each device link is a Tokio task. Each plugin invocation is bounded by a timeout
 and wrapped in `catch_unwind`; a panicking plugin is disabled for that device
 and reported over the event bus. Plugins never own sockets. They receive decoded
 packets and return outbound packets plus typed events.
+
+### Link layer
+
+The daemon binds a TCP listener in 1716-1764 before discovery announces. The
+link manager dials a discovered peer or accepts an inbound connection. The
+dialer sends the plaintext identity hello and acts as the TLS server; the
+listener acts as the TLS client, matching the real clients. After the handshake
+both sides parse the peer certificate, check the CN and pin, and exchange the
+full identity over TLS. The link emits a `Connected` event only after all three
+device IDs agree.
+
+Unpaired links are admitted under a 42-link cap and a 500 ms inbound per-IP
+window, are idle-closed after 60 s and can send only `kdeconnect.pair`. The
+daemon creates no `DeviceHost` for an unpaired peer. The terminal pairing prompt
+is the only writer of peer trust; it pins the certificate fingerprint on `y`.
+A paired link runs one session task with a `DeviceHost` and calls
+`on_disconnect` when the link closes.
 
 ## Plugin model
 
@@ -166,13 +187,19 @@ toolchain, identical behavior on Linux and developer machines.
 
 Tables:
 
-- `devices_v1`: device records keyed by ID.
+- `devices_v1`: device records keyed by ID. Each record carries an optional
+  `certificate_fingerprint`, the only cryptographic trust. `paired` is a legacy
+  display flag derived from the pin.
 - `plugin_state_v1`: per-device enable/disable.
-- `settings_v1`: key/value.
-- Later: notifications, contacts, transfers and TLS material, keyed per device.
+- `settings_v1`: key/value, including the stable `device_id`.
+- `identity_v1`: singleton record with the device ID, DER certificate and
+  PKCS#8 DER private key. The private key is zeroized when the in-memory
+  `TlsIdentity` drops.
+- Later: notifications, contacts and transfers.
 
 Schemas are versioned by table name and migrated with copy-on-open. The
-database lives at `$XDG_DATA_HOME/handfast/state.redb`.
+database lives at `$XDG_DATA_HOME/handfast/state.db`. On Unix the directory is
+0700 and the file is 0600.
 
 ## IPC
 
@@ -183,17 +210,48 @@ schema. Requests are idempotent; events are broadcast.
 
 ## Security
 
-- TLS 1.3 with pinned peer certificates.
-- Protocol-8 re-exchange validation: plaintext and encrypted identity must match.
+- TLS 1.2 and TLS 1.3 with pinned peer certificates. TLS below 1.2 is rejected.
+- The certificate CN must equal the peer device ID. The plaintext hello,
+  certificate CN and encrypted identity must all name the same device. This is
+  the CVE-2025-66270 correlation.
+- Trust is the SHA-256 certificate pin. A record with `paired = true` and no
+  pin is unpaired. A pin mismatch never clears the pin.
 - Pairing requests carry a timestamp and are bound to the TLS certificate.
   Pairing code derivation lands in P1.
-- Unpaired devices can send only identity and pair packets. Every other packet is
-  dropped before the plugin layer.
+- Unpaired devices can send only pair packets. Every other packet is dropped
+  before the plugin layer, and no `DeviceHost` exists for an unpaired peer.
 - Frame size, payload size and JSON nesting are capped before allocation.
+- The private key is held in `Zeroizing<Vec<u8>>` and zeroized when
+  `TlsIdentity` drops.
 - File transfers reject absolute paths, `..`, symlink escapes and reserved names.
 - Run commands are opt-in, stored as argv arrays, never shell-interpolated.
 - The daemon runs as a user service with `NoNewPrivileges`, `ProtectSystem=strict`
   and a restricted address family set.
+
+### Windows state-file ACL follow-up
+
+The Unix path sets the state directory to 0700 and `state.db` to 0600. Windows
+currently inherits the user profile ACL. This is a known P1 security gap and is
+not silently claimed as fixed.
+
+The exact follow-up:
+
+- API: add `windows-sys` with `Win32_Security`,
+  `Win32_Security_Authorization` and `Win32_Storage_FileSystem`. Build a DACL
+  with `InitializeAcl` and `AddAccessAllowedAceEx` for the current user SID
+  (`OpenProcessToken` plus `GetTokenInformation(TokenUser)`) with
+  `FILE_ALL_ACCESS`, plus `SYSTEM` and the local `Administrators` group with
+  read access. Apply it with `SetNamedSecurityInfoW` using
+  `SE_FILE_OBJECT`, `DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION`
+  so inherited ACEs are removed. The workspace `unsafe_code = deny` needs a
+  narrow, reviewed `#[allow(unsafe_code)]` module or a safe wrapper crate; that
+  decision is part of the follow-up.
+- Test: create a temporary state directory, call `secure_state_dir` and
+  `secure_state_file`, read the DACL back with `GetNamedSecurityInfoW`, and
+  assert it is protected and contains exactly the current user, `SYSTEM` and
+  `Administrators`. Add a second local test user and assert opening the file
+  fails. Run the test in the existing `windows` CI job.
+- The test must run on `windows-latest`; it cannot be approximated on Unix.
 
 ## CI design
 
@@ -207,10 +265,15 @@ Required jobs:
    security gate, not two overlapping ones.
 6. `docs` - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
 7. `testkit-self-test` - `cargo test -p handfast-testkit` and the self-test
-   binary. This tests the testkit and codec, not the daemon, until P1.
-8. `fuzz` - nightly `cargo-fuzz` smoke for the frame and identity parsers.
-9. `windows` - `cargo build --workspace --all-features --locked` on
-   `windows-latest` with the static CRT used by the MSI.
+   and TLS self-test binaries. This proves the independent peer and the
+   production codec agree and that TLS 1.2 and 1.3 complete with ECDSA and RSA
+   certificates.
+8. `fuzz` - nightly `cargo-fuzz` smoke for the frame, strict identity,
+   plaintext hello and discovery announcement parsers.
+9. `windows` - `cargo build --workspace --all-features --locked` plus
+   `cargo test -p handfast-net --all-features` on `windows-latest` with the
+   static CRT used by the MSI. The test step covers the Windows keepalive
+   socket-option read-back.
 
 Later phases add, only when the code exists:
 
@@ -242,6 +305,14 @@ secrets and the install commands are in [RELEASING.md](RELEASING.md).
 - v2 replaced `main` as the P0 foundation. It is alpha and not a usable client
   until the P1 exit criteria pass: discovery, TLS, pairing, ping, battery, share
   and file transfer against a real KDE Connect client.
+- A v0.2.0 state file has `settings_v1`, `devices_v1` and `plugin_state_v1` and
+  no `identity_v1`. On the first P1 start the daemon creates and persists a
+  certificate for the existing device ID before binding the listener. Device
+  records deserialize with no pin. A record with `paired = true` and no pin is
+  treated as unpaired; no pin is invented. A restart reuses the stored
+  certificate and fingerprint.
+- A stored identity is never regenerated. A corrupt record, a CN mismatch or a
+  device ID that disagrees with `settings_v1` is a fatal startup error.
 - No v1 source is copied into v2. Protocol behavior is re-derived from the KDE
   protocol reference and the official client behavior.
 

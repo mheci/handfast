@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use handfast_net::{Discovery, Fingerprint};
+use handfast_net::{Discovery, Fingerprint, PeerCertificate};
 use handfast_proto::{
     Capabilities, DeviceId, DeviceName, DeviceType, Identity, MAX_TCP_PORT, MIN_TCP_PORT,
 };
@@ -353,6 +353,57 @@ async fn corrupt_identity_is_a_fatal_startup_error() {
 }
 
 #[tokio::test]
+async fn v020_state_migrates_and_restart_reuses_the_certificate() {
+    let _serial = serial().await;
+    let directory = tempfile::tempdir().unwrap();
+    let state_path = directory.path().join("state.db");
+    let device_id = "cccccccccccccccccccccccccccccccc";
+    write_v020_state(&state_path, device_id, TEST_PEER_ID);
+
+    let tcp_port = free_tcp_port();
+    let discovery_port = free_udp_port();
+    let log = directory.path().join("daemon.log");
+    let mut first = spawn_daemon(directory.path(), tcp_port, discovery_port, None, &log);
+    wait_for_log(&log, "TCP listener bound", &mut first).await;
+    stop(first);
+
+    let (first_identity, first_device) = {
+        let store = Store::open(&state_path).unwrap();
+        let identity = store
+            .identity()
+            .unwrap()
+            .expect("the first start creates identity_v1");
+        let device = store
+            .device(TEST_PEER_ID)
+            .unwrap()
+            .expect("the v0.2.0 device record survives");
+        (identity, device)
+    };
+    assert_eq!(first_identity.device_id.as_str(), device_id);
+    let certificate =
+        PeerCertificate::parse(&first_identity.cert_der).expect("the migrated certificate parses");
+    assert_eq!(certificate.device_id().as_str(), device_id);
+    assert_eq!(first_device.name, "Old phone");
+    assert_eq!(first_device.device_type, "phone");
+    assert!(!first_device.paired);
+    assert_eq!(first_device.certificate_fingerprint, None);
+
+    let mut second = spawn_daemon(directory.path(), tcp_port, discovery_port, None, &log);
+    wait_for_log(&log, "TCP listener bound", &mut second).await;
+    stop(second);
+
+    let second_identity = {
+        let store = Store::open(&state_path).unwrap();
+        store
+            .identity()
+            .unwrap()
+            .expect("the second start loads identity_v1")
+    };
+    assert_eq!(first_identity.cert_der, second_identity.cert_der);
+    assert_eq!(first_identity.key_der, second_identity.key_der);
+}
+
+#[tokio::test]
 async fn restart_reuses_the_persisted_certificate() {
     let _serial = serial().await;
     let directory = tempfile::tempdir().unwrap();
@@ -387,6 +438,42 @@ async fn restart_reuses_the_persisted_certificate() {
     assert_eq!(first_record.device_id, second_record.device_id);
     assert_eq!(first_record.cert_der, second_record.cert_der);
     assert_eq!(first_record.key_der, second_record.key_der);
+}
+
+/// Write the v0.2.0 schema: settings, devices and plugin state, with no
+/// `identity_v1` table and no `certificate_fingerprint` field.
+fn write_v020_state(path: &Path, device_id: &str, peer_id: &str) {
+    let database = redb::Database::create(path).expect("create the v0.2.0 state file");
+    let write = database.begin_write().expect("begin the v0.2.0 write");
+    {
+        let devices: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("devices_v1");
+        let mut devices = write.open_table(devices).expect("open devices_v1");
+        let record = json!({
+            "id": peer_id,
+            "name": "Old phone",
+            "device_type": "phone",
+            "paired": false,
+            "last_seen": 1_700_000_000_i64,
+        });
+        let value = serde_json::to_vec(&record).expect("encode the v0.2.0 device");
+        devices
+            .insert(peer_id, value.as_slice())
+            .expect("write the v0.2.0 device");
+
+        let settings: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("settings_v1");
+        let mut settings = write.open_table(settings).expect("open settings_v1");
+        settings
+            .insert("device_id", device_id)
+            .expect("write the device ID");
+
+        let plugins: redb::TableDefinition<&str, u8> =
+            redb::TableDefinition::new("plugin_state_v1");
+        let mut plugins = write.open_table(plugins).expect("open plugin_state_v1");
+        plugins
+            .insert("peer\u{1f}ping", 1)
+            .expect("write the plugin state");
+    }
+    write.commit().expect("commit the v0.2.0 state");
 }
 
 fn testkit_peer() -> TlsPeerConfig {

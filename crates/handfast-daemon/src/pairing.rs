@@ -5,46 +5,119 @@
 //! pairing request itself resets it, so a decision always lands before the link
 //! can be closed for idleness.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use handfast_net::{LinkHandle, LinkManagerHandle, PeerCertificate, PAIRING_TIMEOUT_SECS};
 use handfast_proto::{DeviceId, Identity, PairingRequest};
 use handfast_store::Store;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::session::DaemonEvent;
 
 /// How long the terminal prompt waits for an answer.
 pub const PROMPT_TIMEOUT: Duration = Duration::from_secs(PAIRING_TIMEOUT_SECS as u64);
 
-/// Ask the user, then accept or reject the pending link.
-pub async fn run(
+/// Pending prompts. Prompts are serialized so one stdin reader serves them all.
+const PROMPT_QUEUE: usize = 8;
+
+/// Lines read while no prompt is open are tagged and queued.
+const ANSWER_QUEUE: usize = 8;
+
+/// One queued prompt. The daemon cancels it when the link closes.
+pub struct PromptRequest {
+    /// Authenticated peer.
+    pub peer: Identity,
+    /// Peer certificate shown in the prompt.
+    pub certificate: PeerCertificate,
+    /// Link the answer applies to.
+    pub link: LinkHandle,
+    /// Prompt generation, so a stale outcome cannot clear a newer prompt.
+    pub token: u64,
+    /// The daemon signals this when the link closes or is unpaired.
+    pub cancel: oneshot::Receiver<()>,
+}
+
+/// Start the single prompt worker and its stdin reader.
+pub fn spawn(
     store: Arc<Store>,
     links: LinkManagerHandle,
-    peer: Identity,
-    certificate: PeerCertificate,
-    link: LinkHandle,
-    token: u64,
     events: mpsc::Sender<DaemonEvent>,
-) {
-    let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
-    let mut writer = tokio::io::stdout();
-    let decision = prompt(
-        &mut writer,
-        &mut reader,
-        &peer,
-        &certificate,
-        PROMPT_TIMEOUT,
-    )
-    .await;
+) -> (mpsc::Sender<PromptRequest>, tokio::task::JoinHandle<()>) {
+    let generation = Arc::new(AtomicU64::new(0));
+    let (answers, answers_rx) = mpsc::channel(ANSWER_QUEUE);
+    tokio::spawn(read_answers(Arc::clone(&generation), answers));
+    let (tx, rx) = mpsc::channel(PROMPT_QUEUE);
+    let task = tokio::spawn(run(store, links, events, generation, answers_rx, rx));
+    (tx, task)
+}
 
-    match decision {
-        Decision::Accept => {
-            accept(store, links, peer, certificate, link, token, events).await;
+async fn read_answers(generation: Arc<AtomicU64>, answers: mpsc::Sender<(u64, String)>) {
+    let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                // Tag the line with the prompt window that was open when it
+                // arrived, so a later prompt cannot consume a stale answer.
+                let generation = generation.load(Ordering::SeqCst);
+                if answers.send((generation, line)).await.is_err() {
+                    break;
+                }
+            }
         }
-        Decision::Reject => reject(link, peer.device_id, token, events).await,
+    }
+}
+
+async fn run(
+    store: Arc<Store>,
+    links: LinkManagerHandle,
+    events: mpsc::Sender<DaemonEvent>,
+    generation: Arc<AtomicU64>,
+    mut answers: mpsc::Receiver<(u64, String)>,
+    mut requests: mpsc::Receiver<PromptRequest>,
+) {
+    let mut writer = tokio::io::stdout();
+    while let Some(mut request) = requests.recv().await {
+        let current = generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let decision = prompt(
+            &mut writer,
+            &mut answers,
+            current,
+            &request.peer,
+            &request.certificate,
+            &mut request.cancel,
+            PROMPT_TIMEOUT,
+        )
+        .await;
+
+        match decision {
+            Decision::Accept => {
+                accept(
+                    Arc::clone(&store),
+                    links.clone(),
+                    request.peer,
+                    request.certificate,
+                    request.link,
+                    request.token,
+                    events.clone(),
+                )
+                .await;
+            }
+            Decision::Reject => {
+                reject(
+                    request.link,
+                    request.peer.device_id,
+                    request.token,
+                    events.clone(),
+                )
+                .await;
+            }
+            Decision::Cancelled => {}
+        }
     }
 }
 
@@ -52,19 +125,28 @@ pub async fn run(
 enum Decision {
     Accept,
     Reject,
+    Cancelled,
 }
 
-async fn prompt<W, R>(
+async fn prompt<W>(
     writer: &mut W,
-    reader: &mut R,
+    answers: &mut mpsc::Receiver<(u64, String)>,
+    generation: u64,
     peer: &Identity,
     certificate: &PeerCertificate,
+    cancel: &mut oneshot::Receiver<()>,
     timeout: Duration,
 ) -> Decision
 where
     W: AsyncWrite + Unpin,
-    R: AsyncBufRead + Unpin,
 {
+    if matches!(
+        cancel.try_recv(),
+        Ok(()) | Err(oneshot::error::TryRecvError::Closed)
+    ) {
+        return Decision::Cancelled;
+    }
+
     let name = peer.device_name.as_str();
     let id = peer.device_id.as_str();
     let fingerprint = certificate.fingerprint().to_hex();
@@ -75,16 +157,38 @@ where
         return Decision::Reject;
     }
 
-    let mut line = String::new();
-    match tokio::time::timeout(timeout, reader.read_line(&mut line)).await {
-        Ok(Ok(read)) if read > 0 => {
-            if line.trim().eq_ignore_ascii_case("y") {
-                Decision::Accept
-            } else {
-                Decision::Reject
+    tokio::select! {
+        biased;
+        _ = &mut *cancel => Decision::Cancelled,
+        answer = read_answer(answers, generation, timeout) => answer,
+    }
+}
+
+/// Read lines until one belongs to this prompt window. Lines read for an
+/// earlier window, including a timed-out one, are discarded without resetting
+/// the deadline. Line generation 0 is input that arrived before the first
+/// prompt; the first prompt accepts it so piped stdin still works.
+async fn read_answer(
+    answers: &mut mpsc::Receiver<(u64, String)>,
+    generation: u64,
+    timeout: Duration,
+) -> Decision {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, answers.recv()).await {
+            Ok(Some((line_generation, line)))
+                if line_generation == generation || (generation == 1 && line_generation == 0) =>
+            {
+                return if line.trim().eq_ignore_ascii_case("y") {
+                    Decision::Accept
+                } else {
+                    Decision::Reject
+                };
             }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return Decision::Reject,
         }
-        _ => Decision::Reject,
     }
 }
 
@@ -127,11 +231,17 @@ async fn accept(
         reject(link, device_id, token, events).await;
         return;
     }
+    tracing::info!(
+        %device_id,
+        fingerprint = %pin.to_hex(),
+        "pairing pin written"
+    );
 
     let packet = match PairingRequest::accept().to_packet() {
         Ok(packet) => packet,
         Err(error) => {
             tracing::warn!(%error, %device_id, "failed to build the pairing acceptance");
+            rollback(&store, &links, &device_id).await;
             reject(link, device_id, token, events).await;
             return;
         }
@@ -148,6 +258,20 @@ async fn accept(
         .is_err()
     {
         tracing::warn!("daemon stopped before the session was created");
+    }
+}
+
+/// Undo both trust writes when acceptance cannot be completed.
+async fn rollback(store: &Arc<Store>, links: &LinkManagerHandle, device_id: &DeviceId) {
+    let id = device_id.as_str().to_string();
+    if let Err(error) = Arc::clone(store)
+        .run_blocking(move |store| store.set_trusted(&id, None))
+        .await
+    {
+        tracing::warn!(%error, %device_id, "failed to roll back the stored pin");
+    }
+    if let Err(error) = links.set_trust(device_id.clone(), None).await {
+        tracing::warn!(%error, %device_id, "failed to roll back the manager pin");
     }
 }
 
@@ -188,18 +312,21 @@ mod tests {
         (identity, certificate)
     }
 
-    async fn answer(input: &[u8]) -> Decision {
-        let (mut client, server) = tokio::io::duplex(1024);
-        let mut reader = tokio::io::BufReader::new(server);
-        let mut writer = tokio::io::sink();
+    async fn answer(input: &str) -> Decision {
+        let (lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
+        lines
+            .send((1, input.to_string()))
+            .await
+            .expect("the answer channel is open");
+        let (_cancel, mut cancel) = oneshot::channel();
         let (identity, certificate) = peer();
-        client.write_all(input).await.expect("write the answer");
-        drop(client);
         prompt(
-            &mut writer,
-            &mut reader,
+            &mut tokio::io::sink(),
+            &mut answers,
+            1,
             &identity,
             &certificate,
+            &mut cancel,
             PROMPT_TIMEOUT,
         )
         .await
@@ -207,35 +334,112 @@ mod tests {
 
     #[tokio::test]
     async fn y_accepts() {
-        assert_eq!(answer(b"y\n").await, Decision::Accept);
+        assert_eq!(answer("y\n").await, Decision::Accept);
     }
 
     #[tokio::test]
     async fn n_and_empty_input_reject() {
-        assert_eq!(answer(b"n\n").await, Decision::Reject);
-        assert_eq!(answer(b"\n").await, Decision::Reject);
-    }
-
-    #[tokio::test]
-    async fn eof_rejects() {
-        assert_eq!(answer(b"").await, Decision::Reject);
+        assert_eq!(answer("n\n").await, Decision::Reject);
+        assert_eq!(answer("\n").await, Decision::Reject);
     }
 
     #[tokio::test(start_paused = true)]
     async fn silence_times_out_and_rejects() {
-        let (_client, server) = tokio::io::duplex(64);
-        let mut reader = tokio::io::BufReader::new(server);
-        let mut writer = tokio::io::sink();
+        let (_lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
+        let (_cancel, mut cancel) = oneshot::channel();
         let (identity, certificate) = peer();
         let decision = prompt(
-            &mut writer,
-            &mut reader,
+            &mut tokio::io::sink(),
+            &mut answers,
+            1,
             &identity,
             &certificate,
-            PROMPT_TIMEOUT,
+            &mut cancel,
+            Duration::from_millis(10),
         )
         .await;
         assert_eq!(decision, Decision::Reject);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_prompt_does_not_consume_a_later_answer() {
+        let (lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
+        let (identity, certificate) = peer();
+
+        let (_cancel, mut cancel) = oneshot::channel();
+        let first_decision = prompt(
+            &mut tokio::io::sink(),
+            &mut answers,
+            1,
+            &identity,
+            &certificate,
+            &mut cancel,
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(first_decision, Decision::Reject);
+
+        lines
+            .send((1, "y\n".to_string()))
+            .await
+            .expect("the answer channel is open");
+        let (_cancel, mut cancel) = oneshot::channel();
+        let second_decision = prompt(
+            &mut tokio::io::sink(),
+            &mut answers,
+            2,
+            &identity,
+            &certificate,
+            &mut cancel,
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(
+            second_decision,
+            Decision::Reject,
+            "the stale answer must not satisfy the next prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn early_input_answers_the_first_prompt() {
+        let (lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
+        lines
+            .send((0, "y\n".to_string()))
+            .await
+            .expect("the answer channel is open");
+        let (_cancel, mut cancel) = oneshot::channel();
+        let (identity, certificate) = peer();
+        let decision = prompt(
+            &mut tokio::io::sink(),
+            &mut answers,
+            1,
+            &identity,
+            &certificate,
+            &mut cancel,
+            PROMPT_TIMEOUT,
+        )
+        .await;
+        assert_eq!(decision, Decision::Accept);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_prompt_does_not_wait_for_an_answer() {
+        let (_lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
+        let (cancel, mut cancel_rx) = oneshot::channel();
+        cancel.send(()).expect("the cancel receiver is open");
+        let (identity, certificate) = peer();
+        let decision = prompt(
+            &mut tokio::io::sink(),
+            &mut answers,
+            1,
+            &identity,
+            &certificate,
+            &mut cancel_rx,
+            PROMPT_TIMEOUT,
+        )
+        .await;
+        assert_eq!(decision, Decision::Cancelled);
     }
 
     #[test]

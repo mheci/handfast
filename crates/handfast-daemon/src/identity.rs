@@ -71,6 +71,10 @@ pub fn secure_state_dir(path: &Path) -> std::io::Result<()> {
 }
 
 /// The state directory inherits the user profile ACL on Windows.
+///
+/// P1 security follow-up: replace inheritance with an explicit protected DACL.
+/// The API and its test are specified in
+/// `docs/ARCHITECTURE.md#windows-state-file-acl-follow-up`.
 #[cfg(not(unix))]
 pub fn secure_state_dir(_path: &Path) -> std::io::Result<()> {
     Ok(())
@@ -88,6 +92,10 @@ pub fn secure_state_file(path: &Path) -> std::io::Result<()> {
 }
 
 /// The state file inherits the user profile ACL on Windows.
+///
+/// P1 security follow-up: replace inheritance with an explicit protected DACL.
+/// The API and its test are specified in
+/// `docs/ARCHITECTURE.md#windows-state-file-acl-follow-up`.
 #[cfg(not(unix))]
 pub fn secure_state_file(_path: &Path) -> std::io::Result<()> {
     Ok(())

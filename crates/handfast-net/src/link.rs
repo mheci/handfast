@@ -209,6 +209,11 @@ pub(crate) async fn accept_handshake(
     .await
     .map_err(|_| NetError::Timeout("tls handshake"))??;
     let mut stream: TlsStream<TcpStream> = stream.into();
+    tracing::debug!(
+        %remote_addr,
+        version = ?stream.get_ref().1.protocol_version(),
+        "TLS handshake complete"
+    );
 
     let certificate = peer_certificate(&stream)?;
     certificate.check(&peer_id, trust)?;
@@ -293,6 +298,11 @@ pub async fn connect(
         .await
         .map_err(|_| NetError::Timeout("tls handshake"))??;
     let mut stream: TlsStream<TcpStream> = stream.into();
+    tracing::debug!(
+        %remote_addr,
+        version = ?stream.get_ref().1.protocol_version(),
+        "TLS handshake complete"
+    );
 
     let certificate = peer_certificate(&stream)?;
     certificate.check(expected, trust)?;
@@ -526,6 +536,29 @@ mod tests {
             socket.tcp_user_timeout().expect("read TCP_USER_TIMEOUT"),
             Some(Duration::from_secs(60))
         );
+        assert!(client.nodelay().expect("read TCP_NODELAY"));
+        drop(server);
+    }
+
+    // socket2 applies Windows keepalive through SIO_KEEPALIVE_VALS and does
+    // not expose getters for the time, interval or retry count. The flag and
+    // TCP_NODELAY are the values Windows lets this test read back.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn keepalive_is_enabled_on_windows() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a loopback listener");
+        let address = listener.local_addr().expect("read the bound address");
+        let connect = TcpStream::connect(address);
+        let accept = listener.accept();
+        let (client, accepted) = tokio::join!(connect, accept);
+        let client = client.expect("connect the socket pair");
+        let (server, _) = accepted.expect("accept the socket pair");
+
+        configure_socket(&client, &LinkLimits::default()).expect("apply the socket options");
+        let socket = SockRef::from(&client);
+        assert!(socket.keepalive().expect("read SO_KEEPALIVE"));
         assert!(client.nodelay().expect("read TCP_NODELAY"));
         drop(server);
     }

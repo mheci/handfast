@@ -12,6 +12,7 @@ use handfast_proto::{DeviceId, Identity, PROTOCOL_VERSION};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
+use zeroize::Zeroizing;
 
 use crate::error::TlsError;
 
@@ -85,7 +86,7 @@ impl std::fmt::Display for Fingerprint {
 pub struct TlsIdentity {
     device_id: DeviceId,
     cert_der: Vec<u8>,
-    key_der: Vec<u8>,
+    key_der: Zeroizing<Vec<u8>>,
     fingerprint: Fingerprint,
 }
 
@@ -143,6 +144,11 @@ impl TlsIdentity {
         if key_der.is_empty() {
             return Err(TlsError::Certificate("empty private key".to_string()));
         }
+        if pkcs8_der_len(&key_der) != Some(key_der.len()) {
+            return Err(TlsError::Certificate(
+                "private key is not one PKCS#8 DER sequence".to_string(),
+            ));
+        }
 
         let parsed = parse_certificate(&cert_der)?;
         if parsed.device_id != device_id {
@@ -154,6 +160,11 @@ impl TlsIdentity {
 
         let key_pair = KeyPair::try_from(key_der.as_slice())
             .map_err(|error| TlsError::Certificate(format!("private key: {error}")))?;
+        if key_pair.algorithm() != &rcgen::PKCS_ECDSA_P256_SHA256 {
+            return Err(TlsError::Certificate(
+                "private key is not ECDSA P-256".to_string(),
+            ));
+        }
         if key_pair.public_key_raw() != parsed.public_key.as_slice() {
             return Err(TlsError::Certificate(
                 "private key does not match certificate".to_string(),
@@ -164,7 +175,7 @@ impl TlsIdentity {
         Ok(Self {
             device_id,
             cert_der,
-            key_der,
+            key_der: Zeroizing::new(key_der),
             fingerprint,
         })
     }
@@ -187,11 +198,34 @@ impl TlsIdentity {
         &self.cert_der
     }
 
-    /// The PKCS#8 DER private key.
+    /// The PKCS#8 DER private key. The bytes are zeroized when this value is
+    /// dropped.
     #[must_use]
     pub fn key_der(&self) -> &[u8] {
-        &self.key_der
+        self.key_der.as_slice()
     }
+}
+
+/// The length of one DER SEQUENCE at the start of `der`, or `None` when the
+/// header is malformed. Stored keys must consume the whole record, so trailing
+/// bytes are rejected before the key parser sees them.
+fn pkcs8_der_len(der: &[u8]) -> Option<usize> {
+    if der.len() < 2 || der[0] != 0x30 {
+        return None;
+    }
+    let first = der[1];
+    if first < 0x80 {
+        return Some(2 + usize::from(first));
+    }
+    let count = usize::from(first & 0x7f);
+    if count == 0 || count > 4 || der.len() < 2 + count {
+        return None;
+    }
+    let mut length = 0usize;
+    for byte in &der[2..2 + count] {
+        length = (length << 8) | usize::from(*byte);
+    }
+    length.checked_add(2 + count)
 }
 
 /// The local TLS material plus the full local identity.
@@ -680,6 +714,37 @@ mod tests {
                 first.cert_der().to_vec(),
                 second.key_der().to_vec()
             ),
+            Err(TlsError::Certificate(_))
+        ));
+    }
+
+    #[test]
+    fn from_parts_rejects_a_non_p256_key() {
+        let key_pair = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384)
+            .expect("ring generates an ECDSA P-384 key");
+        let mut params = CertificateParams::default();
+        params.distinguished_name = DistinguishedName::new();
+        params.distinguished_name.push(DnType::CommonName, DEVICE_A);
+        let cert_der = params
+            .self_signed(&key_pair)
+            .expect("ring signs the P-384 certificate")
+            .der()
+            .as_ref()
+            .to_vec();
+
+        assert!(matches!(
+            TlsIdentity::from_parts(device_id(DEVICE_A), cert_der, key_pair.serialize_der()),
+            Err(TlsError::Certificate(_))
+        ));
+    }
+
+    #[test]
+    fn from_parts_rejects_trailing_key_bytes() {
+        let generated = TlsIdentity::generate(device_id(DEVICE_A)).expect("generate identity");
+        let mut key_der = generated.key_der().to_vec();
+        key_der.extend_from_slice(&[0, 1, 2]);
+        assert!(matches!(
+            TlsIdentity::from_parts(device_id(DEVICE_A), generated.cert_der().to_vec(), key_der),
             Err(TlsError::Certificate(_))
         ));
     }

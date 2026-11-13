@@ -24,4 +24,16 @@ path = "fuzz_targets/identity_json.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "identity_hello_json"
+path = "fuzz_targets/identity_hello_json.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "discovery_announcement_json"
+path = "fuzz_targets/discovery_announcement_json.rs"
+test = false
+doc = false
+
 [workspace]

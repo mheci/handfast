@@ -57,6 +57,13 @@ pub struct LinkHandle {
 }
 
 impl LinkHandle {
+    /// Build a handle backed by a caller-owned channel. Test support only.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn from_channel(device_id: DeviceId, tx: mpsc::Sender<Packet>) -> Self {
+        Self { device_id, tx }
+    }
+
     /// The peer this handle writes to.
     #[must_use]
     pub fn device_id(&self) -> &DeviceId {

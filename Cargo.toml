@@ -40,6 +40,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 x509-parser = "0.18.1"
+zeroize = "1"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -197,29 +197,6 @@ impl Store {
         Ok(Some(serde_json::from_slice(value.value())?))
     }
 
-    /// Set the legacy pairing display flag. This does not write a trust pin;
-    /// `set_trusted` is the writer that keeps the flag and the pin in sync.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the read or write fails.
-    pub fn set_paired(&self, id: &str, paired: bool) -> Result<bool> {
-        let write = self.database.begin_write()?;
-        {
-            let mut table = write.open_table(DEVICES)?;
-            let Some(value) = table.get(id)? else {
-                return Ok(false);
-            };
-            let mut device: DeviceRecord = serde_json::from_slice(value.value())?;
-            drop(value);
-            device.paired = paired;
-            let value = serde_json::to_vec(&device)?;
-            table.insert(id, value.as_slice())?;
-        }
-        write.commit()?;
-        Ok(true)
-    }
-
     /// Load the persisted daemon identity.
     ///
     /// # Errors
@@ -487,10 +464,6 @@ mod tests {
         record.paired = true;
         store.upsert_device(&record).unwrap();
         assert_eq!(store.device("a").unwrap(), Some(record));
-
-        assert!(store.set_paired("a", false).unwrap());
-        assert!(!store.device("a").unwrap().unwrap().paired);
-        assert!(!store.set_paired("missing", true).unwrap());
     }
 
     #[test]

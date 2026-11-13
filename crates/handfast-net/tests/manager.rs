@@ -81,6 +81,22 @@ fn no_inbound_rate_limit() -> LinkLimits {
     }
 }
 
+/// A loopback listener that accepts and immediately closes. A closed or
+/// filtered port can stall a Windows connect for seconds; an accepting socket
+/// fails the handshake quickly on every platform.
+async fn refusing_listener() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the refusing listener");
+    let address = listener.local_addr().expect("read the refusing address");
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+    address
+}
+
 struct Harness {
     handle: LinkManagerHandle,
     events: mpsc::Receiver<LinkEvent>,
@@ -357,11 +373,10 @@ async fn peer_table_recovers_after_a_discovery_flood() {
         Duration::from_millis(100),
     )
     .await;
+    let dead = refusing_listener().await;
     for index in 0..256u128 {
         let id = DeviceId::new(format!("{index:032x}")).expect("the flood ID is valid");
-        harness
-            .handle
-            .consider_peer(id, SocketAddr::from(([127, 0, 0, 1], 1)));
+        harness.handle.consider_peer(id, dead);
         if index % 16 == 0 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -715,7 +730,7 @@ async fn outbound_backoff_resets_after_a_successful_handshake() {
 
     harness
         .handle
-        .consider_peer(peer_id.clone(), SocketAddr::from(([127, 0, 0, 1], 1)));
+        .consider_peer(peer_id.clone(), refusing_listener().await);
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -741,7 +756,7 @@ async fn outbound_backoff_resets_after_a_successful_handshake() {
     // failure count would produce.
     harness
         .handle
-        .consider_peer(peer_id.clone(), SocketAddr::from(([127, 0, 0, 1], 1)));
+        .consider_peer(peer_id.clone(), refusing_listener().await);
     tokio::time::sleep(Duration::from_secs(1)).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
 
