@@ -76,8 +76,8 @@ Active work:
 
 - Branch: `design/share-file`
 - Owner: share design worker `ses_e2c5b0f8bffeC2Y2DTYXtbX1MB`
-- PR: [#195](https://github.com/mheci/handfast/pull/195), head `5c1a941` at review
-- Verifier: fresh independent verifier after the fix round head lands
+- PR: [#195](https://github.com/mheci/handfast/pull/195), head `83de6bf` at review
+- Verifier: fresh independent verifier `ses_e2bf61b2bffeLWzNUaE6v4I0k2`, running
 - Evidence: a design package for P1 share/file payload transfer with usage, module map, types, security, failure modes, test plan and implementation sequence. No production code.
 
 Share design decisions:
