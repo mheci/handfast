@@ -293,8 +293,8 @@ pub async fn dial(
 
     let acceptor = TlsAcceptor::from(Arc::new(config.server_config()?));
     let stream = within_timeout(acceptor.accept(tcp)).await?;
-    let protocol_version = negotiated_version(&stream)?;
     let mut stream: tokio_rustls::TlsStream<TcpStream> = stream.into();
+    let protocol_version = negotiated_version(&stream)?;
 
     let local_identity = config.identity.identity_packet();
     within_timeout(frame::write(&mut stream, &local_identity)).await?;
@@ -332,8 +332,8 @@ pub async fn accept(listener: &TcpListener, config: &TlsPeerConfig) -> Result<Tl
     let server_name = ServerName::try_from("localhost")
         .map_err(|error| TestkitError::Protocol(format!("server name: {error}")))?;
     let stream = within_timeout(connector.connect(server_name, tcp)).await?;
-    let protocol_version = negotiated_version(&stream)?;
     let mut stream: tokio_rustls::TlsStream<TcpStream> = stream.into();
+    let protocol_version = negotiated_version(&stream)?;
 
     let peer_identity = within_timeout(frame::read(&mut stream))
         .await?
