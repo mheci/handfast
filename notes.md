@@ -34,7 +34,7 @@ P1 plan:
 2. TLS link, certificate persistence and identity re-exchange. Done: design `c5a288e`, units 0-10 through `8e40668`.
 3. Pairing prompt and persistent trust. Done in `2cb871b` and hardened in `8e40668`.
 4. TCP link and ping end to end. Done in `69f17a4` and `2cb871b`.
-5. Share/file payload transfer. Design in review at PR #195; implementation not started.
+5. Share/file payload transfer. Design merged in `fa9733c`; unit 1 in flight.
 6. Real Android and desktop interop exit. Manual, checklist in `docs/INTEROP.md`.
 7. Windows state-file and incoming-file ACLs. P1 release blocker, not implemented.
 8. Battery and the remaining plugins.
@@ -74,11 +74,11 @@ P1 security follow-ups:
 
 Active work:
 
-- Branch: `design/share-file`
-- Owner: share design worker `ses_e2c5b0f8bffeC2Y2DTYXtbX1MB`
-- PR: [#195](https://github.com/mheci/handfast/pull/195), head `83de6bf` at review
-- Verifier: fresh independent verifier `ses_e2a442e28ffe1Lwuq05ZKVEZm3`, running. The first verifier `ses_e2bf61b2bffeLWzNUaE6v4I0k2` died on a provider network error before any verdict.
-- Evidence: a design package for P1 share/file payload transfer with usage, module map, types, security, failure modes, test plan and implementation sequence. No production code.
+- Branch: `feat/proto-share`
+- Owner: proto share worker `ses_e2a2ffc73ffe5JjNDOpNAZ34Fx`
+- PR: pending
+- Verifier: pending
+- Evidence: `cargo test -p handfast-proto` covers the share round trips, `-1`, empty file, port bounds, batch and malformed bodies; `cargo run -p handfast-testkit -- vectors` lists all five share vectors; all 9 checks.
 
 Share design decisions:
 
@@ -96,16 +96,34 @@ Share design findings at `5c1a941`, all sent to the owner:
 - Architecture: mock Files `tempfile` dev-dependency, `DesktopRequirement::Files` mapping false, queued receive missing the accept deadline, outbound empty file binding a listener, firewall range excluding 1716, `--print-identity` creating the incoming directory, Windows incoming default using `HOME`, silent 65th-packet drop, clipboard text in daemon logs.
 - Verified payload facts kept: sender TLS server, receiver TLS client, port 1739-1764, empty files without payload, EOF completion, Android TLS 1.2 and desktop TLS 1.3.
 
-Share design verifier checklist:
+Share implementation sequence:
 
-- Read the new head, not the owner summary.
-- Confirm every security and architecture finding is resolved in the design, and the decisions above are encoded.
-- Confirm the no-clobber commit, dedicated temp directory, free-space math, Android 10 s timeout, suffix reservation, listener deadline, reliable share delivery, control channel unit, Files mapping, empty-file path, firewall range, print-identity order, Windows incoming default, session queue failure event and full text redaction.
-- Confirm the payload TLS facts still match the official Android and desktop sources.
-- Confirm all 9 checks pass at the new head and the diff is docs-only.
+1. Share schema and golden vectors in proto. In flight.
+2. Files adapter and safe save in desktop.
+3. Independent testkit payload peer with `payload-self-test`.
+4. Payload service in net.
+5. Transfer intent and `Files` mapping in runtime.
+6. Share plugin and roster.
+7. Manager remote address, `ShareEvent` channel and close.
+8. Inbound session transfer runner and redaction.
+9. Outbound share path.
+10. Local control channel and `hfctl`.
+11. Daemon composition, docs and CI.
+
+Share unit 1 verifier checklist:
+
+- Read the PR diff, not only the owner summary.
+- Confirm `payloadSize` serializes as a JSON number with `-1` for `Unknown`, not an externally tagged enum.
+- Confirm the file body uses `creationTime` and `lastModified` in milliseconds, `open` defaults false, and the batch fields appear only as a pair.
+- Confirm an empty file parses as `Known(0)` with no offer, and a non-zero size without a port is rejected.
+- Confirm ports 1739 and 1764 are accepted and 0, 1716 and 1765 are rejected by both `ShareRequest` and `Packet::payload_offer`.
+- Confirm `payload_offer` returns `None` for metadata-only and zero-size packets and does not change `payload()`.
+- Confirm the five golden vectors exist and the testkit vector command lists them, with the testkit normal build still free of `handfast-proto`.
+- Confirm no transport, daemon, desktop, runtime, plugin, version, release or notes changes.
+- Confirm all 9 checks pass at the head.
 - Post PASS or FAIL. Do not edit or merge.
 
-After the share design:
+After the share implementation:
 
 - P1 share/file implementation and the real Android and desktop interop exit.
 - Desktop backends and the remaining 28 plugins.
