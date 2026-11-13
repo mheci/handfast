@@ -81,12 +81,22 @@ fn no_inbound_rate_limit() -> LinkLimits {
     }
 }
 
-/// A loopback address with no listener. Connecting fails immediately on Linux
-/// and Windows; a filtered port such as 1 can stall for seconds.
-fn refused_address() -> SocketAddr {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a probe listener");
-    let address = listener.local_addr().expect("read the probe address");
-    drop(listener);
+/// A loopback listener that accepts and immediately closes. A closed or
+/// filtered port can stall a Windows connect for seconds; an accepting socket
+/// fails the handshake quickly on every platform.
+async fn refusing_listener() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the refusing listener");
+    let address = listener.local_addr().expect("read the refusing address");
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => drop(stream),
+                Err(_) => break,
+            }
+        }
+    });
     address
 }
 
@@ -366,7 +376,7 @@ async fn peer_table_recovers_after_a_discovery_flood() {
         Duration::from_millis(100),
     )
     .await;
-    let dead = refused_address();
+    let dead = refusing_listener().await;
     for index in 0..256u128 {
         let id = DeviceId::new(format!("{index:032x}")).expect("the flood ID is valid");
         harness.handle.consider_peer(id, dead);
@@ -723,7 +733,7 @@ async fn outbound_backoff_resets_after_a_successful_handshake() {
 
     harness
         .handle
-        .consider_peer(peer_id.clone(), refused_address());
+        .consider_peer(peer_id.clone(), refusing_listener().await);
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -749,7 +759,7 @@ async fn outbound_backoff_resets_after_a_successful_handshake() {
     // failure count would produce.
     harness
         .handle
-        .consider_peer(peer_id.clone(), refused_address());
+        .consider_peer(peer_id.clone(), refusing_listener().await);
     tokio::time::sleep(Duration::from_secs(1)).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
 
