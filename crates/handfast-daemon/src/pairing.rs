@@ -5,6 +5,7 @@
 //! pairing request itself resets it, so a decision always lands before the link
 //! can be closed for idleness.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use handfast_net::{LinkHandle, LinkManagerHandle, PeerCertificate, PAIRING_TIMEO
 use handfast_proto::{DeviceId, Identity, PairingRequest};
 use handfast_store::Store;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::session::DaemonEvent;
 
@@ -22,7 +23,7 @@ pub const PROMPT_TIMEOUT: Duration = Duration::from_secs(PAIRING_TIMEOUT_SECS as
 /// Pending prompts. Prompts are serialized so one stdin reader serves them all.
 const PROMPT_QUEUE: usize = 8;
 
-/// Lines read while no prompt is open are dropped.
+/// Lines read while no prompt is open are tagged and queued.
 const ANSWER_QUEUE: usize = 8;
 
 /// One queued prompt. The daemon cancels it when the link closes.
@@ -45,21 +46,27 @@ pub fn spawn(
     links: LinkManagerHandle,
     events: mpsc::Sender<DaemonEvent>,
 ) -> (mpsc::Sender<PromptRequest>, tokio::task::JoinHandle<()>) {
-    let (answers, _) = broadcast::channel(ANSWER_QUEUE);
-    tokio::spawn(read_answers(answers.clone()));
+    let generation = Arc::new(AtomicU64::new(0));
+    let (answers, answers_rx) = mpsc::channel(ANSWER_QUEUE);
+    tokio::spawn(read_answers(Arc::clone(&generation), answers));
     let (tx, rx) = mpsc::channel(PROMPT_QUEUE);
-    let task = tokio::spawn(run(store, links, events, answers, rx));
+    let task = tokio::spawn(run(store, links, events, generation, answers_rx, rx));
     (tx, task)
 }
 
-async fn read_answers(answers: broadcast::Sender<String>) {
+async fn read_answers(generation: Arc<AtomicU64>, answers: mpsc::Sender<(u64, String)>) {
     let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line).await {
             Ok(0) | Err(_) => break,
             Ok(_) => {
-                let _ = answers.send(line);
+                // Tag the line with the prompt window that was open when it
+                // arrived, so a later prompt cannot consume a stale answer.
+                let generation = generation.load(Ordering::SeqCst);
+                if answers.send((generation, line)).await.is_err() {
+                    break;
+                }
             }
         }
     }
@@ -69,17 +76,17 @@ async fn run(
     store: Arc<Store>,
     links: LinkManagerHandle,
     events: mpsc::Sender<DaemonEvent>,
-    answers: broadcast::Sender<String>,
+    generation: Arc<AtomicU64>,
+    mut answers: mpsc::Receiver<(u64, String)>,
     mut requests: mpsc::Receiver<PromptRequest>,
 ) {
     let mut writer = tokio::io::stdout();
     while let Some(mut request) = requests.recv().await {
-        let mut answers = answers.subscribe();
-        // A line that arrived before this prompt opened is not an answer to it.
-        while answers.try_recv().is_ok() {}
+        let current = generation.fetch_add(1, Ordering::SeqCst) + 1;
         let decision = prompt(
             &mut writer,
             &mut answers,
+            current,
             &request.peer,
             &request.certificate,
             &mut request.cancel,
@@ -123,7 +130,8 @@ enum Decision {
 
 async fn prompt<W>(
     writer: &mut W,
-    answers: &mut broadcast::Receiver<String>,
+    answers: &mut mpsc::Receiver<(u64, String)>,
+    generation: u64,
     peer: &Identity,
     certificate: &PeerCertificate,
     cancel: &mut oneshot::Receiver<()>,
@@ -152,10 +160,35 @@ where
     tokio::select! {
         biased;
         _ = &mut *cancel => Decision::Cancelled,
-        answer = tokio::time::timeout(timeout, answers.recv()) => match answer {
-            Ok(Ok(line)) if line.trim().eq_ignore_ascii_case("y") => Decision::Accept,
-            _ => Decision::Reject,
-        },
+        answer = read_answer(answers, generation, timeout) => answer,
+    }
+}
+
+/// Read lines until one belongs to this prompt window. Lines read for an
+/// earlier window, including a timed-out one, are discarded without resetting
+/// the deadline. Line generation 0 is input that arrived before the first
+/// prompt; the first prompt accepts it so piped stdin still works.
+async fn read_answer(
+    answers: &mut mpsc::Receiver<(u64, String)>,
+    generation: u64,
+    timeout: Duration,
+) -> Decision {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, answers.recv()).await {
+            Ok(Some((line_generation, line)))
+                if line_generation == generation || (generation == 1 && line_generation == 0) =>
+            {
+                return if line.trim().eq_ignore_ascii_case("y") {
+                    Decision::Accept
+                } else {
+                    Decision::Reject
+                };
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return Decision::Reject,
+        }
     }
 }
 
@@ -280,16 +313,17 @@ mod tests {
     }
 
     async fn answer(input: &str) -> Decision {
-        let (lines, _) = broadcast::channel(ANSWER_QUEUE);
-        let mut answers = lines.subscribe();
+        let (lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
         lines
-            .send(input.to_string())
+            .send((1, input.to_string()))
+            .await
             .expect("the answer channel is open");
         let (_cancel, mut cancel) = oneshot::channel();
         let (identity, certificate) = peer();
         prompt(
             &mut tokio::io::sink(),
             &mut answers,
+            1,
             &identity,
             &certificate,
             &mut cancel,
@@ -311,13 +345,13 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn silence_times_out_and_rejects() {
-        let (lines, _) = broadcast::channel(ANSWER_QUEUE);
-        let mut answers = lines.subscribe();
+        let (_lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
         let (_cancel, mut cancel) = oneshot::channel();
         let (identity, certificate) = peer();
         let decision = prompt(
             &mut tokio::io::sink(),
             &mut answers,
+            1,
             &identity,
             &certificate,
             &mut cancel,
@@ -329,14 +363,14 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_timed_out_prompt_does_not_consume_a_later_answer() {
-        let (lines, _) = broadcast::channel(ANSWER_QUEUE);
+        let (lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
         let (identity, certificate) = peer();
 
         let (_cancel, mut cancel) = oneshot::channel();
-        let mut first = lines.subscribe();
         let first_decision = prompt(
             &mut tokio::io::sink(),
-            &mut first,
+            &mut answers,
+            1,
             &identity,
             &certificate,
             &mut cancel,
@@ -346,13 +380,14 @@ mod tests {
         assert_eq!(first_decision, Decision::Reject);
 
         lines
-            .send("y\n".to_string())
+            .send((1, "y\n".to_string()))
+            .await
             .expect("the answer channel is open");
         let (_cancel, mut cancel) = oneshot::channel();
-        let mut second = lines.subscribe();
         let second_decision = prompt(
             &mut tokio::io::sink(),
-            &mut second,
+            &mut answers,
+            2,
             &identity,
             &certificate,
             &mut cancel,
@@ -367,15 +402,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn early_input_answers_the_first_prompt() {
+        let (lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
+        lines
+            .send((0, "y\n".to_string()))
+            .await
+            .expect("the answer channel is open");
+        let (_cancel, mut cancel) = oneshot::channel();
+        let (identity, certificate) = peer();
+        let decision = prompt(
+            &mut tokio::io::sink(),
+            &mut answers,
+            1,
+            &identity,
+            &certificate,
+            &mut cancel,
+            PROMPT_TIMEOUT,
+        )
+        .await;
+        assert_eq!(decision, Decision::Accept);
+    }
+
+    #[tokio::test]
     async fn a_cancelled_prompt_does_not_wait_for_an_answer() {
-        let (lines, _) = broadcast::channel(ANSWER_QUEUE);
-        let mut answers = lines.subscribe();
+        let (_lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
         let (cancel, mut cancel_rx) = oneshot::channel();
         cancel.send(()).expect("the cancel receiver is open");
         let (identity, certificate) = peer();
         let decision = prompt(
             &mut tokio::io::sink(),
             &mut answers,
+            1,
             &identity,
             &certificate,
             &mut cancel_rx,

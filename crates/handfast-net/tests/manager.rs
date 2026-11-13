@@ -81,6 +81,15 @@ fn no_inbound_rate_limit() -> LinkLimits {
     }
 }
 
+/// A loopback address with no listener. Connecting fails immediately on Linux
+/// and Windows; a filtered port such as 1 can stall for seconds.
+fn refused_address() -> SocketAddr {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a probe listener");
+    let address = listener.local_addr().expect("read the probe address");
+    drop(listener);
+    address
+}
+
 struct Harness {
     handle: LinkManagerHandle,
     events: mpsc::Receiver<LinkEvent>,
@@ -357,11 +366,10 @@ async fn peer_table_recovers_after_a_discovery_flood() {
         Duration::from_millis(100),
     )
     .await;
+    let dead = refused_address();
     for index in 0..256u128 {
         let id = DeviceId::new(format!("{index:032x}")).expect("the flood ID is valid");
-        harness
-            .handle
-            .consider_peer(id, SocketAddr::from(([127, 0, 0, 1], 1)));
+        harness.handle.consider_peer(id, dead);
         if index % 16 == 0 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -715,7 +723,7 @@ async fn outbound_backoff_resets_after_a_successful_handshake() {
 
     harness
         .handle
-        .consider_peer(peer_id.clone(), SocketAddr::from(([127, 0, 0, 1], 1)));
+        .consider_peer(peer_id.clone(), refused_address());
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -741,7 +749,7 @@ async fn outbound_backoff_resets_after_a_successful_handshake() {
     // failure count would produce.
     harness
         .handle
-        .consider_peer(peer_id.clone(), SocketAddr::from(([127, 0, 0, 1], 1)));
+        .consider_peer(peer_id.clone(), refused_address());
     tokio::time::sleep(Duration::from_secs(1)).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
 
