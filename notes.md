@@ -12,6 +12,7 @@ Current state:
 - Unit 2 landed on `main` in `b7118ab`. Proto has the real Android and desktop identity hello, the desktop and Android discovery announcement, and the strict encrypted identity boundary.
 - Unit 3 landed on `main` in `e892f7f`. Discovery returns `DiscoveryAnnouncement`, accepts the desktop four-field UDP packet and the Android full packet, and the daemon persists both.
 - Unit 4 landed on `main` in `b354f43`. `handfast-net` has the certificate fingerprint, local endpoint, peer certificate, peer trust and the three-way identity correlation policy.
+- Unit 5 landed on `main` in `4fa5c58`. The independent testkit TLS peer covers TLS 1.2 and 1.3 with ECDSA and RSA, and the CI testkit job runs `tls-self-test`.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -49,8 +50,8 @@ TLS implementation sequence:
 2. `IdentityHello` and `DiscoveryAnnouncement` in proto with real Android and desktop packet fixtures. Done in `b7118ab`.
 3. Discovery compatibility for the desktop UDP packet. Done in `e892f7f`.
 4. Fingerprint and peer-trust policy, including CN and identity correlation. Done in `b354f43`.
-5. Independent testkit TLS peer and RSA fixture. In flight.
-6. TLS 1.2 and 1.3 configs and TLS-only tests.
+5. Independent testkit TLS peer and RSA fixture. Done in `4fa5c58`.
+6. TLS 1.2 and 1.3 configs and TLS-only tests. In flight.
 7. Framed TLS link, hello and identity re-exchange.
 8. Link manager limits, dedupe, rate limits, keepalive and shutdown.
 9. Daemon composition and startup ordering.
@@ -70,11 +71,17 @@ Hardening follow-ups:
 
 Active work:
 
-- Branch: `feat/testkit-tls-peer`
-- Owner: testkit worker, to be spawned
+- Branch: `feat/tls-configs`
+- Owner: TLS config worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: an independent testkit TLS peer that completes TLS 1.2 and 1.3 with ECDSA and RSA certificates, a `tls-self-test` command, the testkit self-test job updated, and all 9 checks. The testkit must not depend on handfast-proto in its normal build.
+- Evidence: TLS 1.2 and 1.3 server and client configs with the ring provider, the accept-any verifier that still checks TLS 1.2 and 1.3 signatures and then applies `PeerCertificate::check`, ECDSA and RSA loopbacks against the independent testkit peer, and all 9 checks.
+
+Testkit follow-ups:
+
+- Add the minimal UDP announcement before the unit 10 discovery-driven dial test.
+- Add the wrong-CN, pin, identity, protocol, silent-handshake and oversized-frame knobs in unit 8.
+- Update the testkit CI comment, which still says codec only.
 
 Trust hardening follow-ups:
 
