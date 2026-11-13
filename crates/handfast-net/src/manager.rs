@@ -855,11 +855,68 @@ async fn run_link(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use handfast_proto::{Capabilities, DeviceName, DeviceType};
 
     #[test]
     fn only_pairing_packets_pass_the_unpaired_gate() {
         assert!(is_unpaired_allowed(types::PAIR));
         assert!(!is_unpaired_allowed(types::PING));
         assert!(!is_unpaired_allowed(types::IDENTITY));
+    }
+
+    #[test]
+    fn peer_ttl_expires_an_idle_entry() {
+        let device_id = DeviceId::new("00112233445566778899aabbccddeeff").unwrap();
+        let tls = Arc::new(TlsIdentity::generate(device_id.clone()).unwrap());
+        let local = Arc::new(
+            LocalEndpoint::new(
+                Arc::clone(&tls),
+                Identity::new(
+                    device_id.clone(),
+                    DeviceName::new("manager test"),
+                    DeviceType::Desktop,
+                    Capabilities::default(),
+                    Some(1716),
+                ),
+            )
+            .unwrap(),
+        );
+        let limits = LinkLimits {
+            peer_ttl: Duration::from_secs(10),
+            ..LinkLimits::default()
+        };
+
+        let (events, _events_rx) = mpsc::channel(1);
+        let (messages, _messages_rx) = mpsc::channel(1);
+        let mut state = ManagerState {
+            tls,
+            local,
+            trust: TrustTable::default(),
+            limits: limits.clone(),
+            policy: LinkPolicy::new(limits),
+            events,
+            messages,
+            peers: HashMap::new(),
+            active: HashMap::new(),
+            pending_outbound: HashSet::new(),
+            generation: 0,
+            pending_slots: Arc::new(Semaphore::new(1)),
+        };
+        state.peers.insert(
+            device_id,
+            PeerState {
+                addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
+                last_seen: Instant::now() - Duration::from_secs(11),
+                failures: 0,
+                next_attempt: Instant::now(),
+            },
+        );
+
+        state.tick();
+
+        assert!(
+            state.peers.is_empty(),
+            "a peer past its TTL is evicted on the tick"
+        );
     }
 }

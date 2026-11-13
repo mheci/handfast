@@ -1,5 +1,8 @@
+use std::net::TcpListener;
 use std::process::Command;
 
+use handfast_proto::{MAX_TCP_PORT, MIN_TCP_PORT};
+use handfast_store::Store;
 use serde_json::Value;
 
 #[test]
@@ -39,6 +42,70 @@ fn print_identity_is_stable_and_advertises_implemented_plugins() {
     let first = run();
     let second = run();
     assert_eq!(first, second, "identity must persist across starts");
+}
+
+#[test]
+fn print_identity_does_not_generate_a_certificate_or_bind_the_port() {
+    let directory = tempfile::tempdir().unwrap();
+    let port = free_tcp_port();
+    let listener = TcpListener::bind(("0.0.0.0", port)).expect("occupy the configured port");
+    let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+        .args([
+            "--print-identity",
+            "--data-dir",
+            directory.path().to_str().unwrap(),
+            "--tcp-port",
+            &port.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the occupied port proves the command did not bind: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let packet: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(packet["body"]["tcpPort"], serde_json::json!(port));
+    drop(listener);
+
+    let store = Store::open(directory.path().join("state.db")).unwrap();
+    assert!(
+        store.identity().unwrap().is_none(),
+        "print-identity must not write identity_v1"
+    );
+}
+
+#[test]
+fn tcp_port_outside_the_range_is_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    for port in ["0", "1700", "1765"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+            .args([
+                "--print-identity",
+                "--data-dir",
+                directory.path().to_str().unwrap(),
+                "--tcp-port",
+                port,
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{port} must be rejected");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("outside 1716-1764"),
+            "the error names the range: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn free_tcp_port() -> u16 {
+    for port in MIN_TCP_PORT..=MAX_TCP_PORT {
+        if let Ok(listener) = TcpListener::bind(("0.0.0.0", port)) {
+            drop(listener);
+            return port;
+        }
+    }
+    panic!("no free TCP port in {MIN_TCP_PORT}-{MAX_TCP_PORT}");
 }
 
 #[test]

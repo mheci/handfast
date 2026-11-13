@@ -40,7 +40,8 @@ pub enum NetError {
     #[error("link closed")]
     LinkClosed,
 
-    /// The admission policy rejected a link before the TLS handshake.
+    /// An admission or link policy rejected a connection, a queue write or a
+    /// trust change.
     #[error("admission: {0}")]
     Admission(String),
 }
