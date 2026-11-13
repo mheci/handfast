@@ -20,6 +20,7 @@ Current state:
 - Unit 10 landed on `main` in `8e40668`. The TLS design is closed: Windows and fuzz CI, zeroization, prompt queue, migration and on_disconnect tests, P1 docs and the manual interop checklist.
 - Share unit 1 landed on `main` in `91bd6bb`. Proto has the share wire types, custom `-1` serde, validated payload offers, builders and five golden vectors.
 - Share unit 2 landed on `main` in `8feb182`. The desktop Files adapter has the sanitizer, private temp directory, safe no-clobber commit, free-space math, sweep, mock files and platform defaults.
+- Share unit 3 landed on `main` in `e290af1`. The testkit payload sender and receiver cover raw-bytes TLS, failure knobs, a 16-case self-test and the CI `payload-self-test`.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -76,11 +77,11 @@ P1 security follow-ups:
 
 Active work:
 
-- Branch: `feat/testkit-payload`
-- Owner: testkit payload worker `ses_e29baf3e7ffeUZ7B6VzuNlFcPD`
-- PR: [#198](https://github.com/mheci/handfast/pull/198), head `e47e68d`
-- Verifier: `ses_e299e72c4ffeaUIU2KhK0LWQv8`, running
-- Evidence: loopback payload self-test for 0, 1, 1 MiB and 8 MiB over TLS 1.2 and 1.3 with ECDSA and RSA; failure knobs for truncate, extra, wrong certificate, missing client certificate, raw TCP, accept timeout, slow read, pause and receiver timeout; `cargo run -p handfast-testkit -- payload-self-test` in CI; all 9 checks.
+- Branch: `feat/net-payload`
+- Owner: net payload worker `ses_e2991d601ffed1ItEJBmttFs7r`
+- PR: pending
+- Verifier: pending
+- Evidence: payload send and receive for 1 byte, 1 MiB and 8 MiB over TLS 1.2/1.3; exact DER trust; truncation, extra bytes, unknown size and size caps; wrong certificate, missing client certificate and raw TCP; accept and idle timeouts, the backed-up control link, cancellation, concurrency, port bounds and port exhaustion; all 9 checks.
 
 Share design decisions:
 
@@ -102,8 +103,8 @@ Share implementation sequence:
 
 1. Share schema and golden vectors in proto. Done in `91bd6bb`.
 2. Files adapter and safe save in desktop. Done in `8feb182`.
-3. Independent testkit payload peer with `payload-self-test`. In flight.
-4. Payload service in net.
+3. Independent testkit payload peer with `payload-self-test`. Done in `e290af1`.
+4. Payload service in net. In flight.
 5. Transfer intent and `Files` mapping in runtime.
 6. Share plugin and roster.
 7. Manager remote address, `ShareEvent` channel and close.
@@ -117,15 +118,17 @@ Share implementation notes:
 - Unit 2 commit primary is a safe `std::fs::hard_link` on every platform, with `create_new` plus copy as the fallback. Windows raw errors 1 and 50 route to the fallback for FAT and exFAT.
 - Parked for hardening: existing root permissions, free-space measured on the temp filesystem, short-NAME_MAX coverage, copy-fallback crash atomicity, Windows ACLs.
 
-Share unit 3 verifier checklist:
+Share unit 4 verifier checklist:
 
 - Read the PR diff, not only the owner summary.
-- Confirm the payload sender binds, exposes the port before start, is the TLS server and writes raw bytes; the receiver dials, is the TLS client and reads to EOF.
-- Confirm the testkit normal build has no `handfast-proto` or `handfast-net` dependency.
-- Confirm every failure knob is real: truncate, extra, wrong certificate, missing client certificate, raw TCP, accept timeout, slow read, pause second until first completes, and a 10 s receiver timeout.
-- Confirm the self-test covers 0, 1, 1 MiB and 8 MiB over TLS 1.2 and 1.3 with ECDSA and RSA, and fails on a byte or EOF mismatch.
-- Confirm the CI `testkit self-test` job runs `payload-self-test`, and the test job runs the new payload peer tests.
-- Confirm no production payload service, daemon, desktop, runtime, plugin, proto, store, version, release or notes changes.
+- Confirm the sender binds 1739-1764 on all IPv4 interfaces, exposes the port before start, measures the 30 s accept deadline from bind, retries up to 3 handshakes, requires a client certificate and compares its DER exactly with `PayloadPeer.certificate`.
+- Confirm the receiver dials under a 5 s timeout, holds the raw TCP connection for eager queued files, runs the TLS handshake later under 8 s, compares the server DER exactly, reads to EOF with an 8 s per-read deadline, and writes to the sink with optional progress.
+- Confirm the size rules: short -> `SizeMismatch`, extra within 64 MiB -> accepted and reported, extra beyond -> `TooLarge`, unknown -> capped at `max_size`.
+- Confirm the active and pending semaphores, the wait deadlines, and that dropping `PreparedSend`, `PendingPayload` or a receive future closes the socket and releases the permit.
+- Confirm the shared bind helper keeps the link's SO_REUSEADDR, backlog and error behavior unchanged.
+- Confirm the testkit hooks are minimal and the testkit normal build still has no `handfast-proto` or `handfast-net`.
+- Confirm tests cover both directions, TLS 1.2/1.3, truncation, extra, unknown, wrong certificate, missing client certificate, raw TCP, accept timeout, backed-up control link, cancellation, concurrency, port bounds and port exhaustion.
+- Confirm no daemon, desktop, runtime, plugin, proto, store, version, release or notes changes.
 - Confirm all 9 checks pass at the head.
 - Post PASS or FAIL. Do not edit or merge.
 
