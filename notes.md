@@ -11,6 +11,7 @@ Current state:
 - Unit 1 landed on `main` in `cd47f52`. The store persists `identity_v1`, peer pins, atomic trust, authenticated identity updates and 0.2.0 plus pre-audit migrations.
 - Unit 2 landed on `main` in `b7118ab`. Proto has the real Android and desktop identity hello, the desktop and Android discovery announcement, and the strict encrypted identity boundary.
 - Unit 3 landed on `main` in `e892f7f`. Discovery returns `DiscoveryAnnouncement`, accepts the desktop four-field UDP packet and the Android full packet, and the daemon persists both.
+- Unit 4 landed on `main` in `b354f43`. `handfast-net` has the certificate fingerprint, local endpoint, peer certificate, peer trust and the three-way identity correlation policy.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -47,8 +48,8 @@ TLS implementation sequence:
 1. Store `identity_v1`, optional peer pin, trust updates and migration tests. Done in `cd47f52`.
 2. `IdentityHello` and `DiscoveryAnnouncement` in proto with real Android and desktop packet fixtures. Done in `b7118ab`.
 3. Discovery compatibility for the desktop UDP packet. Done in `e892f7f`.
-4. Fingerprint and peer-trust policy, including CN and identity correlation. In flight.
-5. Independent testkit TLS peer and RSA fixture.
+4. Fingerprint and peer-trust policy, including CN and identity correlation. Done in `b354f43`.
+5. Independent testkit TLS peer and RSA fixture. In flight.
 6. TLS 1.2 and 1.3 configs and TLS-only tests.
 7. Framed TLS link, hello and identity re-exchange.
 8. Link manager limits, dedupe, rate limits, keepalive and shutdown.
@@ -69,11 +70,18 @@ Hardening follow-ups:
 
 Active work:
 
-- Branch: `feat/peer-trust`
-- Owner: trust policy worker, to be spawned
+- Branch: `feat/testkit-tls-peer`
+- Owner: testkit worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: SHA-256 certificate fingerprints, CN equals device ID, hello and encrypted identity correlation, unpaired versus pinned policy, pin match and mismatch, corrupt DER rejection, local endpoint generation and load, and all 9 checks.
+- Evidence: an independent testkit TLS peer that completes TLS 1.2 and 1.3 with ECDSA and RSA certificates, a `tls-self-test` command, the testkit self-test job updated, and all 9 checks. The testkit must not depend on handfast-proto in its normal build.
+
+Trust hardening follow-ups:
+
+- Enforce P-256 on `TlsIdentity::from_parts`, not only on generation.
+- Add a trailing-key-bytes test if strict stored-key DER consumption matters.
+- Zeroize the private key on drop before the link unit ships.
+- `TrustTable` and `NetError::Tls` land with the link or manager caller.
 
 Design risks carried into implementation:
 
