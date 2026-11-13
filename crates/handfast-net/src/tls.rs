@@ -223,15 +223,11 @@ mod tests {
     }
 
     fn server_name() -> ServerName<'static> {
-        ServerName::IpAddress("127.0.0.1".parse().expect("loopback is an IP address"))
+        ServerName::try_from("127.0.0.1").expect("loopback is a valid server name")
     }
 
-    fn peer_certificate<IO>(stream: &tokio_rustls::TlsStream<IO>) -> PeerCertificate {
-        let certificates = stream
-            .get_ref()
-            .1
-            .peer_certificates()
-            .expect("the peer presented a certificate");
+    fn peer_certificate(certificates: Option<&[CertificateDer<'static>]>) -> PeerCertificate {
+        let certificates = certificates.expect("the peer presented a certificate");
         assert_eq!(certificates.len(), 1, "exactly one peer certificate");
         PeerCertificate::parse(certificates[0].as_ref()).expect("the peer certificate parses")
     }
@@ -274,7 +270,7 @@ mod tests {
             .1
             .protocol_version()
             .expect("a negotiated TLS version");
-        let certificate = peer_certificate(&stream);
+        let certificate = peer_certificate(stream.get_ref().1.peer_certificates());
         let mut request = [0u8; 4];
         stream
             .read_exact(&mut request)
@@ -327,7 +323,7 @@ mod tests {
             .1
             .protocol_version()
             .expect("a negotiated TLS version");
-        let certificate = peer_certificate(&stream);
+        let certificate = peer_certificate(stream.get_ref().1.peer_certificates());
         stream.write_all(b"ping").await.expect("send the request");
         let mut reply = [0u8; 4];
         stream.read_exact(&mut reply).await.expect("read the echo");
