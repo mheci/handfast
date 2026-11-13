@@ -387,6 +387,7 @@ name = "handfast-net"
 version = "0.2.0"
 dependencies = [
  "handfast-proto",
+ "handfast-testkit",
  "rcgen",
  "rustls",
  "serde_json",
