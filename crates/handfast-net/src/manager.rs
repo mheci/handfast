@@ -640,13 +640,7 @@ impl ManagerState {
 
     async fn inbound(&mut self, device_id: DeviceId, generation: u64, packet: Packet) {
         enum GateAction {
-            Pair {
-                request: PairingRequest,
-                peer: Identity,
-                certificate: PeerCertificate,
-                link: LinkHandle,
-                paired: bool,
-            },
+            Pair(PairingRequest),
             Close(&'static str),
             Deliver,
             Drop,
@@ -660,16 +654,9 @@ impl ManagerState {
                 return;
             }
             active.last_activity = Instant::now();
-            let paired = matches!(self.trust.trust(&device_id), PeerTrust::Pinned(_));
             if is_unpaired_allowed(packet.ptype.as_str()) {
                 match PairingRequest::from_packet(&packet) {
-                    Ok(request) => GateAction::Pair {
-                        request,
-                        peer: active.peer.clone(),
-                        certificate: active.certificate.clone(),
-                        link: active.link.clone(),
-                        paired,
-                    },
+                    Ok(request) => GateAction::Pair(request),
                     Err(_) => GateAction::Close("malformed pairing packet"),
                 }
             } else if packet.ptype == types::IDENTITY {
@@ -682,21 +669,19 @@ impl ManagerState {
         };
 
         match action {
-            GateAction::Pair {
-                request,
-                peer,
-                certificate,
-                link,
-                paired,
-            } => {
-                self.emit(LinkEvent::PairingRequest {
-                    peer,
+            GateAction::Pair(request) => {
+                let Some(active) = self.active.get(&device_id) else {
+                    return;
+                };
+                let paired = matches!(self.trust.trust(&device_id), PeerTrust::Pinned(_));
+                let event = LinkEvent::PairingRequest {
+                    peer: active.peer.clone(),
                     request,
-                    certificate,
-                    link,
+                    certificate: active.certificate.clone(),
+                    link: active.link.clone(),
                     paired,
-                })
-                .await;
+                };
+                self.emit(event).await;
             }
             GateAction::Close(reason) => {
                 warn!(%device_id, reason, "closing the link");
