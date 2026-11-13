@@ -361,10 +361,13 @@ name = "handfast-daemon"
 version = "0.2.0"
 dependencies = [
  "clap",
+ "handfast-desktop",
  "handfast-net",
  "handfast-plugins",
  "handfast-proto",
+ "handfast-runtime",
  "handfast-store",
+ "handfast-testkit",
  "serde_json",
  "tempfile",
  "tokio",

@@ -12,14 +12,18 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+handfast-desktop = { path = "../handfast-desktop", version = "0.2.0" }
 handfast-net = { path = "../handfast-net", version = "0.2.0" }
 handfast-plugins = { path = "../handfast-plugins", version = "0.2.0" }
 handfast-proto = { path = "../handfast-proto", version = "0.2.0" }
+handfast-runtime = { path = "../handfast-runtime", version = "0.2.0" }
 handfast-store = { path = "../handfast-store", version = "0.2.0" }
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+handfast-testkit = { path = "../handfast-testkit", version = "0.2.0" }
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

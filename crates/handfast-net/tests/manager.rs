@@ -415,6 +415,41 @@ async fn unpaired_idle_link_is_closed() {
 }
 
 #[tokio::test]
+async fn a_late_pairing_request_resets_the_unpaired_idle_timer() {
+    let limits = LinkLimits {
+        unpaired_idle_timeout: Duration::from_millis(400),
+        ..LinkLimits::default()
+    };
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        limits,
+        Duration::from_millis(50),
+    )
+    .await;
+    let config = peer(PEER_ID);
+    let mut testkit = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the unpaired link is admitted");
+    assert!(!expect_connected(&mut harness.events).await);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    testkit
+        .send(&pair_request())
+        .await
+        .expect("send the late pairing request");
+    match next_event(&mut harness.events).await {
+        LinkEvent::PairingRequest { .. } => {}
+        other => panic!("expected PairingRequest, got {other:?}"),
+    }
+
+    let extra = tokio::time::timeout(Duration::from_millis(250), harness.events.recv()).await;
+    assert!(extra.is_err(), "the pairing request reset the idle timer");
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
 async fn paired_idle_link_stays_open() {
     let config = peer(PEER_ID);
     let pin = Fingerprint::of_certificate(config.cert_der());
@@ -578,6 +613,154 @@ async fn malformed_pairing_packet_closes_the_link() {
         .expect("send the malformed pair packet");
     let (disconnected, _reason) = expect_disconnected(&mut harness.events).await;
     assert_eq!(disconnected, device_id(PEER_ID));
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn pinning_an_unpaired_link_frees_its_unpaired_slot() {
+    let limits = LinkLimits {
+        max_unpaired_links: 1,
+        per_ip_interval: Duration::ZERO,
+        ..LinkLimits::default()
+    };
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        limits,
+        Duration::from_millis(100),
+    )
+    .await;
+    let first_id = device_id("00000000000000000000000000000001");
+    let first_config = peer(first_id.as_str());
+    let first = dial(harness.address, LOCAL_ID, &first_config)
+        .await
+        .expect("the first unpaired link is admitted");
+    assert!(!expect_connected(&mut harness.events).await);
+
+    let second_config = peer("00000000000000000000000000000002");
+    assert!(
+        dial(harness.address, LOCAL_ID, &second_config)
+            .await
+            .is_err(),
+        "the unpaired cap rejects the second link"
+    );
+
+    let pin = Fingerprint::of_certificate(first_config.cert_der());
+    harness
+        .handle
+        .set_trust(first_id, Some(pin))
+        .await
+        .expect("the active certificate is pinned");
+
+    let second = dial(harness.address, LOCAL_ID, &second_config)
+        .await
+        .expect("pinning the first link frees its unpaired slot");
+    assert!(!expect_connected(&mut harness.events).await);
+
+    drop(second);
+    first.close().await.expect("close the first link");
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn replacement_link_delivers_packets_on_the_new_generation() {
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        no_inbound_rate_limit(),
+        Duration::from_millis(100),
+    )
+    .await;
+    let config = peer(PEER_ID);
+    let _first = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the first link is admitted");
+    assert!(!expect_connected(&mut harness.events).await);
+
+    let mut second = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the replacement link is admitted");
+    let (disconnected, reason) = expect_disconnected(&mut harness.events).await;
+    assert_eq!(disconnected, device_id(PEER_ID));
+    assert_eq!(reason, "replaced");
+    assert!(!expect_connected(&mut harness.events).await);
+
+    second
+        .send(&pair_request())
+        .await
+        .expect("the replacement link writes");
+    match next_event(&mut harness.events).await {
+        LinkEvent::PairingRequest { peer, .. } => {
+            assert_eq!(peer.device_id, device_id(PEER_ID));
+        }
+        other => panic!("expected a packet from the replacement link, got {other:?}"),
+    }
+
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn outbound_backoff_resets_after_a_successful_handshake() {
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        no_inbound_rate_limit(),
+        Duration::from_millis(100),
+    )
+    .await;
+    let peer_id = device_id(PEER_ID);
+
+    harness
+        .handle
+        .consider_peer(peer_id.clone(), SocketAddr::from(([127, 0, 0, 1], 1)));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the retry listener");
+    let address = listener.local_addr().expect("read the retry address");
+    let config = peer(PEER_ID);
+    let server = tokio::spawn(async move { accept(&listener, &config).await });
+    harness.handle.consider_peer(peer_id.clone(), address);
+    let first = tokio::time::timeout(Duration::from_secs(3), server)
+        .await
+        .expect("the sighting after the backoff dials")
+        .expect("the retry task joins")
+        .expect("the sighting after the backoff connects");
+    assert!(!expect_connected(&mut harness.events).await);
+
+    drop(first);
+    let (disconnected, _) = expect_disconnected(&mut harness.events).await;
+    assert_eq!(disconnected, peer_id);
+
+    // A second failure must start a 5 s backoff, not the 10 s a preserved
+    // failure count would produce.
+    harness
+        .handle
+        .consider_peer(peer_id.clone(), SocketAddr::from(([127, 0, 0, 1], 1)));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the second retry listener");
+    let address = listener
+        .local_addr()
+        .expect("read the second retry address");
+    let config = peer(PEER_ID);
+    let server = tokio::spawn(async move { accept(&listener, &config).await });
+    harness.handle.consider_peer(peer_id.clone(), address);
+    let _second = tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .expect("the reset backoff dials at 5 s, not 10 s")
+        .unwrap()
+        .expect("the second retry connects");
+    assert!(!expect_connected(&mut harness.events).await);
+
     harness.handle.shutdown();
     let _ = harness.task.await;
 }
