@@ -421,6 +421,8 @@ impl Files for LocalFiles {
         let mut removed = 0;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
+            // Only `.part` files are Handfast temp files; the private
+            // directory holds nothing else.
             if path.extension().and_then(|extension| extension.to_str()) != Some("part") {
                 continue;
             }
@@ -776,6 +778,8 @@ async fn remove_temp(path: &Path) {
 
 #[cfg(unix)]
 async fn sync_root(root: &Path) {
+    // The file is already committed; a directory sync failure only weakens
+    // durability, so it must not turn a committed file into an error.
     if let Ok(directory) = tokio::fs::File::open(root).await {
         let _ = directory.sync_all().await;
     }
