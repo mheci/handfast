@@ -78,8 +78,8 @@ Active work:
 
 - Branch: `feat/testkit-payload`
 - Owner: testkit payload worker `ses_e29baf3e7ffeUZ7B6VzuNlFcPD`
-- PR: pending
-- Verifier: pending
+- PR: [#198](https://github.com/mheci/handfast/pull/198), head `e47e68d`
+- Verifier: `ses_e299e72c4ffeaUIU2KhK0LWQv8`, running
 - Evidence: loopback payload self-test for 0, 1, 1 MiB and 8 MiB over TLS 1.2 and 1.3 with ECDSA and RSA; failure knobs for truncate, extra, wrong certificate, missing client certificate, raw TCP, accept timeout, slow read, pause and receiver timeout; `cargo run -p handfast-testkit -- payload-self-test` in CI; all 9 checks.
 
 Share design decisions:
