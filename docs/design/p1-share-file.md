@@ -83,6 +83,10 @@ let payloads = Arc::new(PayloadService::new(
 accepting links. `PayloadService` shares the daemon's long-term `TlsIdentity`; it
 does not generate a second certificate.
 
+The `--print-identity` branch keeps the existing `Desktop::default()` behavior
+and does not create the incoming directory. The running daemon advertises share
+after it composes the Files adapter.
+
 ### Inbound file from a phone
 
 The user shares a photo from the Android app. The phone sends
@@ -335,6 +339,8 @@ pub enum ShareError {
     InvalidPort(u16),
     #[error("invalid batch metadata")]
     InvalidBatch,
+    #[error("protocol: {0}")]
+    Proto(#[from] ProtoError),
 }
 ```
 
@@ -343,6 +349,8 @@ timestamp when the field is missing. The Files adapter uses `shared-file` when
 the field is absent or invalid. A file packet with a filename and no payload is
 an empty file. A file packet with a non-zero size and no port is rejected by the
 existing `Packet::validate` rule that the two payload fields appear together.
+`ShareBatch.number_of_files` must be at least 1 and `total_payload_size` may be
+0. The two batch fields appear together or not at all.
 
 `Packet` gains a validated accessor. The existing `payload()` stays for known
 sizes and keeps its current error on `-1`.
@@ -715,6 +723,11 @@ share.request { filename } -> share plugin -> Transfer::ReceiveFile { size: Know
   -> TransferRunner: files.open_incoming -> commit (no payload connection)
 ```
 
+Event delivery is best effort for progress. The transfer task sends at most one
+`ShareProgress` event per 500 ms or 4 MiB with `try_send`; a full daemon queue
+drops the progress, not the transfer. `ShareCompleted` and `ShareFailed` use a
+bounded `send` and are logged if the daemon has stopped.
+
 ### Trust and security model
 
 **The payload is authenticated by TLS, not by peer address.** The official
@@ -767,8 +780,10 @@ certificate against the trusted device certificate. Handfast does the same.
 
 **Root.** The root is `--incoming-dir`, default `$XDG_DOWNLOAD_DIR/Handfast` or
 `~/Downloads/Handfast`. It is created with 0700 on Unix and checked to be a real
-directory, not a symlink. All received files are direct children of this root.
-No user-controlled path component is ever joined to the root.
+directory, not a symlink. An existing root keeps its permissions; the daemon does
+not chmod a user-chosen directory. A symlinked root is rejected, so point
+`--incoming-dir` at the real path. All received files are direct children of
+this root. No user-controlled path component is ever joined to the root.
 
 **Filename.** The raw name is treated as an untrusted basename.
 
@@ -866,7 +881,6 @@ mistake worth failing early.
 | Malformed share packet | parser error | log warning, no plugin failure, no panic |
 | Unpaired share packet | manager gate | dropped before the session |
 | Port outside 1739-1764 | parser or service check | reject, no connect |
-| Peer address mismatch | service check | reject, no connect |
 | Cancelled by user or session | oneshot or task abort | abort, delete temp, `ShareFailed` |
 | Outbound source changed | short read | sender reports failure; receiver sees a short transfer and deletes |
 
@@ -1061,7 +1075,8 @@ Using the testkit payload peer:
 - `Unknown` size reads to EOF; a cap breach fails.
 - Connect refused, connect timeout, accept timeout and TLS handshake timeout.
 - Port outside 1739-1764 is rejected before connect.
-- Peer address mismatch is rejected before connect.
+- The service dials the `PayloadPeer.address` IP and the offer port. A packet
+  cannot supply an address.
 - Cancellation drops the stream and leaves no bytes.
 - Concurrent transfers respect the global semaphore.
 - A `PreparedSend` dropped before `start` closes its port.
