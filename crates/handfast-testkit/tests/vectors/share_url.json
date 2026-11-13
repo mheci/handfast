@@ -1,0 +1,7 @@
+{
+  "id": 0,
+  "type": "kdeconnect.share.request",
+  "body": {
+    "url": "https://example.com/report"
+  }
+}

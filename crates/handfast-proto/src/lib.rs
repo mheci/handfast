@@ -10,6 +10,7 @@ pub mod error;
 pub mod frame;
 pub mod identity;
 pub mod packet;
+pub mod share;
 pub mod types;
 
 pub use error::{ProtoError, Result};
@@ -19,3 +20,7 @@ pub use identity::{
     PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT, PROTOCOL_VERSION,
 };
 pub use packet::{Packet, PayloadTransferInfo};
+pub use share::{
+    file_request, text_request, update_request, url_request, PayloadOffer, PayloadSize, ShareBatch,
+    ShareError, ShareFile, ShareRequest, PAYLOAD_PORT_MAX, PAYLOAD_PORT_MIN,
+};

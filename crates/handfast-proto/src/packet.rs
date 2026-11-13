@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::error::{ProtoError, Result};
+use crate::share::{PayloadOffer, PayloadSize, PAYLOAD_PORT_MAX, PAYLOAD_PORT_MIN};
 
 /// A decoded KDE Connect packet.
 ///
@@ -141,6 +142,49 @@ impl Packet {
         Ok((size as u64, info.port))
     }
 
+    /// The validated payload offer, if this packet announces a real payload.
+    ///
+    /// Returns `None` when the packet has no payload fields or declares a
+    /// zero-byte payload, matching the official clients' `hasPayload()` rule.
+    ///
+    /// # Errors
+    ///
+    /// Fails when only one of `payloadSize` and `payloadTransferInfo` is
+    /// present, the size is below `-1`, or the port is outside 1739-1764.
+    pub fn payload_offer(&self) -> Result<Option<PayloadOffer>> {
+        let (Some(size), Some(info)) = (self.payload_size, self.payload_transfer_info.as_ref())
+        else {
+            if self.payload_size.is_none() && self.payload_transfer_info.is_none() {
+                return Ok(None);
+            }
+            return Err(ProtoError::InvalidPayload(
+                "payloadSize and payloadTransferInfo must appear together".to_string(),
+            ));
+        };
+        let size = match size {
+            -1 => PayloadSize::Unknown,
+            size if size >= 0 => PayloadSize::Known(size as u64),
+            size => {
+                return Err(ProtoError::InvalidPayload(format!(
+                    "invalid payload size {size}"
+                )))
+            }
+        };
+        if !(PAYLOAD_PORT_MIN..=PAYLOAD_PORT_MAX).contains(&info.port) {
+            return Err(ProtoError::InvalidPayload(format!(
+                "invalid payload port {}",
+                info.port
+            )));
+        }
+        if size == PayloadSize::Known(0) {
+            return Ok(None);
+        }
+        Ok(Some(PayloadOffer {
+            size,
+            port: info.port,
+        }))
+    }
+
     /// Validate structural invariants after deserialization.
     ///
     /// # Errors
@@ -186,6 +230,7 @@ pub fn is_valid_packet_type(ptype: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::share::{PayloadOffer, PayloadSize};
     use serde_json::json;
 
     #[test]
@@ -261,5 +306,49 @@ mod tests {
         packet.validate().unwrap();
         let back = serde_json::to_value(&packet).unwrap();
         assert_eq!(back["payloadTransferInfo"]["future"], json!(true));
+    }
+
+    #[test]
+    fn payload_offer_is_none_for_a_zero_size_payload() {
+        let packet = Packet::empty(crate::types::SHARE_REQUEST)
+            .unwrap()
+            .with_payload(0, 1739)
+            .unwrap();
+        assert_eq!(packet.payload_offer().unwrap(), None);
+    }
+
+    #[test]
+    fn payload_offer_accepts_the_stream_marker() {
+        let packet = Packet::empty(crate::types::SHARE_REQUEST)
+            .unwrap()
+            .with_payload(-1, 1739)
+            .unwrap();
+        assert_eq!(
+            packet.payload_offer().unwrap(),
+            Some(PayloadOffer {
+                size: PayloadSize::Unknown,
+                port: 1739,
+            })
+        );
+    }
+
+    #[test]
+    fn payload_offer_rejects_bad_ports_and_sizes() {
+        let packet = Packet::empty(crate::types::SHARE_REQUEST)
+            .unwrap()
+            .with_payload(4, 0)
+            .unwrap();
+        assert!(packet.payload_offer().is_err());
+
+        let packet = Packet::empty(crate::types::SHARE_REQUEST)
+            .unwrap()
+            .with_payload(4, 1765)
+            .unwrap();
+        assert!(packet.payload_offer().is_err());
+
+        let mut packet = Packet::empty(crate::types::SHARE_REQUEST).unwrap();
+        packet.payload_size = Some(-2);
+        packet.payload_transfer_info = Some(PayloadTransferInfo::new(1739));
+        assert!(packet.payload_offer().is_err());
     }
 }
