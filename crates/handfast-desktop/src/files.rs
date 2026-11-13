@@ -424,10 +424,16 @@ impl Files for LocalFiles {
             if path.extension().and_then(|extension| extension.to_str()) != Some("part") {
                 continue;
             }
-            if !entry.file_type().await?.is_file() {
+            let Ok(file_type) = entry.file_type().await else {
+                continue;
+            };
+            if !file_type.is_file() {
                 continue;
             }
-            let Ok(modified) = entry.metadata().await?.modified() else {
+            let Ok(metadata) = entry.metadata().await else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
                 continue;
             };
             if now.duration_since(modified).unwrap_or_default() <= max_age {
@@ -711,7 +717,17 @@ fn hard_link_unsupported(error: &io::Error) -> bool {
         io::ErrorKind::Unsupported
             | io::ErrorKind::PermissionDenied
             | io::ErrorKind::CrossesDevices
-    )
+    ) || is_enosys(error)
+}
+
+#[cfg(target_os = "linux")]
+fn is_enosys(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(38)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_enosys(_error: &io::Error) -> bool {
+    false
 }
 
 fn is_name_too_long(error: &io::Error) -> bool {
@@ -883,6 +899,17 @@ mod tests {
         let name = sanitize(&trailing_dot);
         assert_eq!(name.len(), 238);
         assert!(!name.ends_with('.'));
+    }
+
+    #[test]
+    fn candidate_names_shorten_with_the_budget() {
+        let base = "a".repeat(239);
+        let first = candidate_name(&base, 0, 239);
+        assert_eq!(first.len(), 239);
+
+        let second = candidate_name(&base, 1, 100);
+        assert_eq!(second.len(), 104);
+        assert!(second.ends_with(" (1)"));
     }
 
     #[tokio::test]
