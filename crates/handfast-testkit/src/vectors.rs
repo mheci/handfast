@@ -65,6 +65,10 @@ mod tests {
         let names: Vec<&str> = vectors.iter().map(|vector| vector.name.as_str()).collect();
         assert!(names.contains(&"identity_phone"));
         assert!(names.contains(&"share_file"));
+        assert!(names.contains(&"share_text"));
+        assert!(names.contains(&"share_url"));
+        assert!(names.contains(&"share_file_empty"));
+        assert!(names.contains(&"share_update"));
         assert!(names.contains(&"ping"));
     }
 }

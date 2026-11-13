@@ -1,0 +1,8 @@
+{
+  "id": 0,
+  "type": "kdeconnect.share.request.update",
+  "body": {
+    "numberOfFiles": 2,
+    "totalPayloadSize": 1048576
+  }
+}

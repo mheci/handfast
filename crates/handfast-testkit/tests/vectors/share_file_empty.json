@@ -1,0 +1,7 @@
+{
+  "id": 0,
+  "type": "kdeconnect.share.request",
+  "body": {
+    "filename": "empty.txt"
+  }
+}
