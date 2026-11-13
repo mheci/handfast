@@ -19,3 +19,6 @@ tokio.workspace = true
 tokio-rustls.workspace = true
 tracing.workspace = true
 x509-parser.workspace = true
+
+[dev-dependencies]
+handfast-testkit = { path = "../handfast-testkit", version = "0.2.0" }
