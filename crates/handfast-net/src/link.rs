@@ -17,7 +17,7 @@ use handfast_proto::{
 use rustls::pki_types::ServerName;
 use socket2::{SockRef, TcpKeepalive};
 use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 
@@ -110,7 +110,7 @@ impl LinkListener {
         let mut last_error = None;
         for port in start..=MAX_TCP_PORT {
             let address = SocketAddr::from(([0, 0, 0, 0], port));
-            match TcpListener::bind(address).await {
+            match bind_one(address) {
                 Ok(listener) => return Ok(Self { listener, tls }),
                 Err(error) => last_error = Some(error),
             }
@@ -207,6 +207,16 @@ impl LinkListener {
             },
         })
     }
+}
+
+fn bind_one(address: SocketAddr) -> std::io::Result<TcpListener> {
+    let socket = TcpSocket::new_v4()?;
+    // SO_REUSEADDR lets a restart rebind a port whose old connections are in
+    // TIME_WAIT. It is Unix only; on Windows it would allow socket hijacking.
+    #[cfg(unix)]
+    socket.set_reuseaddr(true)?;
+    socket.bind(address)?;
+    socket.listen(1024)
 }
 
 /// Dial a peer and complete the handshake.
@@ -484,5 +494,58 @@ mod tests {
         );
         assert!(client.nodelay().expect("read TCP_NODELAY"));
         drop(server);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn reuse_address_rebinds_a_released_port() {
+        use tokio::io::AsyncReadExt;
+
+        let device_id =
+            DeviceId::new("00112233445566778899aabbccddeeff").expect("the test device ID is valid");
+        let tls = Arc::new(TlsIdentity::generate(device_id).expect("generate the local identity"));
+        let first = LinkListener::bind_in_range(1716, Arc::clone(&tls))
+            .await
+            .expect("bind the first listener");
+        let port = first
+            .local_addr()
+            .expect("read the first bound address")
+            .port();
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+
+        let client = TcpStream::connect(address)
+            .await
+            .expect("connect to the first listener");
+        let (mut server, _) = first.listener.accept().await.expect("accept the client");
+        server
+            .shutdown()
+            .await
+            .expect("close the server side first");
+        drop(server);
+        drop(first);
+
+        let mut client = client;
+        let mut buffer = [0u8; 1];
+        assert_eq!(
+            client
+                .read(&mut buffer)
+                .await
+                .expect("read the server close"),
+            0,
+            "the client sees the server close"
+        );
+        drop(client);
+
+        let second = LinkListener::bind_in_range(port, tls)
+            .await
+            .expect("rebind the released port");
+        assert_eq!(
+            second
+                .local_addr()
+                .expect("read the second bound address")
+                .port(),
+            port,
+            "the port is rebound while the old connection is closing"
+        );
     }
 }
