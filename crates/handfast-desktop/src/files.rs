@@ -924,7 +924,7 @@ mod tests {
         assert_eq!(mode(&root), 0o700);
         assert_eq!(mode(files.temp_dir()), 0o700);
 
-        let mut incoming = files
+        let incoming = files
             .open_incoming(IncomingRequest {
                 filename: Some("photo.jpg".to_string()),
                 size: Some(1),
