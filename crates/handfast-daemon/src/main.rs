@@ -26,7 +26,7 @@ use handfast_proto::{
 };
 use handfast_runtime::Registry;
 use handfast_store::Store;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
@@ -132,6 +132,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
     // The listener is bound before discovery announces, so the announced port
     // is always one this process owns.
     let tls = Arc::new(identity::load_or_generate_tls_identity(&store, &device_id)?);
+    tracing::info!(
+        fingerprint = %tls.fingerprint().to_hex(),
+        "TLS identity loaded"
+    );
     let listener = LinkListener::bind_in_range(args.tcp_port, Arc::clone(&tls)).await?;
     let tcp_port = listener.local_addr()?.port();
     if !(MIN_TCP_PORT..=MAX_TCP_PORT).contains(&tcp_port) {
@@ -165,6 +169,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
     tracing::info!(address = %discovery_addr, "discovery listening");
 
     let (daemon_tx, mut daemon_rx) = mpsc::channel(DAEMON_EVENT_QUEUE);
+    let (prompt_tx, prompt_task) =
+        pairing::spawn(Arc::clone(&store), links.clone(), daemon_tx.clone());
     let (discovery_stop, mut discovery_stop_rx) = watch::channel(false);
     let discovery_store = Arc::clone(&store);
     let discovery_links = links.clone();
@@ -230,6 +236,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
         pending: HashMap::new(),
         prompts: HashMap::new(),
         next_prompt: 0,
+        prompt_tx,
+        prompt_task,
     };
 
     loop {
@@ -274,8 +282,10 @@ struct Daemon {
     events: mpsc::Sender<DaemonEvent>,
     sessions: HashMap<DeviceId, DeviceSession>,
     pending: HashMap<DeviceId, PendingLink>,
-    prompts: HashMap<DeviceId, (u64, JoinHandle<()>)>,
+    prompts: HashMap<DeviceId, (u64, oneshot::Sender<()>)>,
     next_prompt: u64,
+    prompt_tx: mpsc::Sender<pairing::PromptRequest>,
+    prompt_task: JoinHandle<()>,
 }
 
 impl Daemon {
@@ -362,9 +372,7 @@ impl Daemon {
                     session.handle().stop(reason.clone());
                 }
                 self.pending.remove(&device_id);
-                if let Some((_, prompt)) = self.prompts.remove(&device_id) {
-                    prompt.abort();
-                }
+                self.cancel_prompt(&device_id);
                 tracing::info!(%device_id, %reason, "device link closed");
             }
         }
@@ -382,8 +390,20 @@ impl Daemon {
             if request.pair {
                 tracing::debug!(%device_id, "ignoring a pairing request from a paired device");
             } else {
+                // Clear durable trust before the reject so a crash cannot leave
+                // the pin. The manager pin is cleared after the reject is sent,
+                // because clearing it closes the link.
+                let id = device_id.as_str().to_string();
+                if let Err(error) = Arc::clone(&self.store)
+                    .run_blocking(move |store| store.set_trusted(&id, None))
+                    .await
+                {
+                    tracing::warn!(%error, %device_id, "failed to clear the stored pin");
+                }
                 if let Ok(packet) = PairingRequest::reject().to_packet() {
-                    let _ = link.send(packet).await;
+                    if let Err(error) = link.send(packet).await {
+                        tracing::debug!(%error, %device_id, "failed to send the unpair rejection");
+                    }
                 }
                 self.unpair(device_id).await;
             }
@@ -408,19 +428,25 @@ impl Daemon {
 
         let token = self.next_prompt;
         self.next_prompt = self.next_prompt.wrapping_add(1);
-        let store = Arc::clone(&self.store);
-        let links = self.links.clone();
-        let events = self.events.clone();
-        let prompt = tokio::spawn(pairing::run(
-            store,
-            links,
+        let (cancel, cancel_rx) = oneshot::channel();
+        self.prompts.insert(device_id.clone(), (token, cancel));
+        if let Err(error) = self.prompt_tx.try_send(pairing::PromptRequest {
             peer,
             certificate,
             link,
             token,
-            events,
-        ));
-        self.prompts.insert(device_id, (token, prompt));
+            cancel: cancel_rx,
+        }) {
+            self.prompts.remove(&device_id);
+            tracing::warn!(?error, %device_id, "pairing prompt queue is full");
+        }
+    }
+
+    /// Wake a prompt whose link has closed and drop its generation.
+    fn cancel_prompt(&mut self, device_id: &DeviceId) {
+        if let Some((_, cancel)) = self.prompts.remove(device_id) {
+            let _ = cancel.send(());
+        }
     }
 
     async fn unpair(&mut self, device_id: DeviceId) {
@@ -438,9 +464,7 @@ impl Daemon {
             session.handle().stop("unpaired".to_string());
         }
         self.pending.remove(&device_id);
-        if let Some((_, prompt)) = self.prompts.remove(&device_id) {
-            prompt.abort();
-        }
+        self.cancel_prompt(&device_id);
     }
 
     async fn handle_daemon_event(&mut self, event: DaemonEvent) {
@@ -504,6 +528,7 @@ impl Daemon {
             links,
             sessions,
             prompts,
+            prompt_task,
             mut pending,
             ..
         } = self;
@@ -515,9 +540,10 @@ impl Daemon {
             session.handle().stop("daemon shutting down".to_string());
             session_tasks.push(session.into_task());
         }
-        for (_, (_, prompt)) in prompts {
-            prompt.abort();
+        for (_, (_, cancel)) in prompts {
+            let _ = cancel.send(());
         }
+        prompt_task.abort();
         pending.clear();
 
         let mut discovery_task = discovery_task;

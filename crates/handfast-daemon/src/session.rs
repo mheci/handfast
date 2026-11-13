@@ -189,3 +189,145 @@ async fn send_dispatch(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use handfast_desktop::Desktop;
+    use handfast_proto::{types, Capabilities, DeviceName, DeviceType};
+    use handfast_runtime::{
+        DesktopRequirement, LogLevel, Plugin, PluginContext, PluginError, PluginEvent,
+        PluginFactory, PluginMeta, PluginOutput, PluginStatus, Registry,
+    };
+
+    static RECORDING: PluginMeta = PluginMeta {
+        name: "recording",
+        title: "Recording",
+        status: PluginStatus::Implemented,
+        incoming: &[],
+        outgoing: &[],
+        desktop: DesktopRequirement::None,
+    };
+
+    struct RecordingPlugin {
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Plugin for RecordingPlugin {
+        fn meta(&self) -> &'static PluginMeta {
+            &RECORDING
+        }
+
+        async fn on_connect(
+            &mut self,
+            _ctx: &mut PluginContext<'_>,
+        ) -> Result<PluginOutput, PluginError> {
+            self.calls.lock().unwrap().push("connect");
+            Ok(PluginOutput::new())
+        }
+
+        async fn on_packet(
+            &mut self,
+            _ctx: &mut PluginContext<'_>,
+            _packet: &Packet,
+        ) -> Result<PluginOutput, PluginError> {
+            Ok(PluginOutput::new())
+        }
+
+        async fn on_disconnect(
+            &mut self,
+            _ctx: &mut PluginContext<'_>,
+        ) -> Result<PluginOutput, PluginError> {
+            self.calls.lock().unwrap().push("disconnect");
+            Ok(PluginOutput::new()
+                .with_packet(Packet::empty(types::PING).expect("a valid empty ping"))
+                .with_event(PluginEvent::Log {
+                    level: LogLevel::Info,
+                    message: "disconnect".to_string(),
+                }))
+        }
+    }
+
+    struct RecordingFactory {
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl PluginFactory for RecordingFactory {
+        fn meta(&self) -> &'static PluginMeta {
+            &RECORDING
+        }
+
+        fn create(&self) -> Box<dyn Plugin> {
+            Box::new(RecordingPlugin {
+                calls: Arc::clone(&self.calls),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnect_runs_on_disconnect_and_forwards_its_output() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let registry = Arc::new(Registry::new(vec![Box::new(RecordingFactory {
+            calls: Arc::clone(&calls),
+        })]));
+        let peer = Identity::new(
+            DeviceId::new("00112233445566778899aabbccddeeff").expect("a valid test ID"),
+            DeviceName::new("Recording peer"),
+            DeviceType::Phone,
+            Capabilities::default(),
+            Some(1716),
+        );
+        let device_id = peer.device_id.clone();
+        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let link = LinkHandle::from_channel(device_id.clone(), link_tx);
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let session = DeviceSession::start(peer, link, registry, Desktop::default(), events_tx);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if calls.lock().unwrap().contains(&"connect") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("on_connect runs");
+
+        session.handle().stop("test disconnect".to_string());
+        tokio::time::timeout(Duration::from_secs(5), session.into_task())
+            .await
+            .expect("the session exits")
+            .expect("the session task joins");
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["connect", "disconnect"],
+            "on_disconnect runs before the task exits"
+        );
+        let packet = link_rx
+            .recv()
+            .await
+            .expect("on_disconnect output reaches the link");
+        assert_eq!(packet.ptype, types::PING);
+
+        match events_rx.recv().await.expect("the event is forwarded") {
+            DaemonEvent::PluginEvents {
+                device_id: event_id,
+                events,
+            } => {
+                assert_eq!(event_id, device_id);
+                assert!(matches!(
+                    events.first(),
+                    Some(PluginEvent::Log { message, .. }) if message.as_str() == "disconnect"
+                ));
+            }
+            other => panic!("expected plugin events, got {other:?}"),
+        }
+    }
+}
