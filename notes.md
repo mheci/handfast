@@ -16,6 +16,7 @@ Current state:
 - Unit 6 landed on `main` in `d26b8df`. TLS 1.2 and 1.3 configs, mutual TLS, the accept-any chain verifier with signature proof, `PeerCertificate::check` and the raw TLS 1.1 rejection test.
 - Unit 7 landed on `main` in `69f17a4`. The framed TLS link handles both roles, plaintext hello, encrypted identity re-exchange, certificate and identity checks before frames, keepalive and explicit Unix port reuse.
 - Unit 8 landed on `main` in `79d3bb9`. The link manager owns admission, caps, per-IP limits, peer TTL, last-wins dedupe, backoff, keepalive supervision, ordered events and shutdown.
+- Unit 9 landed on `main` in `2cb871b`. The daemon composes the store, local identity, TCP listener, discovery, manager, device sessions, pairing gate and shutdown. The first runnable link daemon exists.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -57,8 +58,8 @@ TLS implementation sequence:
 6. TLS 1.2 and 1.3 configs and TLS-only tests. Done in `d26b8df`.
 7. Framed TLS link, hello and identity re-exchange. Done in `69f17a4`.
 8. Link manager limits, dedupe, rate limits, keepalive and shutdown. Done in `79d3bb9`.
-9. Daemon composition and startup ordering. In flight.
-10. Docs, CI and real-client P1 interop.
+9. Daemon composition and startup ordering. Done in `2cb871b`.
+10. Docs, CI and real-client P1 interop. In flight.
 
 Store follow-ups:
 
@@ -80,13 +81,29 @@ Daemon obligations from unit 8:
 - Add the peer TTL, pin-release, replacement-packet and outbound-backoff-reset coverage.
 - Fix the `NetError::Admission` doc nit if the daemon classifies it.
 
+Unit 9 verifier follow-ups:
+
+- Discovery tests still hardcode 1716; use free daemon and peer ports.
+- Add a daemon on_disconnect test with a recording plugin factory.
+- Add a v0.2.0 daemon migration integration test with a discovered device and restart reuse.
+- Serialize pairing prompts through one queue so a timed-out stdin read cannot consume a later answer.
+- Clear trust before sending reject on unpair; clean up trust if accept packet construction fails.
+- Windows state-file ACLs and private-key zeroization remain P1 security work.
+
 Active work:
 
-- Branch: `feat/daemon-compose`
-- Owner: daemon worker, to be spawned
+- Branch: `feat/p1-exit`
+- Owner: P1 exit worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: startup loads the local identity, binds TCP in 1716-1764 before discovery announces, builds the identity with the actual port, starts discovery and the manager, creates a session and host per connected device, gates unpaired peers, handles the pairing prompt and trust, drains ordered events and shuts down cleanly. A daemon integration test covers the startup order and a real link. All 9 checks.
+- Evidence: the unit 9 follow-ups closed, a Windows keepalive read-back test and Windows test job, fuzz targets for the permissive hello and discovery parsers, the small hardening items, README and architecture docs for P1, and a real-client interop checklist. All 9 checks.
+
+After unit 10 the program continues:
+
+- P1 share/file payload transfer and the real Android and desktop interop exit.
+- Desktop backends and the remaining plugins.
+- P2 to P4 parity.
+- P1 security hardening and a new release.
 
 Testkit follow-ups:
 
