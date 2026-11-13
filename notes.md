@@ -17,6 +17,7 @@ Current state:
 - Unit 7 landed on `main` in `69f17a4`. The framed TLS link handles both roles, plaintext hello, encrypted identity re-exchange, certificate and identity checks before frames, keepalive and explicit Unix port reuse.
 - Unit 8 landed on `main` in `79d3bb9`. The link manager owns admission, caps, per-IP limits, peer TTL, last-wins dedupe, backoff, keepalive supervision, ordered events and shutdown.
 - Unit 9 landed on `main` in `2cb871b`. The daemon composes the store, local identity, TCP listener, discovery, manager, device sessions, pairing gate and shutdown. The first runnable link daemon exists.
+- Unit 10 landed on `main` in `8e40668`. The TLS design is closed: Windows and fuzz CI, zeroization, prompt queue, migration and on_disconnect tests, P1 docs and the manual interop checklist.
 - The old README history was purged. README now has one commit.
 
 Program rules:
@@ -59,7 +60,7 @@ TLS implementation sequence:
 7. Framed TLS link, hello and identity re-exchange. Done in `69f17a4`.
 8. Link manager limits, dedupe, rate limits, keepalive and shutdown. Done in `79d3bb9`.
 9. Daemon composition and startup ordering. Done in `2cb871b`.
-10. Docs, CI and real-client P1 interop. In flight.
+10. Docs, CI and real-client P1 interop. Done in `8e40668`; the real-client run remains manual.
 
 Store follow-ups:
 
@@ -90,20 +91,27 @@ Unit 9 verifier follow-ups:
 - Clear trust before sending reject on unpair; clean up trust if accept packet construction fails.
 - Windows state-file ACLs and private-key zeroization remain P1 security work.
 
+P1 security follow-ups:
+
+- Windows state-file ACLs remain the P1 release blocker; the exact API and test are in `docs/ARCHITECTURE.md`.
+- The store record's private-key copy is not zeroized; the long-lived `TlsIdentity` copy is.
+- Add unpair and accept-rollback regression tests, a positive control in the self-announce test, and reduce the 5 s stdin shutdown cost.
+- Fix the small doc nits: 1714 versus 1716, the interop log format, and stale zeroization notes.
+
 Active work:
 
-- Branch: `feat/p1-exit`
-- Owner: P1 exit worker, to be spawned
+- Branch: `design/share-file`
+- Owner: share design worker, to be spawned
 - PR: pending
 - Verifier: pending
-- Evidence: the unit 9 follow-ups closed, a Windows keepalive read-back test and Windows test job, fuzz targets for the permissive hello and discovery parsers, the small hardening items, README and architecture docs for P1, and a real-client interop checklist. All 9 checks.
+- Evidence: a design package for P1 share/file payload transfer with usage, module map, types, security, failure modes, test plan and implementation sequence. No production code. Independent review before merge.
 
-After unit 10 the program continues:
+After the share design:
 
-- P1 share/file payload transfer and the real Android and desktop interop exit.
-- Desktop backends and the remaining plugins.
+- P1 share/file implementation and the real Android and desktop interop exit.
+- Desktop backends and the remaining 28 plugins.
 - P2 to P4 parity.
-- P1 security hardening and a new release.
+- P1 security hardening and a new stable release.
 
 Testkit follow-ups:
 
