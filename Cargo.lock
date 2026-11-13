@@ -455,10 +455,13 @@ version = "0.2.0"
 dependencies = [
  "clap",
  "handfast-proto",
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

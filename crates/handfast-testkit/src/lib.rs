@@ -8,7 +8,9 @@
 
 pub mod frame;
 pub mod peer;
+pub mod tls_peer;
 pub mod vectors;
 
 pub use frame::WirePacket;
 pub use peer::{run_self_test, PeerConfig, SelfTestReport};
+pub use tls_peer::{run_tls_self_test, TlsSelfTestReport};

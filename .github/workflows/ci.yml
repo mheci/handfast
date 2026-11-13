@@ -118,6 +118,7 @@ jobs:
       # until the P1 link layer exists.
       - run: cargo test -p handfast-testkit --all-features
       - run: cargo run -p handfast-testkit -- self-test
+      - run: cargo run -p handfast-testkit -- tls-self-test
 
   fuzz:
     name: fuzz (nightly, 20s/target)
