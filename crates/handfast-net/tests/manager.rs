@@ -90,11 +90,8 @@ async fn refusing_listener() -> SocketAddr {
         .expect("bind the refusing listener");
     let address = listener.local_addr().expect("read the refusing address");
     tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => drop(stream),
-                Err(_) => break,
-            }
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
         }
     });
     address
