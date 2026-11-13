@@ -6,7 +6,6 @@
 //! its common name and pin, and correlate the encrypted identity with the
 //! plaintext one before any frame is read or written.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,7 +21,8 @@ use tokio::time::timeout;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 
 use crate::error::{NetError, Result, TlsError};
-use crate::identity::{Fingerprint, LocalEndpoint, PeerCertificate, PeerTrust, TlsIdentity};
+use crate::identity::{LocalEndpoint, PeerCertificate, PeerTrust, TlsIdentity, TrustTable};
+use crate::policy::{AdmissionPermit, LinkPolicy};
 use crate::tls::{client_config, server_config};
 
 /// Timeouts and admission limits for one link.
@@ -130,83 +130,111 @@ impl LinkListener {
         Ok(self.listener.local_addr()?)
     }
 
+    /// The listener's TLS material, for handshake tasks that run outside the
+    /// accept loop.
+    #[must_use]
+    pub(crate) fn tls(&self) -> &Arc<TlsIdentity> {
+        &self.tls
+    }
+
+    /// Accept one TCP connection without running the handshake.
+    ///
+    /// The manager owns the pending cap and runs the handshake in its own task.
+    pub(crate) async fn accept_tcp(&self) -> Result<TcpStream> {
+        let (tcp, _) = self.listener.accept().await?;
+        Ok(tcp)
+    }
+
     /// Accept one dialer and complete the handshake.
     ///
     /// The dialer's plaintext hello selects the expected device ID. Its
-    /// certificate is checked against that ID and the pin in `pins`. The
-    /// encrypted identity must then agree with both.
+    /// certificate is checked against that ID and the pin in `trust`. The
+    /// encrypted identity must then agree with both. The admission policy is
+    /// asked for a permit after the hello and before TLS.
     ///
     /// # Errors
     ///
-    /// Fails on IO, a malformed hello, a hello that targets another device, a
-    /// TLS failure, a certificate or pin mismatch, an identity mismatch or a
-    /// timeout.
+    /// Fails on IO, a malformed hello, a hello that targets another device, an
+    /// admission rejection, a TLS failure, a certificate or pin mismatch, an
+    /// identity mismatch or a timeout.
     pub async fn accept(
         &self,
         local: &LocalEndpoint,
-        pins: &HashMap<DeviceId, Fingerprint>,
+        trust: &TrustTable,
         limits: &LinkLimits,
+        policy: &LinkPolicy,
     ) -> Result<Link> {
-        if self.tls.fingerprint() != local.tls().fingerprint() {
-            return Err(NetError::Tls(TlsError::Certificate(
-                "listener certificate does not match the local endpoint".to_string(),
-            )));
-        }
-
-        let (mut tcp, remote_addr) = self.listener.accept().await?;
-        configure_socket(&tcp, limits)?;
-
-        let hello = read_hello(&mut tcp, limits).await?;
-        if &hello.target_device_id != local.device_id() {
-            return Err(NetError::Proto(handfast_proto::ProtoError::Identity(
-                format!(
-                    "hello targets {}, expected {}",
-                    hello.target_device_id,
-                    local.device_id()
-                ),
-            )));
-        }
-        let peer_id = hello.identity.device_id;
-        let trust = pins
-            .get(&peer_id)
-            .copied()
-            .map_or(PeerTrust::Unpaired, PeerTrust::Pinned);
-
-        let connector = TlsConnector::from(client_config(local.tls())?);
-        let server_name = ServerName::IpAddress(remote_addr.ip().into());
-        let stream = timeout(
-            limits.handshake_timeout,
-            connector.connect(server_name, tcp),
-        )
-        .await
-        .map_err(|_| NetError::Timeout("tls handshake"))??;
-        let mut stream: TlsStream<TcpStream> = stream.into();
-
-        let certificate = peer_certificate(&stream)?;
-        certificate.check(&peer_id, trust)?;
-        let identity = exchange_identity(
-            &mut stream,
-            local.identity(),
-            &certificate,
-            &peer_id,
-            limits,
-        )
-        .await?;
-
-        let (reader, writer) = tokio::io::split(stream);
-        Ok(Link {
-            peer: LinkedPeer {
-                identity,
-                certificate,
-                remote_addr,
-            },
-            reader: LinkReader { reader },
-            writer: LinkWriter {
-                writer,
-                write_timeout: limits.write_timeout,
-            },
-        })
+        let tcp = self.accept_tcp().await?;
+        accept_handshake(tcp, &self.tls, local, trust, limits, policy).await
     }
+}
+
+pub(crate) async fn accept_handshake(
+    mut tcp: TcpStream,
+    tls: &Arc<TlsIdentity>,
+    local: &LocalEndpoint,
+    trust_table: &TrustTable,
+    limits: &LinkLimits,
+    policy: &LinkPolicy,
+) -> Result<Link> {
+    if tls.fingerprint() != local.tls().fingerprint() {
+        return Err(NetError::Tls(TlsError::Certificate(
+            "listener certificate does not match the local endpoint".to_string(),
+        )));
+    }
+
+    configure_socket(&tcp, limits)?;
+    let remote_addr = tcp.peer_addr()?;
+
+    let hello = read_hello(&mut tcp, limits).await?;
+    if &hello.target_device_id != local.device_id() {
+        return Err(NetError::Proto(handfast_proto::ProtoError::Identity(
+            format!(
+                "hello targets {}, expected {}",
+                hello.target_device_id,
+                local.device_id()
+            ),
+        )));
+    }
+    let peer_id = hello.identity.device_id;
+    let trust = trust_table.trust(&peer_id);
+    let permit = policy.reserve_incoming(remote_addr.ip(), &peer_id, trust)?;
+
+    let connector = TlsConnector::from(client_config(local.tls())?);
+    let server_name = ServerName::IpAddress(remote_addr.ip().into());
+    let stream = timeout(
+        limits.handshake_timeout,
+        connector.connect(server_name, tcp),
+    )
+    .await
+    .map_err(|_| NetError::Timeout("tls handshake"))??;
+    let mut stream: TlsStream<TcpStream> = stream.into();
+
+    let certificate = peer_certificate(&stream)?;
+    certificate.check(&peer_id, trust)?;
+    let identity = exchange_identity(
+        &mut stream,
+        local.identity(),
+        &certificate,
+        &peer_id,
+        limits,
+    )
+    .await?;
+
+    let (reader, writer) = tokio::io::split(stream);
+    Ok(Link {
+        peer: LinkedPeer {
+            identity,
+            certificate,
+            remote_addr,
+        },
+        reader: LinkReader { reader },
+        writer: LinkWriter {
+            writer,
+            write_timeout: limits.write_timeout,
+        },
+        permit,
+    })
 }
 
 fn bind_one(address: SocketAddr) -> std::io::Result<TcpListener> {
@@ -223,7 +251,8 @@ fn bind_one(address: SocketAddr) -> std::io::Result<TcpListener> {
 ///
 /// The dialer sends the plaintext identity hello and acts as the TLS server.
 /// The listener's certificate is checked against `expected` and `trust`, then
-/// the encrypted identity must agree with both.
+/// the encrypted identity must agree with both. The caller reserves `permit`
+/// before dialing; it is held by the link and released on close.
 ///
 /// # Errors
 ///
@@ -236,6 +265,7 @@ pub async fn connect(
     expected: &DeviceId,
     trust: PeerTrust,
     limits: &LinkLimits,
+    permit: AdmissionPermit,
 ) -> Result<Link> {
     if expected == local.device_id() {
         return Err(NetError::Io(std::io::Error::new(
@@ -287,6 +317,7 @@ pub async fn connect(
             writer,
             write_timeout: limits.write_timeout,
         },
+        permit,
     })
 }
 
@@ -295,6 +326,7 @@ pub struct Link {
     peer: LinkedPeer,
     reader: LinkReader,
     writer: LinkWriter,
+    permit: AdmissionPermit,
 }
 
 impl Link {
@@ -304,10 +336,12 @@ impl Link {
         &self.peer
     }
 
-    /// Split the link into its peer, reader and writer.
+    /// Split the link into its peer, reader, writer and admission permit.
+    ///
+    /// The permit keeps the unpaired slot reserved while the caller owns it.
     #[must_use]
-    pub fn into_parts(self) -> (LinkedPeer, LinkReader, LinkWriter) {
-        (self.peer, self.reader, self.writer)
+    pub fn into_parts(self) -> (LinkedPeer, LinkReader, LinkWriter, AdmissionPermit) {
+        (self.peer, self.reader, self.writer, self.permit)
     }
 }
 

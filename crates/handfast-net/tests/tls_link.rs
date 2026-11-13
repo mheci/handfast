@@ -4,16 +4,20 @@
 //! testkit listener reads the hello and acts as the TLS client. No test shares
 //! framing, TLS or identity code with `handfast-net`.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use handfast_net::{
-    connect, Fingerprint, LinkLimits, LinkListener, LocalEndpoint, PeerTrust, TlsIdentity,
+    connect, Fingerprint, LinkLimits, LinkListener, LinkPolicy, LocalEndpoint, NetError, PeerTrust,
+    TlsError, TlsIdentity, TrustTable,
 };
-use handfast_proto::{types, Capabilities, DeviceId, DeviceName, DeviceType, Identity, Packet};
+use handfast_proto::{
+    types, Capabilities, DeviceId, DeviceName, DeviceType, Identity, Packet, ProtoError,
+};
+use handfast_testkit::frame::MAX_FRAME_SIZE;
 use handfast_testkit::tls_peer::{
-    accept, dial, dial_with_hello, CertificateKind, TlsPeerConfig, TlsVersion,
+    accept, connect_silent, dial, dial_with_hello, CertificateKind, TlsPeerConfig, TlsVersion,
 };
 use handfast_testkit::WirePacket;
 use rustls::ProtocolVersion;
@@ -21,6 +25,7 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 const HANDFAST_ID: &str = "00112233445566778899aabbccddeeff";
+const OTHER_ID: &str = "fedcba9876543210fedcba9876543210";
 
 fn device_id(value: &str) -> DeviceId {
     DeviceId::new(value).expect("the test device ID is valid")
@@ -56,6 +61,16 @@ fn limits() -> LinkLimits {
     LinkLimits::default()
 }
 
+fn policy() -> LinkPolicy {
+    LinkPolicy::new(LinkLimits::default())
+}
+
+fn trust_for(peer_id: &DeviceId, pin: Fingerprint) -> TrustTable {
+    let mut trust = TrustTable::default();
+    trust.set(peer_id.clone(), pin);
+    trust
+}
+
 fn peer_config(version: TlsVersion, certificate: CertificateKind) -> TlsPeerConfig {
     match certificate {
         CertificateKind::Ecdsa => {
@@ -86,11 +101,11 @@ async fn listener_completes_a_full_link_with_a_pinned_testkit_dialer() {
     let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
     let peer_id = device_id(&peer.identity.device_id);
     let pin = Fingerprint::of_certificate(peer.cert_der());
-    let pins = HashMap::from([(peer_id.clone(), pin)]);
+    let trust = trust_for(&peer_id, pin);
     let dialer = tokio::spawn(async move { dial(address, HANDFAST_ID, &peer).await });
 
     let link = listener
-        .accept(local.as_ref(), &pins, &limits())
+        .accept(local.as_ref(), &trust, &limits(), &policy())
         .await
         .expect("the listener accepts the testkit dialer");
     let mut peer = dialer
@@ -120,7 +135,7 @@ async fn listener_completes_a_full_link_with_a_pinned_testkit_dialer() {
         "the listener sent its encrypted identity"
     );
 
-    let (_, mut reader, mut writer) = link.into_parts();
+    let (_, mut reader, mut writer, _permit) = link.into_parts();
     writer
         .send(&Packet::empty(types::PING).expect("build a ping"))
         .await
@@ -157,12 +172,17 @@ async fn dialer_completes_a_full_link_with_a_pinned_testkit_listener() {
     let address = listener.local_addr().expect("read the testkit address");
     let server = tokio::spawn(async move { accept(&listener, &peer).await });
 
+    let policy = policy();
+    let permit = policy
+        .reserve_outgoing(&peer_id, PeerTrust::Pinned(pin))
+        .expect("reserve the outbound slot");
     let link = connect(
         address,
         local.as_ref(),
         &peer_id,
         PeerTrust::Pinned(pin),
         &limits(),
+        permit,
     )
     .await
     .expect("the dialer completes the link");
@@ -231,7 +251,7 @@ async fn listener_accepts_every_tls_version_and_certificate() {
             let dialer = tokio::spawn(async move { dial(address, HANDFAST_ID, &peer).await });
 
             let link = listener
-                .accept(local.as_ref(), &HashMap::new(), &limits())
+                .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
                 .await
                 .unwrap_or_else(|error| panic!("accept {version:?} {certificate:?}: {error}"));
             let peer = dialer
@@ -274,12 +294,17 @@ async fn dialer_connects_with_every_tls_version_and_certificate() {
             let address = listener.local_addr().expect("read the testkit address");
             let server = tokio::spawn(async move { accept(&listener, &peer).await });
 
+            let policy = policy();
+            let permit = policy
+                .reserve_outgoing(&peer_id, PeerTrust::Unpaired)
+                .expect("reserve the outbound slot");
             let link = connect(
                 address,
                 local.as_ref(),
                 &peer_id,
                 PeerTrust::Unpaired,
                 &limits(),
+                permit,
             )
             .await
             .unwrap_or_else(|error| panic!("connect {version:?} {certificate:?}: {error}"));
@@ -326,7 +351,7 @@ async fn listener_accepts_a_desktop_shaped_hello() {
         tokio::spawn(async move { dial_with_hello(address, HANDFAST_ID, &peer, &hello).await });
 
     let link = listener
-        .accept(local.as_ref(), &HashMap::new(), &limits())
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
         .await
         .expect("the listener accepts the desktop hello");
     let peer = dialer
@@ -357,7 +382,7 @@ async fn listener_accepts_a_string_target_version() {
         tokio::spawn(async move { dial_with_hello(address, HANDFAST_ID, &peer, &hello).await });
 
     let link = listener
-        .accept(local.as_ref(), &HashMap::new(), &limits())
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
         .await
         .expect("the listener accepts the string target version");
     let peer = dialer
@@ -386,7 +411,7 @@ async fn correlates_the_hello_certificate_and_encrypted_identity() {
         tokio::spawn(async move { dial_with_hello(address, HANDFAST_ID, &peer, &hello).await });
 
     let link = listener
-        .accept(local.as_ref(), &HashMap::new(), &limits())
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
         .await
         .expect("the link correlates all three device IDs");
     dialer
@@ -410,12 +435,17 @@ async fn framed_ping_round_trips_after_the_handshake() {
     let address = listener.local_addr().expect("read the testkit address");
     let server = tokio::spawn(async move { accept(&listener, &peer).await });
 
+    let policy = policy();
+    let permit = policy
+        .reserve_outgoing(&peer_id, PeerTrust::Unpaired)
+        .expect("reserve the outbound slot");
     let link = connect(
         address,
         local.as_ref(),
         &peer_id,
         PeerTrust::Unpaired,
         &limits(),
+        permit,
     )
     .await
     .expect("the dialer completes the link");
@@ -424,7 +454,7 @@ async fn framed_ping_round_trips_after_the_handshake() {
         .expect("the listener task completes")
         .expect("the testkit accept succeeds");
 
-    let (_, mut reader, mut writer) = link.into_parts();
+    let (_, mut reader, mut writer, _permit) = link.into_parts();
     writer
         .send(&Packet::empty(types::PING).expect("build a ping"))
         .await
@@ -446,5 +476,187 @@ async fn framed_ping_round_trips_after_the_handshake() {
     assert_eq!(
         reply.body.get("message").and_then(Value::as_str),
         Some("echo")
+    );
+}
+
+#[tokio::test]
+async fn listener_rejects_a_dialer_certificate_with_a_wrong_common_name() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (listener, address) = bind(&local).await;
+    let peer = TlsPeerConfig::ecdsa_with_common_name(
+        handfast_testkit::PeerConfig::client(),
+        TlsVersion::Tls13,
+        OTHER_ID,
+    )
+    .expect("build the wrong-CN testkit peer");
+    let dialer = tokio::spawn(async move { dial(address, HANDFAST_ID, &peer).await });
+
+    let error = match listener
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
+        .await
+    {
+        Ok(_) => panic!("a wrong common name must be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, NetError::Tls(TlsError::CertificateDeviceId { .. })),
+        "{error}"
+    );
+    drop(dialer);
+}
+
+#[tokio::test]
+async fn listener_rejects_a_pinned_peer_whose_certificate_changed() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (listener, address) = bind(&local).await;
+    let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
+    let peer_id = device_id(&peer.identity.device_id);
+    let other = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
+    let pin = Fingerprint::of_certificate(other.cert_der());
+    let trust = trust_for(&peer_id, pin);
+    let dialer = tokio::spawn(async move { dial(address, HANDFAST_ID, &peer).await });
+
+    let error = match listener
+        .accept(local.as_ref(), &trust, &limits(), &policy())
+        .await
+    {
+        Ok(_) => panic!("a changed certificate must be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, NetError::Tls(TlsError::PinMismatch { .. })),
+        "{error}"
+    );
+    assert_eq!(
+        trust.trust(&peer_id),
+        PeerTrust::Pinned(pin),
+        "a mismatch does not clear the pin"
+    );
+    drop(dialer);
+}
+
+#[tokio::test]
+async fn listener_rejects_a_plaintext_identity_and_an_encrypted_identity_that_differ() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (listener, address) = bind(&local).await;
+    let peer =
+        peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa).with_encrypted_device_id(OTHER_ID);
+    let dialer = tokio::spawn(async move { dial(address, HANDFAST_ID, &peer).await });
+
+    let error = match listener
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
+        .await
+    {
+        Ok(_) => panic!("a plaintext and encrypted identity mismatch must be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, NetError::Tls(TlsError::IdentityDeviceId { .. })),
+        "{error}"
+    );
+    drop(dialer);
+}
+
+#[tokio::test]
+async fn listener_rejects_a_target_protocol_version_other_than_eight() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (listener, address) = bind(&local).await;
+    let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
+    let mut hello = peer.hello_packet(HANDFAST_ID);
+    hello
+        .body
+        .insert("targetProtocolVersion".to_string(), json!(7));
+    let dialer =
+        tokio::spawn(async move { dial_with_hello(address, HANDFAST_ID, &peer, &hello).await });
+
+    let error = match listener
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
+        .await
+    {
+        Ok(_) => panic!("a non-8 target version must be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, NetError::Proto(ProtoError::Identity(_))),
+        "{error}"
+    );
+    drop(dialer);
+}
+
+#[tokio::test]
+async fn listener_rejects_an_encrypted_identity_that_is_not_protocol_eight() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (listener, address) = bind(&local).await;
+    let peer =
+        peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa).with_encrypted_protocol_version(7);
+    let dialer = tokio::spawn(async move { dial(address, HANDFAST_ID, &peer).await });
+
+    let error = match listener
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
+        .await
+    {
+        Ok(_) => panic!("a non-8 encrypted identity must be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, NetError::Proto(ProtoError::Identity(_))),
+        "{error}"
+    );
+    drop(dialer);
+}
+
+#[tokio::test]
+async fn listener_times_out_a_silent_peer() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (listener, address) = bind(&local).await;
+    let silent = connect_silent(address)
+        .await
+        .expect("connect without sending a hello");
+    let limits = LinkLimits {
+        handshake_timeout: Duration::from_millis(200),
+        ..LinkLimits::default()
+    };
+
+    let error = match listener
+        .accept(local.as_ref(), &TrustTable::default(), &limits, &policy())
+        .await
+    {
+        Ok(_) => panic!("a silent peer must time out"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, NetError::Timeout("plaintext hello")),
+        "{error}"
+    );
+    drop(silent);
+}
+
+#[tokio::test]
+async fn listener_closes_a_peer_that_declares_an_oversized_frame() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (listener, address) = bind(&local).await;
+    let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
+    let dialer = tokio::spawn(async move { dial(address, HANDFAST_ID, &peer).await });
+
+    let link = listener
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
+        .await
+        .expect("the handshake completes before the bad frame");
+    let mut peer = dialer
+        .await
+        .expect("the dialer task completes")
+        .expect("the dial succeeds");
+    peer.send_oversized_frame_header((MAX_FRAME_SIZE + 1) as u32)
+        .await
+        .expect("write the oversized header");
+
+    let (_, mut reader, _, _permit) = link.into_parts();
+    let error = match reader.recv().await {
+        Ok(_) => panic!("an oversized frame must be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, NetError::Proto(ProtoError::FrameTooLarge { .. })),
+        "{error}"
     );
 }
