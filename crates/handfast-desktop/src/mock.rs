@@ -1,10 +1,12 @@
 //! In-memory desktop backend for contract tests.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
 use crate::error::{DesktopError, Result};
+use crate::files::{FileLimits, Files, FilesError, LocalFiles};
 use crate::model::{KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, VolumeState};
 use crate::traits::{Clipboard, Input, Media, Notifier, Screensaver, Shell, Volume};
 use crate::Desktop;
@@ -34,10 +36,11 @@ struct MockState {
 pub struct MockDesktop {
     state: Arc<MockState>,
     desktop: Desktop,
+    files_root: Option<Arc<tempfile::TempDir>>,
 }
 
 impl MockDesktop {
-    /// Build a mock desktop with every adapter present.
+    /// Build a mock desktop with every adapter present and no files adapter.
     #[must_use]
     pub fn new() -> Self {
         let state = Arc::new(MockState::default());
@@ -50,14 +53,61 @@ impl MockDesktop {
             input: Some(Arc::clone(&backend) as Arc<dyn Input>),
             screensaver: Some(Arc::clone(&backend) as Arc<dyn Screensaver>),
             shell: Some(Arc::clone(&backend) as Arc<dyn Shell>),
+            files: None,
         };
-        Self { state, desktop }
+        Self {
+            state,
+            desktop,
+            files_root: None,
+        }
+    }
+
+    /// Build a mock desktop with every adapter plus a [`LocalFiles`] adapter.
+    ///
+    /// The adapter writes into a temp directory owned by the mock.
+    ///
+    /// # Errors
+    /// Fails when the temp directory or the incoming root cannot be created.
+    pub fn with_files() -> std::result::Result<Self, FilesError> {
+        let temp = tempfile::TempDir::new()?;
+        let root = temp.path().join("incoming");
+        let files = Arc::new(LocalFiles::new(&root, FileLimits::default())?);
+        let mut mock = Self::new();
+        mock.desktop.files = Some(files as Arc<dyn Files>);
+        mock.files_root = Some(Arc::new(temp));
+        Ok(mock)
     }
 
     /// Borrow the composed desktop.
     #[must_use]
     pub fn desktop(&self) -> Desktop {
         self.desktop.clone()
+    }
+
+    /// Root of the mock incoming directory, when a files adapter is installed.
+    #[must_use]
+    pub fn incoming_dir(&self) -> Option<PathBuf> {
+        self.files_root
+            .as_ref()
+            .map(|temp| temp.path().join("incoming"))
+    }
+
+    /// Regular files saved under the mock incoming root, sorted by path.
+    #[must_use]
+    pub fn saved_files(&self) -> Vec<PathBuf> {
+        let Some(root) = self.incoming_dir() else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return Vec::new();
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .map(|entry| entry.path())
+            .collect();
+        paths.sort();
+        paths
     }
 
     /// Last clipboard text written by a plugin.
@@ -356,5 +406,30 @@ mod tests {
     fn empty_desktop_has_no_capabilities() {
         assert_eq!(Desktop::default().capabilities(), Default::default());
         assert!(MockDesktop::new().desktop().capabilities().clipboard);
+        assert!(!MockDesktop::new().desktop().capabilities().files);
+    }
+
+    #[tokio::test]
+    async fn files_adapter_saves_and_lists_a_file() {
+        use tokio::io::AsyncWriteExt;
+
+        use crate::files::IncomingRequest;
+
+        let desktop = MockDesktop::with_files().unwrap();
+        assert!(desktop.desktop().capabilities().files);
+        let files = desktop.desktop().files.clone().unwrap();
+        let mut incoming = files
+            .open_incoming(IncomingRequest {
+                filename: Some("photo.jpg".to_string()),
+                size: Some(3),
+                open: false,
+            })
+            .await
+            .unwrap();
+        incoming.writer().write_all(b"abc").await.unwrap();
+        let path = incoming.commit().await.unwrap();
+
+        assert_eq!(path, desktop.incoming_dir().unwrap().join("photo.jpg"));
+        assert_eq!(desktop.saved_files(), vec![path]);
     }
 }
