@@ -34,18 +34,19 @@ async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
 async fn startup_binds_the_next_port_and_announces_the_actual_port() {
     let _serial = serial().await;
     let directory = tempfile::tempdir().unwrap();
-    let identity = print_identity(directory.path(), MIN_TCP_PORT);
+    let occupied_port = free_tcp_port_below_max();
+    let identity = print_identity(directory.path(), occupied_port);
     let device_id = identity["body"]["deviceId"].as_str().unwrap().to_string();
 
-    let occupied = std::net::TcpListener::bind(("0.0.0.0", MIN_TCP_PORT))
+    let occupied = std::net::TcpListener::bind(("0.0.0.0", occupied_port))
         .expect("occupy the configured start port");
     let discovery_port = free_udp_port();
-    let receiver = Discovery::bind(receiver_identity(), discovery_port, MIN_TCP_PORT)
+    let receiver = Discovery::bind(receiver_identity(), discovery_port, occupied_port)
         .await
         .expect("bind the announcement receiver");
 
     let log = directory.path().join("daemon.log");
-    let mut daemon = spawn_daemon(directory.path(), MIN_TCP_PORT, discovery_port, None, &log);
+    let mut daemon = spawn_daemon(directory.path(), occupied_port, discovery_port, None, &log);
     wait_for_state_file(directory.path(), &mut daemon).await;
 
     let (_, announcement) = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
@@ -54,7 +55,7 @@ async fn startup_binds_the_next_port_and_announces_the_actual_port() {
         .expect("the announcement is valid");
     assert_eq!(announcement.device_id.as_str(), device_id.as_str());
     assert_ne!(
-        announcement.tcp_port, MIN_TCP_PORT,
+        announcement.tcp_port, occupied_port,
         "the daemon scanned past the occupied port"
     );
     assert!(
@@ -515,6 +516,16 @@ fn free_tcp_port() -> u16 {
         }
     }
     panic!("no free TCP port in {MIN_TCP_PORT}-{MAX_TCP_PORT}");
+}
+
+fn free_tcp_port_below_max() -> u16 {
+    for port in MIN_TCP_PORT..MAX_TCP_PORT {
+        if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", port)) {
+            drop(listener);
+            return port;
+        }
+    }
+    panic!("no free TCP port below {MAX_TCP_PORT}");
 }
 
 fn free_udp_port() -> u16 {

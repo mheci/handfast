@@ -97,6 +97,7 @@ fn main() -> ExitCode {
 async fn run() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
@@ -458,7 +459,7 @@ impl Daemon {
                 if let Some(previous) = self.sessions.remove(&device_id) {
                     previous.handle().stop("replaced".to_string());
                 }
-                let mut session = DeviceSession::start(
+                let session = DeviceSession::start(
                     pending.peer,
                     pending.link,
                     Arc::clone(&self.registry),
