@@ -76,8 +76,8 @@ Active work:
 
 - Branch: `feat/proto-share`
 - Owner: proto share worker `ses_e2a2ffc73ffe5JjNDOpNAZ34Fx`
-- PR: pending
-- Verifier: pending
+- PR: [#196](https://github.com/mheci/handfast/pull/196), head `c70d905`
+- Verifier: `ses_e2a1af972ffeO7kBoBQO0I8ObV`, running
 - Evidence: `cargo test -p handfast-proto` covers the share round trips, `-1`, empty file, port bounds, batch and malformed bodies; `cargo run -p handfast-testkit -- vectors` lists all five share vectors; all 9 checks.
 
 Share design decisions:
