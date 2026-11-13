@@ -232,7 +232,20 @@ mod tests {
         PeerCertificate::parse(certificates[0].as_ref()).expect("the peer certificate parses")
     }
 
-    async fn handfast_server(peer: TlsPeerConfig) -> (ProtocolVersion, PeerCertificate) {
+    fn check_certificate(certificate: &PeerCertificate, expected: &DeviceId, pin: Fingerprint) {
+        certificate
+            .check(expected, PeerTrust::Unpaired)
+            .expect("an unpaired peer with the expected CN is accepted");
+        certificate
+            .check(expected, PeerTrust::Pinned(pin))
+            .expect("a pre-seeded pin matches the peer certificate");
+    }
+
+    async fn handfast_server(
+        peer: TlsPeerConfig,
+        expected: &DeviceId,
+        pin: Fingerprint,
+    ) -> (ProtocolVersion, PeerCertificate) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind a loopback listener");
@@ -271,6 +284,9 @@ mod tests {
             .protocol_version()
             .expect("a negotiated TLS version");
         let certificate = peer_certificate(stream.get_ref().1.peer_certificates());
+        // The link invariant is check before any application data. The ping
+        // below is the first application data and runs only after the check.
+        check_certificate(&certificate, expected, pin);
         let mut request = [0u8; 4];
         stream
             .read_exact(&mut request)
@@ -284,7 +300,11 @@ mod tests {
         (negotiated, certificate)
     }
 
-    async fn handfast_client(peer: TlsPeerConfig) -> (ProtocolVersion, PeerCertificate) {
+    async fn handfast_client(
+        peer: TlsPeerConfig,
+        expected: &DeviceId,
+        pin: Fingerprint,
+    ) -> (ProtocolVersion, PeerCertificate) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind a loopback listener");
@@ -324,6 +344,9 @@ mod tests {
             .protocol_version()
             .expect("a negotiated TLS version");
         let certificate = peer_certificate(stream.get_ref().1.peer_certificates());
+        // The link invariant is check before any application data. The ping
+        // below is the first application data and runs only after the check.
+        check_certificate(&certificate, expected, pin);
         stream.write_all(b"ping").await.expect("send the request");
         let mut reply = [0u8; 4];
         stream.read_exact(&mut reply).await.expect("read the echo");
@@ -339,18 +362,12 @@ mod tests {
         let peer_device_id = device_id(&peer.identity.device_id);
         let pin = Fingerprint::of_certificate(peer.cert_der());
         let (negotiated, certificate) = match role {
-            HandfastRole::Server => handfast_server(peer).await,
-            HandfastRole::Client => handfast_client(peer).await,
+            HandfastRole::Server => handfast_server(peer, &peer_device_id, pin).await,
+            HandfastRole::Client => handfast_client(peer, &peer_device_id, pin).await,
         };
 
         assert_eq!(negotiated, expected, "negotiated TLS version");
         assert_eq!(certificate.device_id(), &peer_device_id, "certificate CN");
-        certificate
-            .check(&peer_device_id, PeerTrust::Unpaired)
-            .expect("an unpaired peer with the expected CN is accepted");
-        certificate
-            .check(&peer_device_id, PeerTrust::Pinned(pin))
-            .expect("a pre-seeded pin matches the peer certificate");
     }
 
     async fn run_case(role: HandfastRole, peer: TlsPeerConfig, expected: ProtocolVersion) {
@@ -488,5 +505,52 @@ mod tests {
             );
             client_task.await.expect("the client task completes");
         }
+    }
+
+    fn tls11_client_hello() -> Vec<u8> {
+        // A TLS 1.1 record and ClientHello at version 0x0302 with no
+        // supported_versions extension. The body is 41 bytes and the
+        // handshake is 45 bytes.
+        let mut record = vec![
+            0x16, 0x03, 0x02, 0x00, 0x2d, // handshake record, TLS 1.1, 45 bytes
+            0x01, 0x00, 0x00, 0x29, // ClientHello, 41-byte body
+            0x03, 0x02, // client_version TLS 1.1
+        ];
+        record.extend_from_slice(&[0u8; 32]); // random
+        record.push(0); // empty session id
+        record.extend_from_slice(&[0x00, 0x02, 0xc0, 0x2b]); // ECDHE-ECDSA AES-128-GCM
+        record.extend_from_slice(&[0x01, 0x00]); // null compression
+        assert_eq!(record.len(), 50, "the record is complete");
+        record
+    }
+
+    #[tokio::test]
+    async fn server_config_rejects_a_raw_tls11_client_hello() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a loopback listener");
+        let address = listener.local_addr().expect("read the bound address");
+        let acceptor =
+            TlsAcceptor::from(server_config(&local_tls()).expect("build the server config"));
+
+        let client_task = tokio::spawn(async move {
+            let mut tcp = TcpStream::connect(address)
+                .await
+                .expect("connect to the listener");
+            tcp.write_all(&tls11_client_hello())
+                .await
+                .expect("write the raw ClientHello");
+            tcp.shutdown().await.expect("close the raw client stream");
+        });
+
+        let (tcp, _) = listener.accept().await.expect("accept the raw client");
+        let rejected = tokio::time::timeout(IO_TIMEOUT, acceptor.accept(tcp))
+            .await
+            .expect("the handshake finishes");
+        assert!(
+            rejected.is_err(),
+            "a raw TLS 1.1 ClientHello must be rejected"
+        );
+        client_task.await.expect("the raw client task completes");
     }
 }
