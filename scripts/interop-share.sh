@@ -34,7 +34,6 @@ Set HANDFASTD or HFCTL to use another path."
 }
 
 daemon=$(find_binary handfastd "${HANDFASTD:-}")
-hfctl=$(find_binary hfctl "${HFCTL:-}")
 
 run_dir=$(mktemp -d "${TMPDIR:-/tmp}/handfast-interop.XXXXXX")
 data_dir="$run_dir/data"
@@ -48,22 +47,20 @@ device_id=$(printf '%s\n' "$identity" |
     sed -n 's/.*"deviceId": *"\([^"]*\)".*/\1/p' | head -n 1)
 [ -n "$device_id" ] || fail "could not read body.deviceId from --print-identity output"
 
-incoming_supported=0
-if "$daemon" --help 2>&1 | grep -q -- '--incoming-dir'; then
-    incoming_supported=1
-fi
-
 daemon_pid=""
 cleanup() {
     if [ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null; then
-        kill "$daemon_pid" 2>/dev/null || true
+        kill -INT "$daemon_pid" 2>/dev/null || true
+        # handfastd's own shutdown grace is 5 s, plus the runtime's 5 s timeout.
         waited=0
-        while [ "$waited" -lt 50 ]; do
+        while [ "$waited" -lt 100 ]; do
             kill -0 "$daemon_pid" 2>/dev/null || break
             sleep 0.1
             waited=$((waited + 1))
         done
-        kill -9 "$daemon_pid" 2>/dev/null || true
+        if kill -0 "$daemon_pid" 2>/dev/null; then
+            kill -KILL "$daemon_pid" 2>/dev/null || true
+        fi
         wait "$daemon_pid" 2>/dev/null || true
     fi
     daemon_pid=""
@@ -71,10 +68,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-daemon_args=(--data-dir "$data_dir")
-if [ "$incoming_supported" -eq 1 ]; then
-    daemon_args+=(--incoming-dir "$incoming_dir")
-fi
+daemon_args=(--data-dir "$data_dir" --incoming-dir "$incoming_dir")
 RUST_LOG=debug "$daemon" "${daemon_args[@]}" >"$log" 2>&1 &
 daemon_pid=$!
 
@@ -106,21 +100,16 @@ fi
 printf '\nHandfast share interop run\n'
 printf '  device id:      %s\n' "$device_id"
 printf '  certificate:    %s\n' "${fingerprint:-unknown}"
-printf '  TCP port:       %s\n' "${tcp_port:-unknown}"
+printf '  bound TCP port: %s\n' "${tcp_port:-unknown}"
 printf '  control path:   %s\n' "$control_path"
 printf '  data dir:       %s\n' "$data_dir"
 printf '  log:            %s\n' "$log"
-if [ "$incoming_supported" -eq 1 ]; then
-    printf '  incoming dir:   %s\n' "$incoming_dir"
-    incoming_note="Received files appear in $incoming_dir with no .part file left."
-else
-    printf '  incoming dir:   blocked, this handfastd has no --incoming-dir\n'
-    incoming_note="This build has no --incoming-dir, so the inbound file checks are blocked. Record them as blocked, not passed."
-fi
+printf '  incoming dir:   %s\n' "$incoming_dir"
+incoming_note="Received files appear in $incoming_dir with no .part file left."
 
 cat <<EOF
 
-Local identity packet:
+Local identity packet. body.tcpPort is the configured default, not the bound port:
 
 $identity
 
@@ -143,6 +132,13 @@ Inbound from the desktop KDE Connect client:
   Expect the same log lines, both files in order, and no partial file.
   The payload TLS version is TLS 1.2 for Android and TLS 1.3 for the desktop.
 
+EOF
+
+if [ -n "${HFCTL:-}" ]; then
+    [ -x "$HFCTL" ] || fail "HFCTL override is not executable: $HFCTL"
+fi
+if hfctl=$(find_binary hfctl "${HFCTL:-}"); then
+    cat <<EOF
 Outbound to a paired peer:
 
   "$hfctl" share --device <peer-id> --data-dir "$data_dir" <file>
@@ -151,6 +147,9 @@ Outbound to a paired peer:
   exits 1, a usage error exits 2.
 
 EOF
+else
+    printf 'Outbound step skipped because hfctl is missing. Build it or set HFCTL. The inbound steps are unaffected.\n\n'
+fi
 
 printf 'Press Enter to stop handfastd: '
 read -r _ || true
@@ -159,11 +158,9 @@ cleanup
 printf '\nhandfastd stopped.\n'
 printf '  log:            %s\n' "$log"
 printf '  data dir:       %s\n' "$data_dir"
-if [ "$incoming_supported" -eq 1 ]; then
-    printf '  incoming dir:   %s\n' "$incoming_dir"
-    printf '\nReceived files:\n'
-    ls -la "$incoming_dir" 2>/dev/null || true
-fi
+printf '  incoming dir:   %s\n' "$incoming_dir"
+printf '\nReceived files:\n'
+ls -la "$incoming_dir" 2>/dev/null || true
 printf '\nPacket capture for a failed step:\n'
 printf "  sudo tcpdump -i any -s 0 -w %s/share.pcap 'tcp portrange 1716-1764'\n" "$run_dir"
 printf 'Do not attach state.db, it holds the private key.\n'

@@ -37,11 +37,9 @@ function Read-Log {
 }
 
 $process = $null
-$incomingSupported = $false
 
 try {
     $daemon = Find-Binary -Name 'handfastd' -Override $env:HANDFASTD
-    $hfctl = Find-Binary -Name 'hfctl' -Override $env:HFCTL
 
     $runDir = Join-Path ([System.IO.Path]::GetTempPath()) ("handfast-interop-{0}" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
     $dataDir = Join-Path $runDir 'data'
@@ -59,11 +57,7 @@ try {
     $deviceId = $identity.body.deviceId
     if (-not $deviceId) { throw 'could not read body.deviceId from --print-identity output' }
 
-    try { $helpOutput = & $daemon --help 2>&1 | Out-String } catch { $helpOutput = '' }
-    $incomingSupported = $helpOutput -match '--incoming-dir'
-
-    $daemonArgs = @('--data-dir', $dataDir)
-    if ($incomingSupported) { $daemonArgs += @('--incoming-dir', $incomingDir) }
+    $daemonArgs = @('--data-dir', $dataDir, '--incoming-dir', $incomingDir)
     $quotedArgs = $daemonArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
     $env:RUST_LOG = 'debug'
     $process = Start-Process -FilePath $daemon -ArgumentList $quotedArgs -RedirectStandardOutput $stdoutLog -RedirectStandardError $log -NoNewWindow -PassThru
@@ -98,20 +92,15 @@ try {
     Write-Output 'Handfast share interop run'
     Write-Output "  device id:      $deviceId"
     Write-Output "  certificate:    $fingerprint"
-    Write-Output "  TCP port:       $tcpPort"
+    Write-Output "  bound TCP port: $tcpPort"
     Write-Output "  control path:   $controlPath"
     Write-Output "  data dir:       $dataDir"
     Write-Output "  log:            $log"
-    if ($incomingSupported) {
-        Write-Output "  incoming dir:   $incomingDir"
-        $incomingNote = "Received files appear in $incomingDir with no .part file left."
-    } else {
-        Write-Output '  incoming dir:   blocked, this handfastd has no --incoming-dir'
-        $incomingNote = 'This build has no --incoming-dir, so the inbound file checks are blocked. Record them as blocked, not passed.'
-    }
+    Write-Output "  incoming dir:   $incomingDir"
+    $incomingNote = "Received files appear in $incomingDir with no .part file left."
 
     Write-Output ''
-    Write-Output 'Local identity packet:'
+    Write-Output 'Local identity packet. body.tcpPort is the configured default, not the bound port:'
     Write-Output ''
     Write-Output $identityJson
     Write-Output ''
@@ -134,13 +123,24 @@ try {
     Write-Output '  Expect the same log lines, both files in order, and no partial file.'
     Write-Output '  The payload TLS version is TLS 1.2 for Android and TLS 1.3 for the desktop.'
     Write-Output ''
-    Write-Output 'Outbound to a paired peer:'
-    Write-Output ''
-    Write-Output "  & '$hfctl' share --device <peer-id> --data-dir '$dataDir' <file>"
-    Write-Output ''
-    Write-Output '  Expect "sent <n> bytes to <peer-id>" and exit 0. A remote or IO error'
-    Write-Output '  exits 1, a usage error exits 2.'
-    Write-Output ''
+    $hfctl = $null
+    try {
+        $hfctl = Find-Binary -Name 'hfctl' -Override $env:HFCTL
+    } catch {
+        if ($env:HFCTL) { throw }
+    }
+    if ($hfctl) {
+        Write-Output 'Outbound to a paired peer:'
+        Write-Output ''
+        Write-Output "  & '$hfctl' share --device <peer-id> --data-dir '$dataDir' <file>"
+        Write-Output ''
+        Write-Output '  Expect "sent <n> bytes to <peer-id>" and exit 0. A remote or IO error'
+        Write-Output '  exits 1, a usage error exits 2.'
+        Write-Output ''
+    } else {
+        Write-Output 'Outbound step skipped because hfctl is missing. Build it or set HFCTL. The inbound steps are unaffected.'
+        Write-Output ''
+    }
 
     Read-Host 'Press Enter to stop handfastd' | Out-Null
 }
@@ -150,8 +150,15 @@ catch {
 }
 finally {
     if ($process -and -not $process.HasExited) {
-        try { $process.Kill() } catch { }
-        $process.WaitForExit(5000) | Out-Null
+        # The daemon stops on SIGINT. Windows has no way to send it to one process.
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Unix) {
+            try { & /bin/kill -INT $process.Id } catch { }
+            $process.WaitForExit(10000) | Out-Null
+        }
+        if (-not $process.HasExited) {
+            try { $process.Kill() } catch { }
+            $process.WaitForExit(5000) | Out-Null
+        }
     }
 }
 
@@ -159,15 +166,13 @@ Write-Output ''
 Write-Output 'handfastd stopped.'
 Write-Output "  log:            $log"
 Write-Output "  data dir:       $dataDir"
-if ($incomingSupported) {
-    Write-Output "  incoming dir:   $incomingDir"
-    Write-Output ''
-    Write-Output 'Received files:'
-    Get-ChildItem -LiteralPath $incomingDir -Force |
-        Format-Table Length, LastWriteTime, Name -AutoSize |
-        Out-String |
-        Write-Output
-}
+Write-Output "  incoming dir:   $incomingDir"
+Write-Output ''
+Write-Output 'Received files:'
+Get-ChildItem -LiteralPath $incomingDir -Force |
+    Format-Table Length, LastWriteTime, Name -AutoSize |
+    Out-String |
+    Write-Output
 Write-Output ''
 Write-Output 'Packet capture for a failed step:'
 Write-Output "  sudo tcpdump -i any -s 0 -w $runDir/share.pcap 'tcp portrange 1716-1764'"

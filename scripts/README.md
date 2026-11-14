@@ -60,9 +60,15 @@ The control path is `$XDG_RUNTIME_DIR/handfast/handfastd.sock` when
 `XDG_RUNTIME_DIR` is set, else `<run>/data/handfastd.sock`, on Unix. Windows
 uses the named pipe `\\.\pipe\handfastd-<user SID>`.
 
-Press Enter in the script terminal to stop `handfastd`. The script prints the
-log path, the incoming directory and its contents, and a `tcpdump` command for
-the next failed step.
+The identity packet's `body.tcpPort` is the configured default, not the bound
+port. The daemon binds the first free port from 1716, so read the `bound TCP
+port` line or the `TCP listener bound` log line for the bound port.
+
+Press Enter in the script terminal to stop `handfastd`. On Unix, the script
+sends SIGINT, waits for the daemon to shut down, and kills it only if it hangs.
+On Windows, the script terminates the process. It then prints the log path, the
+incoming directory and its contents, and a `tcpdump` command for the next
+failed step.
 
 ## Manual steps
 
@@ -141,10 +147,12 @@ Attach all of these to the failure record:
 Do not attach `state.db`. It contains the private key. The identity packet, the
 fingerprints and the capture are enough for a link diagnosis.
 
-## Blocked steps
+## Missing binaries and failed starts
 
-`--incoming-dir` is owned by the daemon composition unit. When the built
-`handfastd` does not accept the flag, the scripts print the incoming directory
-as blocked and skip the inbound file checks. A blocked step is not a pass.
-`hfctl` missing fails the script before the daemon starts, because the outbound
-checks need it.
+A missing `handfastd` fails the script before it starts the daemon. The script
+checks `hfctl` only when the outbound section prints. When `hfctl` is missing,
+the script skips the outbound step and the inbound run still completes. An
+invalid `HANDFASTD` or `HFCTL` path fails the script.
+
+A daemon that does not log `discovery listening` fails the run, and the script
+prints the last 30 log lines.
