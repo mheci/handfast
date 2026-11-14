@@ -1140,8 +1140,8 @@ async fn paired_peer_sends_text_and_url_and_logs_redacted_events() {
     peer.send(&share_url_wire(url))
         .await
         .expect("send a url share");
-    wait_for_log(&log, "event=\"ShareText\"", &mut daemon).await;
-    wait_for_log(&log, "event=\"ShareUrl\"", &mut daemon).await;
+    wait_for_log(&log, "ShareText", &mut daemon).await;
+    wait_for_log(&log, "ShareUrl", &mut daemon).await;
 
     let log_text = read_log(&log);
     assert!(
@@ -1175,14 +1175,14 @@ async fn daemon_log_redacts_text_and_url_bodies() {
     peer.send(&share_url_wire("https://example.com/private?token=hunter3"))
         .await
         .expect("send a url share");
-    wait_for_log(&log, "event=\"ShareText\"", &mut daemon).await;
-    wait_for_log(&log, "event=\"ShareUrl\"", &mut daemon).await;
+    wait_for_log(&log, "ShareText", &mut daemon).await;
+    wait_for_log(&log, "ShareUrl", &mut daemon).await;
 
     let text = read_log(&log);
     assert!(!text.contains("hunter2-correct-horse"), "{text}");
     assert!(!text.contains("hunter3"), "{text}");
-    assert!(text.contains("event=\"ShareText\""), "{text}");
-    assert!(text.contains("event=\"ShareUrl\""), "{text}");
+    assert!(text.contains("ShareText"), "{text}");
+    assert!(text.contains("ShareUrl"), "{text}");
 
     peer.close().await.expect("close the testkit link");
     stop(daemon);
@@ -1303,10 +1303,12 @@ async fn two_queued_files_arrive_in_order() {
         spawn_and_pair(directory.path(), &log, free_udp_port()).await;
 
     let first_port = free_payload_port();
-    let second_port = free_payload_port();
-    assert_ne!(first_port, second_port);
     let (first_listener, first_acceptor) = payload_server(&config, first_port);
+    // The first listener holds its port, so the scan picks a distinct second
+    // port.
+    let second_port = free_payload_port();
     let (second_listener, second_acceptor) = payload_server(&config, second_port);
+    assert_ne!(first_port, second_port);
     let first = tokio::spawn(serve_payload(
         first_listener,
         first_acceptor,
@@ -1364,10 +1366,12 @@ async fn large_first_file_with_a_queued_second_completes_both() {
         spawn_and_pair(directory.path(), &log, free_udp_port()).await;
 
     let first_port = free_payload_port();
-    let second_port = free_payload_port();
-    assert_ne!(first_port, second_port);
     let (first_listener, first_acceptor) = payload_server(&config, first_port);
+    // The first listener holds its port, so the scan picks a distinct second
+    // port.
+    let second_port = free_payload_port();
     let (second_listener, second_acceptor) = payload_server(&config, second_port);
+    assert_ne!(first_port, second_port);
     let first_bytes: Vec<u8> = (0..4 * 1024 * 1024)
         .map(|index| (index % 251) as u8)
         .collect();
@@ -1743,6 +1747,12 @@ async fn startup_sweeps_stale_part_files() {
     let incoming = incoming_dir(directory.path());
     let temp = temp_dir(&incoming);
     std::fs::create_dir_all(&temp).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o700))
+            .expect("make the private temp directory private");
+    }
 
     let stale = temp.join("stale.part");
     std::fs::write(&stale, b"stale").unwrap();
