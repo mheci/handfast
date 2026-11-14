@@ -78,17 +78,18 @@ P1 security follow-ups:
 Active parallel wave:
 
 - Unit 4 net payload: merged in `0606bef`.
-- Unit 5 runtime transfer: PR [#201](https://github.com/mheci/handfast/pull/201), head `560a97f`, verifier PASS, owner merging.
+- Unit 5 runtime transfer: merged in `578e156`.
+- Unit 6 share plugin: branch `feat/share-plugin`, owner `ses_e27cd9f38ffek37OGHsPTmlcri`, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit6-share-plugin-brief.md`.
 - Unit 7 manager share routing: branch `feat/manager-share`, owner `ses_e27e4050fffegnN3rrtSkKTw64`.
 - Windows ACLs: branch `feat/windows-acl`, owner `ses_e27e4050affdWp2UDXseLO5dKc`.
 - P1 hardening: branch `feat/p1-hardening`, owner `ses_e27e40504ffeEGVdAJ6VWtzgIo`.
-- Share docs and fuzz: PR [#200](https://github.com/mheci/handfast/pull/200), head `26f1935`, verifier `ses_e27d8c801fferLvjE7AkGFuJXV` running.
+- Share docs and fuzz: PR [#200](https://github.com/mheci/handfast/pull/200), head `26f1935`, verifier FAIL on two checklist errors, owner fixing.
 - Connectivity report plugin: PR [#204](https://github.com/mheci/handfast/pull/204), head `211aa51`, verifier `ses_e27d45111ffeaLpfdFjD5w03It` running.
-- System volume plugin: branch `feat/plugin-systemvolume`, owner `ses_e27e31068ffdQCW7312S3kPr3J`.
+- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `b1a222f`, verifier `ses_e27caad5bffepXpjnnbo60z27U` running.
 - Pause music plugin: PR [#205](https://github.com/mheci/handfast/pull/205), head `eb37035`, verifier `ses_e27d18864ffe0CDqsAqI7I4uqT` running.
-- MPRIS control plugin: branch `feat/plugin-mpriscontrol`, owner `ses_e27e31063ffd4dybx3GFkhXN3p`.
-- Notifications plugin: branch `feat/plugin-notifications`, owner `ses_e27e3105effdfG3TyfwuTu71Q6`.
-- Find this device plugin: branch `feat/plugin-findthisdevice`, owner `ses_e27e3105cffeCxU7KiIS1bGoiZ`.
+- MPRIS control plugin: PR [#207](https://github.com/mheci/handfast/pull/207), head `28c7d23`, verifier `ses_e27c87c49ffdhF6CsfTpQD7ppm` running.
+- Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `e2869b6`, verifier `ses_e27c98da9ffeh98HsOLqHbnAJ8` running.
+- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `50b9520`, verifier `ses_e27c87c49ffezJGRwHszwbzNLK` running.
 - Clipboard backend: PR [#203](https://github.com/mheci/handfast/pull/203), head `0d90c27`, verifier `ses_e27d220a7ffefUrWqpv2880HLB` running.
 - Notifications backend: PR [#202](https://github.com/mheci/handfast/pull/202), head `89e8986`, verifier `ses_e27d2bcdaffexfKTT4jPzAtdM7` running.
 - Unit 6 prep: done, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit6-share-plugin-brief.md`.
