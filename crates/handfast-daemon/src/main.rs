@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use handfast_daemon::control::{ControlResponse, ControlServer, DaemonCommand};
@@ -44,6 +44,11 @@ use session::{DaemonEvent, DeviceSession, SessionLimits, TransferSetup};
 
 /// How often to announce this device over UDP discovery.
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How often discovery may rewrite a peer record whose name and type did not
+/// change. Announcements arrive every `ANNOUNCE_INTERVAL`, and each write is a
+/// redb commit, so unchanged peers are written at most once per interval.
+const DISCOVERY_WRITE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// The link event channel. Connection and pairing events use `send().await`, so
 /// the daemon must drain this queue without stalling on a prompt or a session.
@@ -218,6 +223,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let discovery_links = links.clone();
     let discovery_task = tokio::spawn(async move {
         let mut announce = tokio::time::interval(ANNOUNCE_INTERVAL);
+        let mut writes = DiscoveryWrites::default();
         loop {
             tokio::select! {
                 _ = announce.tick() => {
@@ -246,6 +252,15 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         announcement.device_id.clone(),
                         SocketAddr::new(address.ip(), announcement.tcp_port),
                     );
+                    let now = Instant::now();
+                    if !writes.should_write(
+                        &announcement.device_id,
+                        announcement.device_name.as_str(),
+                        announcement.device_type.as_str(),
+                        now,
+                    ) {
+                        continue;
+                    }
                     let id = announcement.device_id.as_str().to_string();
                     let name = announcement.device_name.as_str().to_string();
                     let device_type = announcement.device_type.as_str().to_string();
@@ -257,6 +272,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         .await
                     {
                         tracing::warn!(%error, "failed to persist discovered device");
+                    } else {
+                        writes.record_written(
+                            &announcement.device_id,
+                            announcement.device_name.as_str(),
+                            announcement.device_type.as_str(),
+                            now,
+                        );
                     }
                 }
                 changed = discovery_stop_rx.changed() => {
@@ -769,6 +791,52 @@ fn parse_tcp_port(value: &str) -> Result<u16, String> {
     }
 }
 
+/// The last persisted discovery sighting per peer. Held in memory so the
+/// throttle costs no store reads.
+#[derive(Default)]
+struct DiscoveryWrites {
+    peers: HashMap<DeviceId, DiscoverySighting>,
+}
+
+struct DiscoverySighting {
+    name: String,
+    device_type: String,
+    written_at: Instant,
+}
+
+impl DiscoveryWrites {
+    fn should_write(
+        &self,
+        device_id: &DeviceId,
+        name: &str,
+        device_type: &str,
+        now: Instant,
+    ) -> bool {
+        self.peers.get(device_id).is_none_or(|sighting| {
+            sighting.name != name
+                || sighting.device_type != device_type
+                || now.saturating_duration_since(sighting.written_at) >= DISCOVERY_WRITE_INTERVAL
+        })
+    }
+
+    fn record_written(
+        &mut self,
+        device_id: &DeviceId,
+        name: &str,
+        device_type: &str,
+        now: Instant,
+    ) {
+        self.peers.insert(
+            device_id.clone(),
+            DiscoverySighting {
+                name: name.to_string(),
+                device_type: device_type.to_string(),
+                written_at: now,
+            },
+        );
+    }
+}
+
 fn unix_now() -> Option<i64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -803,5 +871,47 @@ mod tests {
                 "the daemon select must handle a pending link event before a share event"
             );
         }
+    }
+
+    #[test]
+    fn discovery_writes_are_throttled_until_the_interval_or_a_change() {
+        let peer = DeviceId::new("0123456789abcdef0123456789abcdef").unwrap();
+        let start = Instant::now();
+        let mut writes = DiscoveryWrites::default();
+
+        assert!(
+            writes.should_write(&peer, "phone", "phone", start),
+            "a new peer is written"
+        );
+        writes.record_written(&peer, "phone", "phone", start);
+        assert!(
+            !writes.should_write(&peer, "phone", "phone", start + Duration::from_secs(59)),
+            "an identical sighting inside the interval is skipped"
+        );
+        assert!(
+            writes.should_write(&peer, "phone", "phone", start + DISCOVERY_WRITE_INTERVAL),
+            "an expired sighting is written"
+        );
+
+        writes.record_written(&peer, "phone", "phone", start + Duration::from_secs(10));
+        assert!(
+            writes.should_write(&peer, "tablet", "phone", start + Duration::from_secs(11)),
+            "a changed name is written"
+        );
+        assert!(
+            writes.should_write(&peer, "phone", "tablet", start + Duration::from_secs(11)),
+            "a changed type is written"
+        );
+
+        writes.record_written(&peer, "phone", "phone", start + Duration::from_secs(20));
+        assert!(
+            !writes.should_write(&peer, "phone", "phone", start + Duration::from_secs(21)),
+            "a change that was just written is throttled again"
+        );
+        let other = DeviceId::new("fedcba9876543210fedcba9876543210").unwrap();
+        assert!(
+            writes.should_write(&other, "phone", "phone", start + Duration::from_secs(21)),
+            "another peer has its own entry"
+        );
     }
 }
