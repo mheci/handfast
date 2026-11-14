@@ -483,8 +483,6 @@ impl ManagerState {
         let Ok(remote_addr) = tcp.peer_addr() else {
             return;
         };
-        // Gate the address before the hello so silent connections cannot take
-        // every pending slot.
         let pending = match self.policy.reserve_pending(remote_addr.ip()) {
             Ok(permit) => permit,
             Err(error) => {
