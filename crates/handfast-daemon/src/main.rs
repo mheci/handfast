@@ -127,11 +127,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .init();
 
     let data_dir = args.data_dir.unwrap_or_else(default_data_dir);
+    identity::ensure_owned_state_path(&data_dir)?;
     std::fs::create_dir_all(&data_dir)?;
     identity::secure_state_dir(&data_dir)?;
     let state_path = data_dir.join("state.db");
+    identity::ensure_owned_state_path(&state_path)?;
     let store = Arc::new(Store::open(&state_path)?);
     identity::secure_state_file(&state_path)?;
+    identity::ensure_owned_state_path(&state_path)?;
     let device_id = identity::load_or_create_device_id(&store)?;
 
     let desktop = Desktop::default();

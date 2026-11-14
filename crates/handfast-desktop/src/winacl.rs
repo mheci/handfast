@@ -25,8 +25,8 @@ use windows_sys::Win32::Security::{
     AclSizeInformation, AddAccessAllowedAceEx, EqualSid, GetAce, GetAclInformation, GetLengthSid,
     GetSecurityDescriptorControl, GetTokenInformation, InitializeAcl, TokenUser,
     ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE,
-    DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
-    SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+    DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -87,6 +87,51 @@ pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
     let user = current_user_sid()?;
     let facts = read_dacl(&name, &user)?;
     Ok(facts.protected && facts.user_only)
+}
+
+/// Whether `path`'s owner is the current process user.
+///
+/// A state path owned by another user can be written through a link the owner
+/// planted before the daemon started, so the daemon rejects it before opening
+/// the path.
+///
+/// # Errors
+///
+/// Fails when the security descriptor cannot be read or the process token
+/// cannot be opened.
+#[allow(unsafe_code)]
+pub fn is_owned_by_current_user(path: &Path) -> io::Result<bool> {
+    let name = wide(path);
+    let user = current_user_sid()?;
+    let mut owner: PSID = ptr::null_mut();
+    let mut descriptor: *mut c_void = ptr::null_mut();
+
+    // SAFETY: `name` is a live null-terminated UTF-16 buffer. The call fills
+    // `owner` and `descriptor`; `descriptor` owns both and is freed below. No
+    // DACL or SACL is requested or returned.
+    let result = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    // The guard owns the memory `owner` points into, so it outlives EqualSid.
+    let _descriptor = SecurityDescriptor(descriptor);
+    if owner.is_null() {
+        return Ok(false);
+    }
+    // SAFETY: `owner` points into the live descriptor and `user` owns the
+    // token buffer holding its SID.
+    Ok(unsafe { EqualSid(user.sid(), owner) } != 0)
 }
 
 /// The current process token's user SID as a string.
@@ -356,6 +401,16 @@ mod tests {
     fn current_user_sid_string_is_a_sid() {
         let sid = current_user_sid_string().unwrap();
         assert!(sid.starts_with("S-1-"), "{sid}");
+    }
+
+    #[test]
+    fn file_created_by_this_process_is_owned_by_the_current_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("state.db");
+        std::fs::write(&file, b"state").unwrap();
+
+        assert!(is_owned_by_current_user(&file).unwrap());
+        assert!(is_owned_by_current_user(dir.path()).unwrap());
     }
 
     #[test]
