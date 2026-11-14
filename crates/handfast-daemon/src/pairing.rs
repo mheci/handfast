@@ -502,8 +502,15 @@ mod tests {
         let address =
             SocketAddr::from((Ipv4Addr::LOCALHOST, listener.local_addr().unwrap().port()));
         let (events, mut events_rx) = mpsc::channel(8);
-        let (links, task) =
-            LinkManager::start(listener, local, trust, LinkLimits::default(), events);
+        let (share_events, _share_rx) = mpsc::channel(8);
+        let (links, task) = LinkManager::start(
+            listener,
+            local,
+            trust,
+            LinkLimits::default(),
+            events,
+            share_events,
+        );
 
         rollback(&store, &links, &device_id).await;
 
