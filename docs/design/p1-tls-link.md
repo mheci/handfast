@@ -118,7 +118,7 @@ let device_id = load_or_create_device_id(&store)?;
 // Load or generate the TLS material. No full identity yet: the TCP port is not bound.
 let tls = match store.identity()? {
     Some(record) => TlsIdentity::from_parts(
-        DeviceId::new(record.device_id)?,
+        DeviceId::new(record.device_id.clone())?,
         record.cert_der.clone(),
         record.key_der.clone(),
     )?,
