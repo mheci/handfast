@@ -338,7 +338,9 @@ async fn unpair_clears_pins_and_stops_the_session() {
     }
     wait_for_log(&log, "device session closing", &mut daemon).await;
     assert!(
-        read_log(&log).contains("reason=unpaired"),
+        read_log(&log)
+            .lines()
+            .any(|line| line.contains("device session closing") && line.contains("unpaired")),
         "the session stopped for the unpair reason: {}",
         read_log(&log)
     );
