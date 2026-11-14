@@ -93,6 +93,27 @@ impl Desktop {
         self
     }
 
+    /// Install a system volume adapter.
+    #[must_use]
+    pub fn with_volume(mut self, volume: Arc<dyn Volume>) -> Self {
+        self.volume = Some(volume);
+        self
+    }
+
+    /// Install a shell adapter.
+    #[must_use]
+    pub fn with_shell(mut self, shell: Arc<dyn Shell>) -> Self {
+        self.shell = Some(shell);
+        self
+    }
+
+    /// Install a screensaver adapter.
+    #[must_use]
+    pub fn with_screensaver(mut self, screensaver: Arc<dyn Screensaver>) -> Self {
+        self.screensaver = Some(screensaver);
+        self
+    }
+
     /// Install a clipboard adapter.
     #[must_use]
     pub fn with_clipboard(mut self, clipboard: Arc<dyn Clipboard>) -> Self {
