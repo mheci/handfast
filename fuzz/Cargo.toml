@@ -36,4 +36,10 @@ path = "fuzz_targets/discovery_announcement_json.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "share_request"
+path = "fuzz_targets/share_request.rs"
+test = false
+doc = false
+
 [workspace]

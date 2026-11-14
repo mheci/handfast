@@ -158,3 +158,144 @@ The P1 real-client gate passes when:
   correlation for each link.
 
 Until this run passes, P1 is not done even when every CI check is green.
+
+## Share and file transfer
+
+This is the P1 share exit gate. Run it after the share units in
+`docs/design/p1-share-file.md` land. CI proves the parser, the save policy and
+the independent testkit payload peer. It cannot prove that the official clients
+accept Handfast's share packets and payload TLS. The run is manual and is not
+replaced by CI.
+
+The inbound checks are blocked until the daemon composition and its
+`--incoming-dir` flag land (unit 11). The outbound checks are blocked until the
+`hfctl` control client and its `share` command land (unit 10). Record a step as
+blocked while its binary or flag is absent. A blocked step is not a pass, and the
+gate does not pass until every blocked step has run.
+
+### Prerequisites
+
+- A paired Android phone and a paired KDE Connect desktop client. The link
+  checklist above must pass first.
+- TCP 1716-1764 open on the Handfast host. The control link uses 1716-1764 and
+  the payload uses 1739-1764 inside that range. The firewall rules above cover
+  it.
+- A fresh `--data-dir` and a disposable `--incoming-dir`. Do not point
+  `--incoming-dir` at a real download directory.
+- `tcpdump` on the Handfast host for failure capture:
+
+```sh
+sudo tcpdump -i any -s 0 -w share.pcap 'tcp portrange 1716-1764'
+```
+
+Start the daemon with both directories set:
+
+```sh
+RUST_LOG=debug ./target/release/handfastd \
+  --data-dir /tmp/handfast-share \
+  --incoming-dir /tmp/handfast-share-incoming
+```
+
+The incoming directory defaults to `~/Downloads/Handfast` on Unix and
+`%USERPROFILE%\Downloads\Handfast` on Windows. The daemon creates
+`<incoming-dir>/.handfast-tmp` for partial files and sweeps only that directory.
+
+### Android to Handfast
+
+1. Share a photo to Handfast. Confirm the log shows `share.request`, the
+   filename, the declared size and the payload port. Confirm the file appears in
+   the incoming directory with the original name and no `.part` file remains.
+2. Share text. Confirm the text is on the desktop clipboard and a `ShareText`
+   event is logged. Confirm the log line does not contain the text body.
+3. Share an `https` URL. Confirm the browser opens it and a `ShareUrl` event is
+   logged. Confirm the log line does not contain the URL body.
+4. Share a `file://` URL if the app allows it. Confirm Handfast drops it with a
+   log line and opens nothing.
+5. Share an empty file. Confirm a zero-byte file appears and no payload
+   connection is made.
+6. Share a file larger than 100 MiB. Confirm progress and a complete file.
+7. Cancel a transfer from the phone. Confirm the `.part` file is deleted and a
+   `ShareFailed` event is logged.
+8. Share two files at once. Confirm both arrive, the second gets a suffix if the
+   names collide, and no file is partial.
+9. Confirm the payload TLS version in the log is TLS 1.2 for Android. Confirm
+   Handfast's payload handshake and idle timeouts are 8 s, inside Android's 10 s
+   payload socket timeout.
+
+### Desktop to Handfast
+
+1. Share a file from the KDE Connect desktop client. Confirm the same behavior
+   as the Android photo step.
+2. Share text and an `https` URL. Confirm the same behavior as the Android text
+   and URL steps.
+3. Confirm the payload TLS version is TLS 1.3 when the desktop offers it.
+4. Send a large first file and a second file queued behind it. Confirm the
+   second payload connection is established early, both files arrive in order,
+   and no file is partial.
+
+### Handfast to a real client
+
+Blocked until unit 10 lands. These steps need the `hfctl` binary and its
+`share` command from `docs/design/p1-share-file.md`.
+
+1. Start `handfastd` with the same `--data-dir`.
+2. Run `hfctl share --device <peer-id> /path/to/file`.
+3. Confirm the phone or desktop receives the file and `hfctl` exits zero.
+4. Run `hfctl share` with a zero-byte file. Confirm the peer creates an empty
+   file and Handfast binds no payload port.
+5. Run `hfctl share` with a directory or a special file. Confirm it exits
+   non-zero and sends no packet.
+6. Run `hfctl share` as a different local user on Unix. Confirm the peer
+   credential check rejects it.
+
+### Expected logs and events
+
+| Action | Expected Handfast log | Expected event |
+| --- | --- | --- |
+| File share | `share.request` with the filename, declared size and payload port | `ShareProgress`, then `ShareCompleted` with the final path and byte count |
+| Text share | The text length, never the body | `ShareText` |
+| URL share | The URL length, never the body | `ShareUrl` |
+| Unsupported URL scheme | The scheme and a drop reason | None |
+| Empty file | `share.request` with the filename and no payload port | `ShareCompleted` with 0 bytes |
+| Cancelled or truncated transfer | The payload error and its reason | `ShareFailed`, no file left |
+| Batch | The file count and total declared size | `ShareBatch` |
+
+The daemon logs every text-bearing event, including `Clipboard`, `ShareText` and
+`ShareUrl`, by type and length. A log line that contains the text or the URL
+body fails the step. Progress events are best effort and may be dropped.
+Completion and failure events are not.
+
+### Failure capture
+
+Capture all of the following for a failed step:
+
+- The full `handfastd` stderr with `RUST_LOG=debug`.
+- Android: `adb logcat -d | grep -i kdeconnect > android.log`.
+- Desktop: `journalctl --user -u kdeconnectd -b > kdeconnectd.log` or a
+  `kdeconnectd` terminal with `QT_LOGGING_RULES="kdeconnect.*=true"`.
+- The packet capture from the prerequisite command.
+- The peer device ID and the payload certificate fingerprint.
+- The Handfast commit SHA, the peer app version and the OS versions.
+
+Do not attach `state.db`. It contains the private key.
+
+### Exit criteria
+
+The P1 share gate passes when:
+
+- Android and the desktop complete file, text, empty-file and URL inbound
+  shares.
+- A large file completes with no partial file.
+- A cancelled or truncated transfer leaves no file.
+- An unpaired peer cannot share.
+- A payload connection with a wrong certificate is rejected.
+- The payload TLS version is 1.2 for Android and 1.3 for the desktop when
+  offered.
+- `hfctl share` completes the outbound file, empty-file and invalid-path checks
+  against both clients.
+- A full share channel or session queue closes the link and reports a failure
+  rather than hanging the peer.
+- The Windows incoming and state-file ACLs are verified or recorded as the
+  remaining P1 release blocker.
+
+Until this run passes, P1 is not done even when every CI check is green.

@@ -144,7 +144,7 @@ jobs:
       # musl target, where ASan cannot link. Force the gnu target.
       - run: cargo fuzz build --sanitizer=address --target x86_64-unknown-linux-gnu
       - run: |
-          for target in frame_decode identity_json identity_hello_json discovery_announcement_json; do
+          for target in frame_decode identity_json identity_hello_json discovery_announcement_json share_request; do
             echo "::group::cargo fuzz run $target (20s)"
             cargo fuzz run "$target" --sanitizer=address --target x86_64-unknown-linux-gnu -- -max_total_time=20
             echo "::endgroup::"
