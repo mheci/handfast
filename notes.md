@@ -8,8 +8,7 @@ Hardening queue, 2026-11-14:
 - Main is at `4a6d568` after the hardening wave.
 - Unit 11 `#218` is at `24a3228`, all 9 checks green, verifier running.
 - Merged in this wave: `#219` store zeroization, `#220` clipboard, `#221` notifications D-Bus, `#222` link frames, `#223` interop harness, `#225` redaction, `#227` payload progress, `#228` testkit and fuzz hardening.
-- Remaining: `#224` MPRIS is rebasing after the clipboard merge. `#226` system backends waits for `#224`. `#229` input plugins is fixing the mousepad capability. `#218` unit 11 is verifying at `24a3228`.
-- Manager hardening is PR `#230` at `47c3e61`, verifier running.
+- Remaining: `#224` MPRIS at `a6dbc79` is re-verifying after the rebase. `#226` system backends waits for `#224`. `#229` input plugins at `025f150` is re-verifying after the mousepad fix. `#218` unit 11 is verifying at `24a3228`. `#230` manager hardening is verifying at `47c3e61`.
 
 Current state:
 
