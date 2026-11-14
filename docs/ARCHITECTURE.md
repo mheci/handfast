@@ -196,9 +196,11 @@ announced to a peer and never receives packets.
 Traits return `Result` and are `Send + Sync`. The daemon composes a `Desktop`
 from optional adapters. A plugin whose required adapter is missing is not
 advertised on that host. The registry already filters by `Desktop`. `handfastd`
-installs the `Files` adapter today. The clipboard, notifications, MPRIS, volume,
-shell and screensaver adapters are constructible and tested, but the daemon does
-not install them yet.
+installs the `Files` adapter and, when their CLI tools are present, the
+clipboard, notifications, MPRIS, volume, shell and screensaver adapters.
+Capabilities are recomputed after installation, so the identity advertises only
+the installed adapters. `--print-identity` stays on the default desktop and
+creates nothing.
 
 `MockDesktop` implements every trait except `Files` with in-memory recording.
 `MockDesktop::with_files` installs a real `LocalFiles` under a temp directory.
