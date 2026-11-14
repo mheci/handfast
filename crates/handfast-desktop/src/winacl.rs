@@ -85,8 +85,8 @@ pub fn protect_current_user(path: &Path) -> io::Result<()> {
 pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
     let name = wide(path);
     let user = current_user_sid()?;
-    let (protected, user_only) = read_dacl(&name, &user)?;
-    Ok(protected && user_only)
+    let facts = read_dacl(&name, &user)?;
+    Ok(facts.protected && facts.user_only)
 }
 
 /// Whether `path`'s DACL grants full control to the current user and to no
@@ -98,14 +98,33 @@ pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
 pub(crate) fn grants_only_current_user(path: &Path) -> io::Result<bool> {
     let name = wide(path);
     let user = current_user_sid()?;
-    let (_, user_only) = read_dacl(&name, &user)?;
-    Ok(user_only)
+    Ok(read_dacl(&name, &user)?.user_only)
 }
 
-/// Read `name`'s DACL. Returns the protected flag and whether the DACL is
-/// exactly one allow ACE for the current user with full control.
+/// The flags on `path`'s single ACE, or `None` when the DACL is not exactly
+/// one ACE.
+///
+/// Only the Windows tests call this.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn ace_flags(path: &Path) -> io::Result<Option<u8>> {
+    let name = wide(path);
+    let user = current_user_sid()?;
+    let facts = read_dacl(&name, &user)?;
+    Ok((facts.ace_count == 1).then_some(facts.ace_flags))
+}
+
+/// The facts the read-back needs from one DACL.
+struct DaclFacts {
+    protected: bool,
+    ace_count: u32,
+    ace_flags: u8,
+    user_only: bool,
+}
+
+/// Read `name`'s DACL. `user_only` means exactly one allow ACE for the current
+/// user with full control.
 #[allow(unsafe_code)]
-fn read_dacl(name: &[u16], user: &ProcessUser) -> io::Result<(bool, bool)> {
+fn read_dacl(name: &[u16], user: &ProcessUser) -> io::Result<DaclFacts> {
     let mut dacl: *mut ACL = ptr::null_mut();
     let mut descriptor: *mut c_void = ptr::null_mut();
 
@@ -128,7 +147,12 @@ fn read_dacl(name: &[u16], user: &ProcessUser) -> io::Result<(bool, bool)> {
     }
     let descriptor = SecurityDescriptor(descriptor);
     if dacl.is_null() {
-        return Ok((false, false));
+        return Ok(DaclFacts {
+            protected: false,
+            ace_count: 0,
+            ace_flags: 0,
+            user_only: false,
+        });
     }
 
     let mut control = 0u16;
@@ -154,7 +178,12 @@ fn read_dacl(name: &[u16], user: &ProcessUser) -> io::Result<(bool, bool)> {
         return Err(io::Error::last_os_error());
     }
     if info.AceCount != 1 {
-        return Ok((protected, false));
+        return Ok(DaclFacts {
+            protected,
+            ace_count: info.AceCount,
+            ace_flags: 0,
+            user_only: false,
+        });
     }
 
     let mut ace: *mut c_void = ptr::null_mut();
@@ -165,14 +194,18 @@ fn read_dacl(name: &[u16], user: &ProcessUser) -> io::Result<(bool, bool)> {
     // SAFETY: `GetAce` returns a pointer inside the live ACL. A type 0 ACE is
     // an `ACCESS_ALLOWED_ACE`, the type the ACL was built with.
     let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-    if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE || ace.Mask != FILE_ALL_ACCESS {
-        return Ok((protected, false));
-    }
     let ace_sid = ptr::addr_of!(ace.SidStart) as PSID;
     // SAFETY: `user` owns the token buffer holding its SID and `descriptor`
     // owns the DACL holding the ACE SID.
-    let user_only = unsafe { EqualSid(user.sid(), ace_sid) } != 0;
-    Ok((protected, user_only))
+    let user_only = ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE
+        && ace.Mask == FILE_ALL_ACCESS
+        && unsafe { EqualSid(user.sid(), ace_sid) } != 0;
+    Ok(DaclFacts {
+        protected,
+        ace_count: 1,
+        ace_flags: ace.Header.AceFlags,
+        user_only,
+    })
 }
 
 /// A security descriptor allocated by `GetNamedSecurityInfoW`.
@@ -289,6 +322,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         protect_current_user(dir.path()).unwrap();
         assert!(is_private_to_current_user(dir.path()).unwrap());
+        assert_eq!(
+            ace_flags(dir.path()).unwrap(),
+            Some((OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8)
+        );
+
+        let file = dir.path().join("state.db");
+        std::fs::write(&file, b"state").unwrap();
+        protect_current_user(&file).unwrap();
+        assert!(is_private_to_current_user(&file).unwrap());
+        assert_eq!(ace_flags(&file).unwrap(), Some(0));
     }
 
     #[test]
