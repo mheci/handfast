@@ -5,19 +5,18 @@ Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`
 Hardening queue, 2026-11-14:
 
 - The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
-- Main is at `8432c6a`. The P1 share implementation and the first two hardening waves are complete. Third wave mostly merged.
+- Main is at `73fc96a`. The P1 share implementation and the first two hardening waves are complete. Third wave mostly merged.
 - The manual P1 exit gate remains: a real Android phone and a real KDE Connect desktop client. Run `scripts/interop-share.sh` or `.ps1` and follow `docs/INTEROP.md`. CI cannot replace it.
 - Merged in the first wave: `#219` store zeroization, `#220` clipboard, `#221` notifications D-Bus, `#222` link frames, `#223` interop harness, `#225` redaction, `#227` payload progress, `#228` testkit and fuzz hardening, `#218` unit 11, `#224` MPRIS, `#229` input plugins, `#230` manager hardening, `#226` system backends.
 - Merged in the second wave: `#232` frame capacity, `#233` discovery throttle, `#235` payload final progress, `#234` store decode zeroization, `#231` session drop diagnostics, `#236` MPRIS no-track distinction, `#237` notification id serialization, `#240` screensaver refcount, `#241` interop harness fixes, `#238` TLS key zeroization, `#239` docs parity, `#242` daemon backend wiring.
 - The daemon now installs Files plus the six CLI adapters when their tools exist, and identity capabilities follow the installed adapters.
-- Read-only audits running: P1 network and share security `ses_e2565ed05ffeeK7UWW763yFjY6`, desktop and plugin correctness `ses_e2565ed05ffdTZuAu0rk6w50hc`. Their findings seed the third wave.
+- Read-only audits complete: P1 network and share security, desktop and plugin correctness. Their findings seeded the third and fourth waves.
 - Desktop audit complete, 16 findings. Third wave launched, one owner per file set: notifier lifecycle `ses_e254d2c93ffdyyotZKPD9X4VL2`, notification namespace `ses_e254d2c92ffe3fJlvwgDmxS3NB`, peer string caps `ses_e254d2c8cffddcd5y8guebO1uX`, pause/resume on disconnect `ses_e254d2c87ffeLR6vyG0tjGGaeD`, files hardening `ses_e254d2c85ffeb9S3aJbHBhz1y2`, session stop preempt `ses_e254cc475ffdi4rBlOHVmyxMFP`, share dedupe `ses_e254cc473ffeWHEpMuxDfB6BbG`, clipboard and volume gates `ses_e254cc46fffeoJNQRkcpqFQKMu`, screensaver child lifetime `ses_e254cc46effeRtDQ6u7yDvZ7jn`.
-- Network audit complete, 9 findings. Running: discovery flood `ses_e2548894effepI0tKr4e5bdcgD` (discovery.rs, main.rs, store.rs) and pending handshake admission `ses_e2548894effdiDiAfFH202Nbzh` (manager.rs, policy.rs).
-- Third wave merged: `#243` peer caps, `#244` clipboard and volume gates, `#245` notification namespace, `#247` screensaver lifetime, `#248` files hardening, `#250` pending handshakes.
-- Third wave open: `#246` share dedupe at `70f935c` delta verifying, `#249` notifier lifecycle in a fix round to raise the id cap to 512, `#251` session stop in a reshape round for the unreachable stop branch, `#252` discovery flood in a fix round for the authenticated-identity cap bypass and comments, `#253` pause/resume at `0c79188` verifying.
-- Fourth wave running: incoming space reservation `ses_e2526a487ffeHli4l3qfWe4dh2` on files.rs.
+- Network audit complete, 9 findings. Discovery flood `ses_e2548894effepI0tKr4e5bdcgD` (discovery.rs, main.rs, store.rs) and pending handshake admission `ses_e2548894effdiDiAfFH202Nbzh` (manager.rs, policy.rs) are in PRs.
+- Third wave merged: `#243` peer caps, `#244` clipboard and volume gates, `#245` notification namespace, `#246` share dedupe, `#247` screensaver lifetime, `#248` files hardening, `#249` notifier lifecycle, `#250` pending handshakes, `#253` pause/resume.
+- Third wave open: `#251` session stop at `5b66758` re-verifying the reshape, `#252` discovery flood at `c57c86d` re-verifying the shared eviction.
+- Fourth wave running: incoming space reservation `ses_e2526a487ffeHli4l3qfWe4dh2` on files.rs, interop harness nits `ses_e251bbb62ffer5hru0UqibkbSL` on scripts.
 - Queued: pairing prompt and share race (pairing.rs, main.rs) after `#252`, state dir and file owner checks (identity.rs, main.rs, store.rs) after `#252`, eager queued-file handshake (session.rs) after `#251`, Windows control pipe token (deferred).
-- Queued fourth wave after their files clear: pairing prompt and share race (`pairing.rs`, `main.rs`), LocalFiles reserved-space and owner checks (`files.rs`), state dir and file symlink/owner checks (`identity.rs`, `main.rs`, `store.rs`), Windows control pipe token (low, deferred). Interop risk: eager queued-file handshake (`session.rs`) after the stop preempt unit.
 - Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. Then the remaining P2-P4 plugins and backends.
 
 Current state:
