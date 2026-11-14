@@ -442,6 +442,94 @@ mod tests {
         assert_eq!(decision, Decision::Cancelled);
     }
 
+    #[tokio::test]
+    async fn rollback_clears_the_stored_pin_and_the_manager_pin() {
+        // `PairingRequest::accept().to_packet()` cannot fail, so the accept
+        // error path is unreachable and this exercises the rollback helper.
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        use handfast_net::{
+            Fingerprint, LinkEvent, LinkListener, LinkManager, LocalEndpoint, TrustTable,
+        };
+        use handfast_store::DeviceRecord;
+        use handfast_testkit::peer::PeerConfig;
+        use handfast_testkit::tls_peer::{dial, TlsPeerConfig, TlsVersion};
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path().join("state.db")).unwrap());
+        let device_id = DeviceId::new("00112233445566778899aabbccddeeff").unwrap();
+        store
+            .upsert_device(&DeviceRecord {
+                id: device_id.as_str().to_string(),
+                name: "Rollback peer".to_string(),
+                device_type: "phone".to_string(),
+                paired: false,
+                last_seen: Some(1_700_000_000),
+                certificate_fingerprint: None,
+            })
+            .unwrap();
+
+        let mut peer_identity = PeerConfig::client();
+        peer_identity.device_id = device_id.as_str().to_string();
+        let peer_identity =
+            TlsPeerConfig::ecdsa(peer_identity, TlsVersion::Both).expect("build the testkit peer");
+        let pin = Fingerprint::of_certificate(peer_identity.cert_der());
+        assert!(store
+            .set_trusted(device_id.as_str(), Some(*pin.as_bytes()))
+            .unwrap());
+
+        let mut trust = TrustTable::default();
+        trust.set(device_id.clone(), pin);
+
+        let local_id = DeviceId::new("ffeeddccbbaa99887766554433221100").unwrap();
+        let tls = Arc::new(TlsIdentity::generate(local_id.clone()).unwrap());
+        let local = Arc::new(
+            LocalEndpoint::new(
+                Arc::clone(&tls),
+                Identity::new(
+                    local_id,
+                    DeviceName::new("Rollback host"),
+                    DeviceType::Desktop,
+                    Capabilities::default(),
+                    Some(1716),
+                ),
+            )
+            .unwrap(),
+        );
+        let listener = LinkListener::bind_in_range(1716, Arc::clone(&tls))
+            .await
+            .expect("bind a listener in the KDE Connect range");
+        let address =
+            SocketAddr::from((Ipv4Addr::LOCALHOST, listener.local_addr().unwrap().port()));
+        let (events, mut events_rx) = mpsc::channel(8);
+        let (links, task) =
+            LinkManager::start(listener, local, trust, LinkLimits::default(), events);
+
+        rollback(&store, &links, &device_id).await;
+
+        assert!(
+            store.trust_table().unwrap().is_empty(),
+            "rollback clears the durable pin"
+        );
+
+        let peer = dial(address, "ffeeddccbbaa99887766554433221100", &peer_identity)
+            .await
+            .expect("the testkit peer completes the link");
+        let paired = match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .expect("the manager emits Connected")
+            .expect("the manager is running")
+        {
+            LinkEvent::Connected { paired, .. } => paired,
+            other => panic!("expected Connected, got {other:?}"),
+        };
+        assert!(!paired, "rollback clears the manager pin");
+
+        peer.close().await.expect("close the testkit link");
+        links.shutdown();
+        let _ = task.await;
+    }
+
     #[test]
     fn prompt_window_fits_inside_the_unpaired_idle_timeout() {
         assert!(
