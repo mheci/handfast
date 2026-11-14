@@ -35,14 +35,19 @@ pub trait Inhibitor: Send + Sync {
 pub struct TokioInhibitor;
 
 struct ChildInhibition {
+    stdin: Mutex<Option<tokio::process::ChildStdin>>,
     child: Mutex<Option<tokio::process::Child>>,
 }
 
 #[async_trait]
 impl Inhibition for ChildInhibition {
     async fn release(&self) -> io::Result<()> {
-        let child = self.child.lock().ok().and_then(|mut slot| slot.take());
-        if let Some(mut child) = child {
+        // Close the pipe first so the inhibited command exits before the kill fallback.
+        drop(self.stdin.lock().ok().and_then(|mut slot| slot.take()));
+        let Some(mut child) = self.child.lock().ok().and_then(|mut slot| slot.take()) else {
+            return Ok(());
+        };
+        if child.try_wait()?.is_none() {
             child.kill().await?;
         }
         Ok(())
@@ -51,14 +56,16 @@ impl Inhibition for ChildInhibition {
 
 impl Inhibitor for TokioInhibitor {
     fn inhibit(&self, args: &[&str]) -> io::Result<Box<dyn Inhibition>> {
-        let child = tokio::process::Command::new(PROGRAM)
+        let mut child = tokio::process::Command::new(PROGRAM)
             .args(args)
             .kill_on_drop(true)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
+        let stdin = child.stdin.take();
         Ok(Box::new(ChildInhibition {
+            stdin: Mutex::new(stdin),
             child: Mutex::new(Some(child)),
         }))
     }
@@ -111,13 +118,8 @@ impl Screensaver for SystemdInhibitor {
             return Ok(());
         }
         let why = format!("--why={reason}");
-        let args = [
-            "--what=idle",
-            "--who=handfast",
-            why.as_str(),
-            "sleep",
-            "infinity",
-        ];
+        // `cat` exits when the daemon's stdin pipe closes, so the lock is released even on SIGKILL.
+        let args = ["--what=idle", "--who=handfast", why.as_str(), "cat"];
         let inhibition = self.inhibitor.inhibit(&args).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
                 DesktopError::Unsupported("systemd-inhibit is not installed")
@@ -229,8 +231,7 @@ mod tests {
                 "--what=idle",
                 "--who=handfast",
                 "--why=handfast is connected",
-                "sleep",
-                "infinity",
+                "cat",
             ])]
         );
         assert_eq!(inhibitor.inhibition.releases(), 0);
@@ -244,6 +245,43 @@ mod tests {
         screensaver.inhibit("another reason").await.unwrap();
 
         assert_eq!(inhibitor.calls().len(), 1);
+    }
+
+    #[cfg(unix)]
+    fn cat_inhibition() -> ChildInhibition {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        ChildInhibition {
+            stdin: Mutex::new(stdin),
+            child: Mutex::new(Some(child)),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdin_is_held_while_inhibited_and_dropped_on_release() {
+        let inhibition = cat_inhibition();
+        assert!(inhibition.stdin.lock().unwrap().is_some());
+
+        inhibition.release().await.unwrap();
+
+        assert!(inhibition.stdin.lock().unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closing_stdin_ends_the_inhibited_command() {
+        let inhibition = cat_inhibition();
+        drop(inhibition.stdin.lock().unwrap().take());
+
+        let mut child = inhibition.child.lock().unwrap().take().unwrap();
+        assert!(child.wait().await.unwrap().success());
     }
 
     #[tokio::test]
