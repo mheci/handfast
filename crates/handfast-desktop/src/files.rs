@@ -31,7 +31,6 @@ pub struct IncomingRequest {
     pub open: bool,
 }
 
-/// Bytes claimed for one incoming transfer, released when this value drops.
 #[derive(Debug)]
 struct Reservation {
     counter: Arc<AtomicU64>,
@@ -401,12 +400,6 @@ impl LocalFiles {
     }
 }
 
-/// Bytes one transfer may claim from `available`, given the bytes already
-/// reserved by other transfers.
-///
-/// An undeclared size claims the file cap. The check includes the extra
-/// allowance for a declared size, the free-space reserve and the bytes other
-/// transfers already hold.
 fn claimable_bytes(
     size: Option<u64>,
     limits: FileLimits,
@@ -1363,7 +1356,6 @@ mod tests {
             }
         ));
 
-        // The first claim still stands and fits on its own.
         assert_eq!(claimable_bytes(Some(60), limits, 0, 100).unwrap(), 60);
     }
 
