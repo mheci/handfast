@@ -4,11 +4,12 @@
 //! others.
 
 pub mod clipboard;
+pub mod mpris;
 pub mod notifications;
 
 use std::sync::Arc;
 
-use crate::traits::{Clipboard, Notifier};
+use crate::traits::{Clipboard, Media, Notifier};
 
 /// Build the host clipboard backend.
 #[must_use]
@@ -20,4 +21,10 @@ pub fn clipboard() -> Arc<dyn Clipboard> {
 #[must_use]
 pub fn notifier() -> Arc<dyn Notifier> {
     Arc::new(notifications::CommandNotifier::new())
+}
+
+/// Build the host MPRIS media backend.
+#[must_use]
+pub fn media() -> Arc<dyn Media> {
+    Arc::new(mpris::PlayerctlMedia::new())
 }
