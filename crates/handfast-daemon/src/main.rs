@@ -25,7 +25,7 @@ use handfast_net::{
 };
 use handfast_plugins::registry;
 use handfast_proto::{
-    DeviceId, DeviceName, DeviceType, Identity, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
+    DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
 use handfast_runtime::{PluginEvent, Registry};
 use handfast_store::Store;
@@ -53,6 +53,9 @@ const DISCOVERY_WRITE_PEERS: usize = 1024;
 /// The link event channel. Connection and pairing events use `send().await`, so
 /// the daemon must drain this queue without stalling on a prompt or a session.
 const LINK_EVENT_QUEUE: usize = 256;
+
+/// Pending packets held for a link that is still pairing.
+const PENDING_QUEUE: usize = 32;
 
 /// The daemon event channel from sessions and pairing tasks.
 const DAEMON_EVENT_QUEUE: usize = 256;
@@ -424,6 +427,19 @@ impl Daemon {
         }
     }
 
+    /// Queue one packet on a pending link and report whether one exists.
+    fn queue_pending(&mut self, device_id: &DeviceId, packet: Packet) -> bool {
+        let Some(link) = self.pending.get_mut(device_id) else {
+            return false;
+        };
+        if link.queued.len() < PENDING_QUEUE {
+            link.queued.push_back(packet);
+        } else {
+            tracing::debug!(%device_id, "dropping a packet for a full pending queue");
+        }
+        true
+    }
+
     async fn handle_link_event(&mut self, event: LinkEvent) {
         match event {
             LinkEvent::Connected {
@@ -479,13 +495,7 @@ impl Daemon {
             LinkEvent::Packet { device_id, packet } => {
                 if let Some(session) = self.sessions.get(&device_id) {
                     session.deliver(packet);
-                } else if let Some(link) = self.pending.get_mut(&device_id) {
-                    if link.queued.len() < 32 {
-                        link.queued.push_back(packet);
-                    } else {
-                        tracing::debug!(%device_id, "dropping a packet for a full pending queue");
-                    }
-                } else {
+                } else if !self.queue_pending(&device_id, packet) {
                     tracing::debug!(%device_id, "packet for an unknown device");
                 }
             }
@@ -639,11 +649,16 @@ impl Daemon {
     ///
     /// A share packet is either queued for the plugin or the link closes with
     /// an observable failure. A session that cannot take the packet is stopped
-    /// and removed, and a `ShareFailed` with id 0 is emitted.
+    /// and removed, and a `ShareFailed` with id 0 is emitted. A share for a
+    /// link that is still pairing waits on the pending link and is delivered
+    /// when `PairingAccepted` creates the session.
     async fn handle_share(&mut self, event: ShareEvent) {
         let ShareEvent { device_id, packet } = event;
         let handle = self.sessions.get(&device_id).map(DeviceSession::handle);
         let Some(handle) = handle else {
+            if self.queue_pending(&device_id, packet) {
+                return;
+            }
             tracing::warn!(%device_id, "share packet without a session; closing the link");
             if let Err(error) = self.links.close(device_id.clone()).await {
                 tracing::warn!(%error, %device_id, "failed to close the link");
@@ -884,6 +899,19 @@ mod tests {
 
     use super::*;
 
+    fn share_text_wire(text: &str) -> handfast_testkit::WirePacket {
+        handfast_testkit::WirePacket {
+            id: 0,
+            ptype: types::SHARE_REQUEST.to_string(),
+            body: serde_json::json!({ "text": text })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            payload_size: None,
+            payload_transfer_info: None,
+        }
+    }
+
     #[test]
     fn available_tools_select_their_backends() {
         let none = install_backends(Desktop::default(), false, |_| false);
@@ -1079,5 +1107,219 @@ mod tests {
             writes.should_write(&fresh, start + DISCOVERY_WRITE_INTERVAL),
             "a new peer is written once an entry expires"
         );
+    }
+
+    #[tokio::test]
+    async fn a_share_during_pairing_is_queued_and_delivered_after_pairing() {
+        use std::net::Ipv4Addr;
+
+        use handfast_desktop::MockDesktop;
+        use handfast_net::{PayloadLimits, TlsIdentity};
+        use handfast_proto::{text_request, Capabilities};
+        use handfast_testkit::peer::PeerConfig;
+        use handfast_testkit::tls_peer::{dial, TlsPeerConfig, TlsVersion};
+
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let registry = Arc::new(registry());
+        let mock = MockDesktop::with_files().expect("build the mock desktop");
+        let desktop = mock.desktop();
+
+        let local_id = DeviceId::new("ffeeddccbbaa99887766554433221100").expect("valid local ID");
+        let tls =
+            Arc::new(TlsIdentity::generate(local_id.clone()).expect("generate the local identity"));
+        let local = Arc::new(
+            LocalEndpoint::new(
+                Arc::clone(&tls),
+                Identity::new(
+                    local_id.clone(),
+                    DeviceName::new("Daemon test"),
+                    DeviceType::Desktop,
+                    Capabilities::default(),
+                    Some(1716),
+                ),
+            )
+            .expect("the IDs match"),
+        );
+        let listener = LinkListener::bind_in_range(1716, Arc::clone(&tls))
+            .await
+            .expect("bind a listener in the KDE Connect range");
+        let address = SocketAddr::from((
+            Ipv4Addr::LOCALHOST,
+            listener
+                .local_addr()
+                .expect("read the bound address")
+                .port(),
+        ));
+        let (link_tx, mut link_rx) = mpsc::channel(16);
+        let (share_tx, mut share_rx) = mpsc::channel(16);
+        let (links, manager_task) = LinkManager::start(
+            listener,
+            local,
+            TrustTable::default(),
+            LinkLimits::default(),
+            link_tx,
+            share_tx,
+        );
+
+        let payloads = Arc::new(PayloadService::new(
+            Arc::clone(&tls),
+            PayloadLimits::default(),
+        ));
+        let (events, mut events_rx) = mpsc::channel(16);
+        let (prompt_tx, mut prompt_rx) = mpsc::channel(8);
+        let mut daemon = Daemon {
+            store,
+            registry,
+            desktop,
+            links: links.clone(),
+            payloads,
+            limits: ShareLimits::default(),
+            events,
+            sessions: HashMap::new(),
+            pending: HashMap::new(),
+            prompts: HashMap::new(),
+            next_prompt: 0,
+            prompt_tx,
+            prompt_task: tokio::spawn(async {}),
+        };
+
+        let mut peer_identity = PeerConfig::client();
+        peer_identity.device_id = "fedcba9876543210fedcba9876543210".to_string();
+        let peer_config =
+            TlsPeerConfig::ecdsa(peer_identity, TlsVersion::Both).expect("build the testkit peer");
+        let device_id = DeviceId::new(&peer_config.identity.device_id).expect("valid peer ID");
+        let mut peer = dial(address, local_id.as_str(), &peer_config)
+            .await
+            .expect("the testkit peer completes the link");
+
+        let connected = tokio::time::timeout(Duration::from_secs(5), link_rx.recv())
+            .await
+            .expect("Connected arrives")
+            .expect("the manager is running");
+        let LinkEvent::Connected { paired, .. } = &connected else {
+            panic!("expected Connected");
+        };
+        assert!(!*paired, "the link starts unpaired");
+        daemon.handle_link_event(connected).await;
+        assert!(
+            daemon.pending.contains_key(&device_id),
+            "the link waits for pairing"
+        );
+
+        // Hold the answer so the manager pin and the share both land before
+        // PairingAccepted reaches the daemon.
+        peer.send(&peer_config.identity.pair_packet(true, unix_now()))
+            .await
+            .expect("send the pairing request");
+        let event = tokio::time::timeout(Duration::from_secs(5), link_rx.recv())
+            .await
+            .expect("the pairing request arrives")
+            .expect("the manager is running");
+        daemon.handle_link_event(event).await;
+        let prompt = tokio::time::timeout(Duration::from_secs(5), prompt_rx.recv())
+            .await
+            .expect("the prompt is queued")
+            .expect("the daemon is running");
+
+        let pin = Fingerprint::of_certificate(peer_config.cert_der());
+        links
+            .set_trust(device_id.clone(), Some(pin))
+            .await
+            .expect("the manager opens the trust gate before the session exists");
+
+        peer.send(&share_text_wire("during pairing"))
+            .await
+            .expect("send a share during pairing");
+        let racing_share = tokio::time::timeout(Duration::from_secs(5), share_rx.recv())
+            .await
+            .expect("the share reaches the daemon")
+            .expect("the manager is running");
+        daemon.handle_share(racing_share).await;
+
+        assert!(
+            daemon.sessions.is_empty(),
+            "a share during pairing creates no session"
+        );
+        assert!(
+            daemon.pending.contains_key(&device_id),
+            "a share during pairing keeps the pending link"
+        );
+        assert!(
+            !matches!(link_rx.try_recv(), Ok(LinkEvent::Disconnected { .. })),
+            "a share during pairing does not close the link"
+        );
+
+        daemon
+            .handle_daemon_event(DaemonEvent::PairingAccepted {
+                device_id: device_id.clone(),
+                token: prompt.token,
+            })
+            .await;
+        assert!(
+            daemon.sessions.contains_key(&device_id),
+            "PairingAccepted creates the session"
+        );
+
+        peer.send(&share_text_wire("after pairing"))
+            .await
+            .expect("send a share after pairing");
+        let later_share = tokio::time::timeout(Duration::from_secs(5), share_rx.recv())
+            .await
+            .expect("the later share reaches the daemon")
+            .expect("the manager is running");
+        daemon.handle_share(later_share).await;
+
+        let texts = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut texts = Vec::new();
+            while let Some(DaemonEvent::PluginEvents { events, .. }) = events_rx.recv().await {
+                for event in events {
+                    if let PluginEvent::ShareText { text } = event {
+                        texts.push(text);
+                        if texts.len() == 2 {
+                            return texts;
+                        }
+                    }
+                }
+            }
+            panic!("the daemon event channel closed");
+        })
+        .await
+        .expect("both shares reach the plugin");
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0], "during pairing", "the queued share is delivered");
+        assert_eq!(texts[1], "after pairing", "the later share is delivered");
+
+        let session = daemon
+            .sessions
+            .remove(&device_id)
+            .expect("the session exists");
+        session.handle().stop("test done".to_string());
+        tokio::time::timeout(Duration::from_secs(5), session.into_task())
+            .await
+            .expect("the session exits")
+            .expect("the session task joins");
+
+        daemon
+            .handle_share(ShareEvent {
+                device_id: device_id.clone(),
+                packet: text_request("no session").expect("build the share"),
+            })
+            .await;
+        let disconnected = tokio::time::timeout(Duration::from_secs(5), link_rx.recv())
+            .await
+            .expect("the manager closes the link")
+            .expect("the manager is running");
+        assert!(
+            matches!(
+                disconnected,
+                LinkEvent::Disconnected { reason, .. } if reason == "closed by manager"
+            ),
+            "a share with no session and no pending link closes the link"
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
     }
 }
