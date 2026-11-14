@@ -7,6 +7,7 @@ use handfast_proto::{Capabilities, Packet};
 use crate::device::Device;
 use crate::error::{PluginError, RuntimeError};
 use crate::event::PluginEvent;
+use crate::transfer::Transfer;
 
 /// Lifecycle state of a plugin in the v2 roster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,13 +64,15 @@ pub struct PluginMeta {
     pub desktop: DesktopRequirement,
 }
 
-/// Packets and events produced by one plugin invocation.
+/// Packets, events and transfers produced by one plugin invocation.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct PluginOutput {
     /// Outbound packets.
     pub packets: Vec<Packet>,
     /// Typed events.
     pub events: Vec<PluginEvent>,
+    /// Transfer intents the session must run.
+    pub transfers: Vec<Transfer>,
 }
 
 impl PluginOutput {
@@ -90,6 +93,13 @@ impl PluginOutput {
     #[must_use]
     pub fn with_event(mut self, event: PluginEvent) -> Self {
         self.events.push(event);
+        self
+    }
+
+    /// Append a transfer intent.
+    #[must_use]
+    pub fn with_transfer(mut self, transfer: Transfer) -> Self {
+        self.transfers.push(transfer);
         self
     }
 }
@@ -205,8 +215,8 @@ pub(crate) fn desktop_available(desktop: &Desktop, requirement: DesktopRequireme
         DesktopRequirement::Input => desktop.input.is_some(),
         DesktopRequirement::Screensaver => desktop.screensaver.is_some(),
         DesktopRequirement::Shell => desktop.shell.is_some(),
-        DesktopRequirement::Files
-        | DesktopRequirement::Telephony
+        DesktopRequirement::Files => desktop.files.is_some(),
+        DesktopRequirement::Telephony
         | DesktopRequirement::Contacts
         | DesktopRequirement::Display => false,
     }

@@ -15,6 +15,7 @@ use crate::event::PluginEvent;
 use crate::plugin::{
     desktop_available, Plugin, PluginContext, PluginOutput, PluginStatus, Registry,
 };
+use crate::transfer::Transfer;
 
 /// Maximum time one plugin call may run.
 const PLUGIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -26,6 +27,8 @@ pub struct Dispatch {
     pub packets: Vec<Packet>,
     /// Events from all plugins.
     pub events: Vec<PluginEvent>,
+    /// Transfer intents from all plugins.
+    pub transfers: Vec<Transfer>,
     /// Failures. Failed plugins are disabled for this device.
     pub errors: Vec<RuntimeError>,
 }
@@ -34,6 +37,7 @@ impl Dispatch {
     fn absorb(&mut self, output: PluginOutput) {
         self.packets.extend(output.packets);
         self.events.extend(output.events);
+        self.transfers.extend(output.transfers);
     }
 }
 
@@ -230,9 +234,10 @@ mod tests {
     use crate::plugin::{
         DesktopRequirement, PluginFactory, PluginMeta, PluginOutput, PluginStatus,
     };
+    use crate::transfer::Transfer;
     use async_trait::async_trait;
     use handfast_desktop::MockDesktop;
-    use handfast_proto::{types, DeviceId, DeviceName, DeviceType};
+    use handfast_proto::{types, DeviceId, DeviceName, DeviceType, PayloadOffer, PayloadSize};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
@@ -513,5 +518,63 @@ mod tests {
 
         let host = DeviceHost::new(device(), &registry, MockDesktop::new().desktop());
         assert!(host.is_enabled("clipboard"));
+    }
+
+    #[test]
+    fn capabilities_require_the_files_adapter() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let registry = Registry::new(vec![Box::new(TestFactory {
+            meta: meta_with_requirement(
+                "share",
+                PluginStatus::Implemented,
+                &[types::SHARE_REQUEST],
+                DesktopRequirement::Files,
+            ),
+            calls,
+            panic_on_packet: false,
+            hang_on_packet: false,
+        })]);
+
+        let without_files = MockDesktop::new();
+        assert!(!registry
+            .capabilities(&without_files.desktop())
+            .unwrap()
+            .accepts(types::SHARE_REQUEST));
+        let host = DeviceHost::new(device(), &registry, without_files.desktop());
+        assert!(!host.is_enabled("share"));
+
+        let with_files = MockDesktop::with_files().unwrap();
+        assert!(registry
+            .capabilities(&with_files.desktop())
+            .unwrap()
+            .accepts(types::SHARE_REQUEST));
+        let host = DeviceHost::new(device(), &registry, with_files.desktop());
+        assert!(host.is_enabled("share"));
+    }
+
+    #[test]
+    fn absorb_keeps_packets_events_and_transfers() {
+        let transfer = Transfer::ReceiveFile {
+            filename: Some("photo.jpg".to_string()),
+            size: PayloadSize::Known(3),
+            offer: Some(PayloadOffer {
+                size: PayloadSize::Known(3),
+                port: 1739,
+            }),
+        };
+        let event = PluginEvent::ShareText {
+            text: "hello".to_string(),
+        };
+        let mut dispatch = Dispatch::default();
+        dispatch.absorb(
+            PluginOutput::new()
+                .with_packet(ping())
+                .with_event(event.clone())
+                .with_transfer(transfer.clone()),
+        );
+
+        assert_eq!(dispatch.packets, vec![ping()]);
+        assert_eq!(dispatch.events, vec![event]);
+        assert_eq!(dispatch.transfers, vec![transfer]);
     }
 }
