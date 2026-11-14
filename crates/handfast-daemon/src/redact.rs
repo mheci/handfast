@@ -130,11 +130,47 @@ fn log_plugin_event(device_id: &DeviceId, event: &PluginEvent) {
 
 /// Escape control and non-printable characters in a plugin log message.
 ///
-/// `char::escape_default` turns C0 controls, DEL, C1 controls, bidi controls
-/// and ANSI escape bytes into visible escapes, so a peer-supplied field cannot
-/// inject a newline or a terminal sequence into the daemon log.
+/// The escape set matches `char::escape_default`: tab, carriage return and line
+/// feed get their short escapes, `\\`, `'` and `"` get a leading backslash,
+/// printable ASCII passes through, and every other character becomes
+/// `\u{...}`. A peer-supplied field therefore cannot inject a newline or a
+/// terminal sequence into the daemon log.
 fn sanitize_message(message: &str) -> String {
-    message.chars().flat_map(char::escape_default).collect()
+    use std::fmt::Write as _;
+
+    let bytes = message.as_bytes();
+    let mut escaped = String::with_capacity(bytes.len());
+    let mut run_start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if matches!(byte, b' '..=b'~') && !matches!(byte, b'\\' | b'\'' | b'"') {
+            index += 1;
+            continue;
+        }
+        escaped.push_str(&message[run_start..index]);
+        let c = message[index..]
+            .chars()
+            .next()
+            .expect("index is always a char boundary");
+        match c {
+            '\t' => escaped.push_str("\\t"),
+            '\r' => escaped.push_str("\\r"),
+            '\n' => escaped.push_str("\\n"),
+            '\\' | '\'' | '"' => {
+                escaped.push('\\');
+                escaped.push(c);
+            }
+            _ => {
+                let code = c as u32;
+                let _ = write!(escaped, "\\u{{{code:x}}}");
+            }
+        }
+        index += c.len_utf8();
+        run_start = index;
+    }
+    escaped.push_str(&message[run_start..]);
+    escaped
 }
 
 #[cfg(test)]
@@ -145,7 +181,7 @@ mod tests {
     use handfast_proto::DeviceId;
     use handfast_runtime::{LogLevel, PluginEvent};
 
-    use super::log_plugin_events;
+    use super::{log_plugin_events, sanitize_message};
 
     #[derive(Clone, Default)]
     struct Buffer(Arc<Mutex<Vec<u8>>>);
@@ -245,5 +281,55 @@ mod tests {
         assert!(log.contains("\\u{0}") || log.contains("\\0"), "{log}");
         assert!(log.contains("\\u{1b}"), "{log}");
         assert!(log.contains("\\u{202e}"), "{log}");
+    }
+
+    #[test]
+    fn sanitize_message_matches_escape_default() {
+        let cases = [
+            ("", ""),
+            ("plain ascii", "plain ascii"),
+            ("spaces and ~", "spaces and ~"),
+            ("tab\there", "tab\\there"),
+            ("line\nfeed", "line\\nfeed"),
+            ("carriage\rreturn", "carriage\\rreturn"),
+            ("null\0byte", "null\\u{0}byte"),
+            ("bell\u{7}", "bell\\u{7}"),
+            ("esc\u{1b}[31mred", "esc\\u{1b}[31mred"),
+            ("delete\u{7f}", "delete\\u{7f}"),
+            ("c1\u{80}\u{9f}", "c1\\u{80}\\u{9f}"),
+            ("bidi\u{202e}override", "bidi\\u{202e}override"),
+            ("iso\u{2066}late\u{2069}", "iso\\u{2066}late\\u{2069}"),
+            ("quote'and\"double", "quote\\'and\\\"double"),
+            ("back\\slash", "back\\\\slash"),
+            ("caf\u{e9}", "caf\\u{e9}"),
+            ("latin\u{100}", "latin\\u{100}"),
+            ("emoji \u{1f600}", "emoji \\u{1f600}"),
+            ("max \u{10ffff}", "max \\u{10ffff}"),
+            ("\u{1b}[0m\u{202e}\u{9f}", "\\u{1b}[0m\\u{202e}\\u{9f}"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_message(input), expected, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn sanitize_message_keeps_long_safe_runs_in_bulk() {
+        let safe_run = "the quick brown fox jumps over the lazy dog 0123456789 ".repeat(2000);
+        assert_eq!(sanitize_message(&safe_run), safe_run);
+
+        let mut large = String::with_capacity(safe_run.len() + 4096);
+        for round in 0..1000 {
+            large.push_str(&safe_run[..512]);
+            large.push(['\n', '\u{1b}', '\u{202e}', '\u{7f}'][round % 4]);
+        }
+        let expected: String = large.chars().flat_map(char::escape_default).collect();
+        assert_eq!(sanitize_message(&large), expected);
+    }
+
+    #[test]
+    fn sanitize_message_matches_escape_default_for_every_char() {
+        let all: String = (0..=0x10ffffu32).filter_map(char::from_u32).collect();
+        let expected: String = all.chars().flat_map(char::escape_default).collect();
+        assert_eq!(sanitize_message(&all), expected);
     }
 }
