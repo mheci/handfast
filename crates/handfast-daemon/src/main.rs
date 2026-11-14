@@ -25,7 +25,7 @@ use handfast_net::{
 };
 use handfast_plugins::registry;
 use handfast_proto::{
-    DeviceId, DeviceName, DeviceType, Identity, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
+    DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
 use handfast_runtime::{PluginEvent, Registry};
 use handfast_store::Store;
@@ -53,6 +53,9 @@ const DISCOVERY_WRITE_PEERS: usize = 1024;
 /// The link event channel. Connection and pairing events use `send().await`, so
 /// the daemon must drain this queue without stalling on a prompt or a session.
 const LINK_EVENT_QUEUE: usize = 256;
+
+/// Pending packets held for a link that is still pairing.
+const PENDING_QUEUE: usize = 32;
 
 /// The daemon event channel from sessions and pairing tasks.
 const DAEMON_EVENT_QUEUE: usize = 256;
@@ -424,6 +427,19 @@ impl Daemon {
         }
     }
 
+    /// Queue one packet on a pending link and report whether one exists.
+    fn queue_pending(&mut self, device_id: &DeviceId, packet: Packet) -> bool {
+        let Some(link) = self.pending.get_mut(device_id) else {
+            return false;
+        };
+        if link.queued.len() < PENDING_QUEUE {
+            link.queued.push_back(packet);
+        } else {
+            tracing::debug!(%device_id, "dropping a packet for a full pending queue");
+        }
+        true
+    }
+
     async fn handle_link_event(&mut self, event: LinkEvent) {
         match event {
             LinkEvent::Connected {
@@ -479,13 +495,7 @@ impl Daemon {
             LinkEvent::Packet { device_id, packet } => {
                 if let Some(session) = self.sessions.get(&device_id) {
                     session.deliver(packet);
-                } else if let Some(link) = self.pending.get_mut(&device_id) {
-                    if link.queued.len() < 32 {
-                        link.queued.push_back(packet);
-                    } else {
-                        tracing::debug!(%device_id, "dropping a packet for a full pending queue");
-                    }
-                } else {
+                } else if !self.queue_pending(&device_id, packet) {
                     tracing::debug!(%device_id, "packet for an unknown device");
                 }
             }
@@ -640,14 +650,13 @@ impl Daemon {
     /// A share packet is either queued for the plugin or the link closes with
     /// an observable failure. A session that cannot take the packet is stopped
     /// and removed, and a `ShareFailed` with id 0 is emitted. A share for a
-    /// link that is still pairing is dropped: the manager opens the trust gate
-    /// before `PairingAccepted` creates the session, and the peer can retry.
+    /// link that is still pairing waits on the pending link and is delivered
+    /// when `PairingAccepted` creates the session.
     async fn handle_share(&mut self, event: ShareEvent) {
         let ShareEvent { device_id, packet } = event;
         let handle = self.sessions.get(&device_id).map(DeviceSession::handle);
         let Some(handle) = handle else {
-            if self.pending.contains_key(&device_id) {
-                tracing::warn!(%device_id, "dropping a share packet during pairing");
+            if self.queue_pending(&device_id, packet) {
                 return;
             }
             tracing::warn!(%device_id, "share packet without a session; closing the link");
@@ -1101,7 +1110,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_share_during_pairing_is_dropped_and_a_later_share_is_delivered() {
+    async fn a_share_during_pairing_is_queued_and_delivered_after_pairing() {
         use std::net::Ipv4Addr;
 
         use handfast_desktop::MockDesktop;
@@ -1262,19 +1271,25 @@ mod tests {
             .expect("the manager is running");
         daemon.handle_share(later_share).await;
 
-        let text = tokio::time::timeout(Duration::from_secs(5), async {
+        let texts = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut texts = Vec::new();
             while let Some(DaemonEvent::PluginEvents { events, .. }) = events_rx.recv().await {
                 for event in events {
                     if let PluginEvent::ShareText { text } = event {
-                        return text;
+                        texts.push(text);
+                        if texts.len() == 2 {
+                            return texts;
+                        }
                     }
                 }
             }
             panic!("the daemon event channel closed");
         })
         .await
-        .expect("the later share reaches the plugin");
-        assert_eq!(text, "after pairing", "the later share is delivered");
+        .expect("both shares reach the plugin");
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0], "during pairing", "the queued share is delivered");
+        assert_eq!(texts[1], "after pairing", "the later share is delivered");
 
         let session = daemon
             .sessions
