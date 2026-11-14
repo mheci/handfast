@@ -75,13 +75,32 @@ P1 security follow-ups:
 - Add unpair and accept-rollback regression tests and a positive control in the self-announce test.
 - Fix the small doc nits: 1714 versus 1716, the interop log format, and stale zeroization notes.
 
-Active work:
+Active parallel wave:
 
-- Branch: `feat/net-payload`
-- Owner: net payload worker `ses_e2991d601ffed1ItEJBmttFs7r`
-- PR: [#199](https://github.com/mheci/handfast/pull/199), head `7ac24c8`
-- Verifier: `ses_e27f24bdfffet4ZklBjC4UAKx9`, running
-- Evidence: payload send and receive for 1 byte, 1 MiB and 8 MiB over TLS 1.2/1.3; exact DER trust; truncation, extra bytes, unknown size and size caps; wrong certificate, missing client certificate and raw TCP; accept and idle timeouts, the backed-up control link, cancellation, concurrency, port bounds and port exhaustion; all 9 checks.
+- Unit 4 net payload: PR [#199](https://github.com/mheci/handfast/pull/199), head `7ac24c8`, verifier `ses_e27f24bdfffet4ZklBjC4UAKx9` running.
+- Unit 5 runtime transfer: branch `feat/runtime-transfer`, owner `ses_e27e40510ffdK8qnFQuIssKJ0q`.
+- Unit 7 manager share routing: branch `feat/manager-share`, owner `ses_e27e4050fffegnN3rrtSkKTw64`.
+- Windows ACLs: branch `feat/windows-acl`, owner `ses_e27e4050affdWp2UDXseLO5dKc`.
+- P1 hardening: branch `feat/p1-hardening`, owner `ses_e27e40504ffeEGVdAJ6VWtzgIo`.
+- Share docs and fuzz: branch `feat/share-docs-fuzz`, owner `ses_e27e40503ffehn7fv17VldRYxB`.
+- Connectivity report plugin: branch `feat/plugin-connectivity`, owner `ses_e27e40502ffe0iZWyzWlkG6mEA`.
+- System volume plugin: branch `feat/plugin-systemvolume`, owner `ses_e27e31068ffdQCW7312S3kPr3J`.
+- Pause music plugin: branch `feat/plugin-pausemusic`, owner `ses_e27e31067ffeUWKILi4vOf3jIq`.
+- MPRIS control plugin: branch `feat/plugin-mpriscontrol`, owner `ses_e27e31063ffd4dybx3GFkhXN3p`.
+- Notifications plugin: branch `feat/plugin-notifications`, owner `ses_e27e3105effdfG3TyfwuTu71Q6`.
+- Find this device plugin: branch `feat/plugin-findthisdevice`, owner `ses_e27e3105cffeCxU7KiIS1bGoiZ`.
+- Clipboard backend: branch `feat/clipboard-backend`, owner `ses_e27e3105bffePYwCCvbbx35nm9`.
+- Notifications backend: branch `feat/notifications-backend`, owner `ses_e27e3105bffdQJ1QLYs99YJJ5W`.
+- Unit 6 prep: read-only, `ses_e27e27cb4ffe3k2H4BtQLo3u1d`.
+- Unit 8 prep: read-only, `ses_e27e27cb3ffeiLdcyXnCGGfyVr`.
+
+Wave rules:
+
+- Each PR still gets one owner and one independent verifier at the current head.
+- The plugin and backend PRs will conflict on `lib.rs`, `roster.rs`, `backends/mod.rs`, `Cargo.toml` and `Cargo.lock`. Owners rebase and keep all implemented modules.
+- The coordinator merges the critical path first: unit 4, then 5 and 7, then 6, then 8. Independent plugin and backend PRs merge in any order after a pass.
+- Unit 6 starts as soon as unit 5 merges. Unit 8 starts as soon as units 4, 5, 6 and 7 merge.
+- Verifiers fan out as PRs appear, which keeps 16 or more agents active without two owners on the same files.
 
 Share design decisions:
 
