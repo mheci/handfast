@@ -136,19 +136,9 @@ pub const MPRISREMOTE: PluginMeta = PluginMeta {
 pub const NOTIFICATIONS: PluginMeta = PluginMeta {
     name: "notifications",
     title: "Receive notifications",
-    status: PLANNED,
-    incoming: &[
-        types::NOTIFICATION,
-        types::NOTIFICATION_ACTION,
-        types::NOTIFICATION_REPLY,
-        types::NOTIFICATION_REQUEST,
-    ],
-    outgoing: &[
-        types::NOTIFICATION,
-        types::NOTIFICATION_ACTION,
-        types::NOTIFICATION_REPLY,
-        types::NOTIFICATION_REQUEST,
-    ],
+    status: IMPLEMENTED,
+    incoming: &[types::NOTIFICATION],
+    outgoing: &[],
     desktop: DesktopRequirement::Notifications,
 };
 
