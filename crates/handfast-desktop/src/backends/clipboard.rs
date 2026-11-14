@@ -44,6 +44,26 @@ impl ClipboardFlavor {
         }
     }
 
+    /// Empty-selection messages printed by the supported tool versions.
+    fn empty_selection_markers(self) -> &'static [&'static str] {
+        match self {
+            // wl-clipboard 2.1 prints "No selection"; 2.2 prints "Nothing is copied".
+            Self::Wayland => &["no selection", "nothing is copied"],
+            Self::X11 => &["target string not available"],
+        }
+    }
+
+    /// Whether a failed read means the selection is empty rather than broken.
+    fn reports_empty_selection(self, output: &CommandOutput) -> bool {
+        if output.success || !output.stdout.is_empty() {
+            return false;
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        self.empty_selection_markers()
+            .iter()
+            .any(|marker| stderr.contains(marker))
+    }
+
     fn missing_tool(self) -> DesktopError {
         match self {
             Self::Wayland => DesktopError::Unsupported("wl-clipboard is not installed"),
@@ -63,6 +83,22 @@ pub struct CommandOutput {
     pub stdout: Vec<u8>,
     /// Bytes written to stderr.
     pub stderr: Vec<u8>,
+}
+
+/// Describe a non-zero exit as a backend error.
+fn failure(program: &str, output: &CommandOutput) -> DesktopError {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    let code = match output.code {
+        Some(code) => code.to_string(),
+        None => "a signal".to_string(),
+    };
+    let detail = if stderr.is_empty() {
+        format!("{program} exited with {code}")
+    } else {
+        format!("{program} exited with {code}: {stderr}")
+    };
+    DesktopError::Backend(detail)
 }
 
 /// Runs one external command. Tests substitute a fake.
@@ -155,14 +191,13 @@ impl CommandClipboard {
         Self::new(ClipboardFlavor::detect(), Arc::new(TokioRunner))
     }
 
-    async fn run(
+    async fn execute(
         &self,
         program: &'static str,
         args: &'static [&'static str],
         stdin: Option<&[u8]>,
     ) -> Result<CommandOutput> {
-        let output = self
-            .runner
+        self.runner
             .run(program, args, stdin)
             .await
             .map_err(|error| {
@@ -171,20 +206,18 @@ impl CommandClipboard {
                 } else {
                     DesktopError::Backend(format!("failed to run {program}: {error}"))
                 }
-            })?;
+            })
+    }
+
+    async fn run(
+        &self,
+        program: &'static str,
+        args: &'static [&'static str],
+        stdin: Option<&[u8]>,
+    ) -> Result<CommandOutput> {
+        let output = self.execute(program, args, stdin).await?;
         if !output.success {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stderr = stderr.trim();
-            let code = match output.code {
-                Some(code) => code.to_string(),
-                None => "a signal".to_string(),
-            };
-            let detail = if stderr.is_empty() {
-                format!("{program} exited with {code}")
-            } else {
-                format!("{program} exited with {code}: {stderr}")
-            };
-            return Err(DesktopError::Backend(detail));
+            return Err(failure(program, &output));
         }
         Ok(output)
     }
@@ -194,7 +227,13 @@ impl CommandClipboard {
 impl Clipboard for CommandClipboard {
     async fn read_text(&self) -> Result<Option<String>> {
         let (program, args) = self.flavor.read_command();
-        let output = self.run(program, args, None).await?;
+        let output = self.execute(program, args, None).await?;
+        if !output.success {
+            if self.flavor.reports_empty_selection(&output) {
+                return Ok(None);
+            }
+            return Err(failure(program, &output));
+        }
         if output.stdout.is_empty() {
             return Ok(None);
         }
@@ -377,7 +416,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nonzero_exit_is_backend_error() {
+    async fn wayland_empty_selection_is_none() {
         let (clipboard, _) = clipboard(
             ClipboardFlavor::Wayland,
             Reply::Output {
@@ -387,13 +426,74 @@ mod tests {
             },
         );
 
+        assert_eq!(clipboard.read_text().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn wayland_nothing_copied_is_none() {
+        let (clipboard, _) = clipboard(
+            ClipboardFlavor::Wayland,
+            Reply::Output {
+                code: 1,
+                stdout: Vec::new(),
+                stderr: b"Nothing is copied".to_vec(),
+            },
+        );
+
+        assert_eq!(clipboard.read_text().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn x11_missing_target_is_none() {
+        let (clipboard, _) = clipboard(
+            ClipboardFlavor::X11,
+            Reply::Output {
+                code: 1,
+                stdout: Vec::new(),
+                stderr: b"Error: target STRING not available".to_vec(),
+            },
+        );
+
+        assert_eq!(clipboard.read_text().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn real_failure_is_backend_error() {
+        let (clipboard, _) = clipboard(
+            ClipboardFlavor::Wayland,
+            Reply::Output {
+                code: 1,
+                stdout: Vec::new(),
+                stderr: b"Failed to connect to a Wayland server".to_vec(),
+            },
+        );
+
         let error = clipboard.read_text().await.unwrap_err();
         assert!(
             matches!(
                 &error,
                 DesktopError::Backend(message)
-                    if message.contains("wl-paste") && message.contains("No selection")
+                    if message.contains("wl-paste")
+                        && message.contains("Failed to connect to a Wayland server")
             ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_selection_marker_with_output_is_backend_error() {
+        let (clipboard, _) = clipboard(
+            ClipboardFlavor::Wayland,
+            Reply::Output {
+                code: 1,
+                stdout: b"partial".to_vec(),
+                stderr: b"No selection".to_vec(),
+            },
+        );
+
+        let error = clipboard.read_text().await.unwrap_err();
+        assert!(
+            matches!(&error, DesktopError::Backend(message) if message.contains("wl-paste")),
             "unexpected error: {error}"
         );
     }
@@ -435,5 +535,12 @@ mod tests {
 
         assert!(output.success);
         assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn desktop_accepts_the_command_clipboard() {
+        let desktop =
+            crate::Desktop::default().with_clipboard(Arc::new(CommandClipboard::detect()));
+        assert!(desktop.capabilities().clipboard);
     }
 }
