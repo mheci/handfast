@@ -68,6 +68,9 @@ pub struct CommandNotifier {
     runner: Arc<dyn CommandRunner>,
     /// Peer notification ID to the ID `notify-send` assigned to the displayed
     /// notification.
+    // shortcut: entries only leave on close or replacement, so a peer that
+    // never cancels grows the map; bound it or add a TTL when that traffic
+    // appears.
     ids: Arc<Mutex<HashMap<String, u32>>>,
 }
 
@@ -91,6 +94,8 @@ impl CommandNotifier {
     }
 
     fn ids(&self) -> MutexGuard<'_, HashMap<String, u32>> {
+        // Only map operations run under the lock, so a poisoned guard still
+        // holds a usable map.
         self.ids
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -119,6 +124,18 @@ impl CommandNotifier {
             "org.freedesktop.Notifications.CloseNotification".to_string(),
             id.to_string(),
         ]
+    }
+
+    async fn close_backend(&self, id: u32) -> Result<()> {
+        let output = self
+            .runner
+            .run(GDBUS, &Self::close_args(id))
+            .await
+            .map_err(|error| spawn_error(GDBUS, error))?;
+        if !output.success() {
+            return Err(exit_error(GDBUS, &output));
+        }
+        Ok(())
     }
 }
 
@@ -172,30 +189,24 @@ impl Notifier for CommandNotifier {
         let Some(peer_id) = notification.id.as_deref() else {
             return Ok(());
         };
-        let backend_id = output.stdout.trim().parse::<u32>().map_err(|_| {
-            DesktopError::Backend(format!(
-                "{PROGRAM} printed no notification id, got {:?}",
-                output.stdout
-            ))
-        })?;
-        self.ids().insert(peer_id.to_string(), backend_id);
+        let backend_id = output.stdout.trim().parse::<u32>().ok();
+        let previous = self.ids().remove(peer_id);
+        if let Some(previous) = previous {
+            // A stale notification must not fail the new one.
+            let _ = self.close_backend(previous).await;
+        }
+        if let Some(backend_id) = backend_id {
+            self.ids().insert(peer_id.to_string(), backend_id);
+        }
         Ok(())
     }
 
     async fn close(&self, id: &str) -> Result<()> {
-        let backend_id = self.ids().get(id).copied().ok_or_else(|| {
-            DesktopError::Backend(format!(
-                "{PROGRAM} has no backend id for notification {id:?}"
-            ))
-        })?;
-        let output = self
-            .runner
-            .run(GDBUS, &Self::close_args(backend_id))
-            .await
-            .map_err(|error| spawn_error(GDBUS, error))?;
-        if !output.success() {
-            return Err(exit_error(GDBUS, &output));
-        }
+        let backend_id = self.ids().get(id).copied();
+        let Some(backend_id) = backend_id else {
+            return Ok(());
+        };
+        self.close_backend(backend_id).await?;
         self.ids().remove(id);
         Ok(())
     }
@@ -227,7 +238,7 @@ mod tests {
     }
 
     struct FakeRunner {
-        notify: FakeOutcome,
+        notify: Mutex<FakeOutcome>,
         gdbus: FakeOutcome,
         calls: Mutex<Vec<(String, Vec<String>)>>,
     }
@@ -239,10 +250,14 @@ mod tests {
 
         fn with_close(notify: FakeOutcome, gdbus: FakeOutcome) -> Arc<Self> {
             Arc::new(Self {
-                notify,
+                notify: Mutex::new(notify),
                 gdbus,
                 calls: Mutex::new(Vec::new()),
             })
+        }
+
+        fn set_notify(&self, outcome: FakeOutcome) {
+            *self.notify.lock().unwrap() = outcome;
         }
 
         fn calls(&self) -> Vec<(String, Vec<String>)> {
@@ -258,11 +273,11 @@ mod tests {
                 .unwrap()
                 .push((program.to_string(), args.to_vec()));
             let outcome = if program == GDBUS {
-                &self.gdbus
+                self.gdbus.clone()
             } else {
-                &self.notify
+                self.notify.lock().unwrap().clone()
             };
-            match outcome {
+            match &outcome {
                 FakeOutcome::Success { stdout } => Ok(CommandOutput {
                     code: Some(0),
                     stdout: stdout.clone(),
@@ -409,15 +424,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_unknown_id_is_an_error() {
+    async fn same_key_notify_closes_the_old_backend_id() {
+        let (notifier, runner) = notifier(FakeOutcome::printing("1"));
+        notifier.notify(&posted(Some("peer-1"))).await.unwrap();
+        runner.set_notify(FakeOutcome::printing("2"));
+        notifier.notify(&posted(Some("peer-1"))).await.unwrap();
+        notifier.close("peer-1").await.unwrap();
+        let calls = runner.calls();
+        assert_eq!(
+            calls.len(),
+            4,
+            "expected two posts, the old close and the new close"
+        );
+        assert_eq!(calls[2].0, "gdbus");
+        assert_eq!(calls[2].1.last().map(String::as_str), Some("1"));
+        assert_eq!(calls[3].0, "gdbus");
+        assert_eq!(calls[3].1.last().map(String::as_str), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn close_unknown_id_is_a_no_op() {
         let (notifier, runner) = notifier(FakeOutcome::printing("7"));
-        let error = notifier.close("never-seen").await.unwrap_err();
-        match error {
-            DesktopError::Backend(message) => {
-                assert!(message.contains("never-seen"), "{message}");
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        notifier.close("never-seen").await.unwrap();
         assert!(
             runner.calls().is_empty(),
             "close must not spawn a process for an unknown id"
@@ -451,12 +479,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unparseable_backend_id_is_an_error() {
-        let (notifier, _) = notifier(FakeOutcome::printing("not a number"));
-        let error = notifier.notify(&posted(Some("peer-1"))).await.unwrap_err();
-        assert!(
-            matches!(&error, DesktopError::Backend(message) if message.contains("no notification id")),
-            "unexpected error: {error:?}"
+    async fn unparseable_backend_id_is_not_stored() {
+        let (notifier, runner) = notifier(FakeOutcome::printing("not a number"));
+        notifier.notify(&posted(Some("peer-1"))).await.unwrap();
+        notifier.close("peer-1").await.unwrap();
+        assert_eq!(
+            runner.calls().len(),
+            1,
+            "close must not spawn when no id was stored"
         );
     }
 
