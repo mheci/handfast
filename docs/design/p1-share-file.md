@@ -724,7 +724,6 @@ impl SessionHandle {
 enum SessionInput {
     Packet(Packet),
     ShareFile { path: PathBuf, reply: oneshot::Sender<Result<TransferOutcome, TransferError>> },
-    Disconnected(String),
 }
 
 // handfast-net::manager
@@ -782,8 +781,12 @@ connect has not completed. A queued file calls `PayloadService::connect`
 immediately and holds the raw TCP connection; the TLS handshake and the temp file
 start only when the previous file finishes. The runner has two `JoinSet`s, one
 for active receives and one for eager connects. The session loop selects on the
-input queue and both sets. On session exit the runner aborts every task; each
-`IncomingFile` drop deletes its temp.
+stop watch first with `biased`, then the input queue and the runner's transfer
+joins. A stop preempts the backlog: the loop rechecks the stop after it dequeues
+an input and breaks before dispatch. If the stop channel closes without a
+reason, no stop can arrive, and the session ends when the input channel closes.
+On session exit the loop passes the exit reason to the runner, which aborts
+every task; each `IncomingFile` drop deletes its temp.
 
 ### Module map
 

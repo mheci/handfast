@@ -42,7 +42,7 @@ The findings at `30c761f` and their resolutions:
 9. **Full local identity.** The link APIs now take a `LocalEndpoint`, which owns the TLS material and the full local `Identity` (name, type, capabilities, protocol version, actual `tcpPort`). The handshake has a single source for the hello and encrypted identity.
 10. **Registry sharing.** `Registry` is not `Clone`. The daemon wraps it in `Arc<Registry>`, and `DeviceSession::start` takes the `Arc`. `DeviceHost::new` receives `registry.as_ref()`.
 11. **Limits to the manager.** `LinkLimits` is passed explicitly to `LinkManager::start`, `accept` and `connect`. The manager owns the limits. The listener no longer hides them.
-12. **Disconnected sessions.** On `LinkEvent::Disconnected`, the daemon calls `SessionHandle::stop(reason)`. `SessionInput::Disconnected` is constructed by `stop`, and the session task runs `DeviceHost::on_disconnect` before it exits.
+12. **Disconnected sessions.** On `LinkEvent::Disconnected`, the daemon calls `SessionHandle::stop(reason)`. `SessionHandle` owns a `watch` sender for the stop, and `stop` writes the reason to it. The session loop selects on that watch first with `biased`, so a stop wins over a ready input, and it rechecks the stop before it dispatches a dequeued input. It breaks with the reason, shuts the transfer runner down with the reason, and runs `DeviceHost::on_disconnect` once before it exits.
 13. **`--print-identity` proof.** The test occupies a TCP port in range, runs `--print-identity` with that port, asserts success, opens the store and asserts no `identity_v1` record was written. A certificate is not generated and the TCP port is not bound.
 14. **Discovery test port.** `announced_devices_are_persisted` no longer hardcodes 1716. The daemon binds a free port in 1716-1764 and the test peer advertises a different free port in the range.
 15. **TLS boundary tests.** TLS 1.2 success, TLS 1.3 success and below-1.2 rejection are explicit tests.
@@ -690,7 +690,7 @@ pub struct PendingLink {
 }
 
 #[derive(Clone)]
-pub struct SessionHandle /* bounded sender */;
+pub struct SessionHandle /* input sender and stop watch */;
 
 impl SessionHandle {
     pub fn deliver(&self, packet: Packet);
@@ -699,7 +699,6 @@ impl SessionHandle {
 
 pub enum SessionInput {
     Packet(Packet),
-    Disconnected(String),
 }
 
 pub enum DaemonEvent {
@@ -707,7 +706,7 @@ pub enum DaemonEvent {
 }
 ```
 
-The session task calls `DeviceHost::new(device, registry.as_ref(), desktop.clone())` and constructs `Device { paired: true, connected: true, .. }`. `SessionHandle::stop` sends `SessionInput::Disconnected(reason)`. The session task handles that input by calling `DeviceHost::on_disconnect` and sending any final output best effort before it exits. A `LinkEvent::Disconnected` removes the session from the map and calls `stop`, so `on_disconnect` runs.
+The session task calls `DeviceHost::new(device, registry.as_ref(), desktop.clone())` and constructs `Device { paired: true, connected: true, .. }`. `SessionHandle::stop` writes the reason to a `watch` channel that the handle owns. The session loop selects on the stop before the input queue with `biased`, and it rechecks the stop after it dequeues an input and before it dispatches it, so a stop preempts the queued backlog. On a stop the loop breaks with the reason, shuts the transfer runner down with that reason, then calls `DeviceHost::on_disconnect` once and sends any final output best effort before it exits. A `LinkEvent::Disconnected` removes the session from the map and calls `stop`, so `on_disconnect` runs. If the stop channel closes without a reason, no stop can arrive and the stop arm never completes; the input channel close is the normal exit path and breaks with `session channel closed`.
 
 ### TLS configuration and verifier policy
 
@@ -884,7 +883,7 @@ The manager does not know `DeviceHost`. It emits `LinkEvent::Packet`; the daemon
   - If `paired` is true, create the session, call `DeviceHost::on_connect` inside the session task, and send any output packets through the `LinkHandle`.
   - If `paired` is false, store a `PendingLink { peer, certificate, link, queued }`. Do not create a `DeviceHost` and do not call `on_connect`. No plugin sees an unpaired peer.
 - On `Packet`, the daemon calls `session.deliver`. The session dispatches through `DeviceHost::dispatch`, sends `Dispatch.packets` through the link, and forwards `Dispatch.events` as `DaemonEvent::PluginEvents`. If a packet arrives before the session exists, it is queued on the `PendingLink` (bounded at 32) and drained when the session is created.
-- On `Disconnected`, the daemon calls `SessionHandle::stop(reason)` on the removed session. The session task receives `SessionInput::Disconnected`, calls `DeviceHost::on_disconnect`, sends any final output best effort, and exits. The daemon also removes the pending link.
+- On `Disconnected`, the daemon calls `SessionHandle::stop(reason)` on the removed session. The stop travels on the session's watch channel, not the input queue. The session loop breaks with that reason at its next select or input recheck, shuts the transfer runner down with the reason, runs `DeviceHost::on_disconnect` once, sends any final output best effort, and exits. The daemon also removes the pending link.
 - The gate is in the manager, before the daemon. An unpaired ping never enters the daemon's channel.
 - The pairing prompt unit plugs in at `LinkEvent::PairingRequest`. It receives the peer, the request, the peer certificate, the `paired` state and a `LinkHandle`. It prompts, and on accept calls the one trust writer (`store.set_trusted` plus `links.set_trust`), sends the accept packet, and creates the `DeviceSession` for the now-paired link.
 - This unit logs pairing requests and does not answer them. A reject sent before a prompt exists would teach peers a state the next unit cannot reverse without a protocol edge case.
@@ -1298,7 +1297,7 @@ The reviews confirmed the accepted core shape: transport-owned TLS in `handfast-
 - **`sha2` for fingerprints.** Candidate 2 chose `sha2` over `ring::digest`. The synthesis accepts the decoupling. A certificate fingerprint should not change because the TLS provider changed.
 - **One trust writer.** Candidate 2's `IdentityService` made trust a single facade. The base states that the pairing unit is the only caller that writes both the store pin and the manager trust snapshot.
 - **Explicit private handshake state.** Candidate 2's typestate named the phases. The synthesis keeps the phases as a private enum and a single `connect`/`accept` driver.
-- **Explicit session input enum.** Candidate 2's session actor made the packet, paired and disconnect transitions explicit. The daemon session now has `SessionInput`, and `SessionHandle::stop` constructs `Disconnected`.
+- **Explicit session stop signal.** Candidate 2's session actor made the packet, paired and disconnect transitions explicit. The daemon session has `SessionInput` for packets and a watch channel for the stop, and `SessionHandle::stop` writes the reason to that channel.
 
 ### Rejected from candidate 2
 
@@ -1335,7 +1334,7 @@ The two candidates were sketched before the real Android and desktop sources wer
 | Hand-synced list | Gate uses `types` constants. | Same. | One `is_unpaired_allowed` helper in the manager. |
 | Missing state in a type | `LocalIdentity` lacked the full local identity. | `IdentityService` held it. | `LocalEndpoint` now owns TLS material and the full identity. |
 | Hidden configuration | The manager could not see `LinkLimits`. | Same. | Limits are an explicit manager parameter. |
-| Stale session | Disconnect removed the session without stopping it. | Session actor handled it. | `SessionHandle::stop` constructs `SessionInput::Disconnected`. |
+| Stale session | Disconnect removed the session without stopping it. | Session actor handled it. | `SessionHandle::stop` sets a watch the session loop selects on first. |
 
 Both candidates converged on the important security shape: ECDSA P-256, CN = device ID, accept-any verifier plus post-handshake identity check, three-way ID correlation, pin-only trust, store raw DER, bind before announce. That convergence is strong signal. The reviews confirmed the trust model. Revision 2 keeps it and fixes the protocol and lifecycle gaps.
 
