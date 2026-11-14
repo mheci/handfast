@@ -12,6 +12,7 @@ pub mod connectivity_report;
 pub mod pausemusic;
 pub mod ping;
 pub mod roster;
+pub mod share;
 
 use handfast_runtime::{PluginMeta, Registry};
 
@@ -20,6 +21,7 @@ pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
+pub use share::{ShareFactory, SharePlugin};
 
 /// Build the registry of implemented plugins.
 #[must_use]
@@ -30,6 +32,7 @@ pub fn registry() -> Registry {
         Box::new(clipboard::ClipboardFactory),
         Box::new(connectivity_report::ConnectivityReportFactory),
         Box::new(pausemusic::PauseMusicFactory),
+        Box::new(share::ShareFactory),
     ])
 }
 
@@ -37,4 +40,38 @@ pub fn registry() -> Registry {
 #[must_use]
 pub fn metas() -> &'static [&'static PluginMeta] {
     roster::ALL
+}
+
+#[cfg(test)]
+mod tests {
+    use handfast_desktop::MockDesktop;
+    use handfast_proto::{types, DeviceId, DeviceName, DeviceType};
+    use handfast_runtime::{Device, DeviceHost};
+
+    use super::registry;
+
+    fn device() -> Device {
+        Device::new(
+            DeviceId::generate(),
+            DeviceName::new("Test"),
+            DeviceType::Desktop,
+        )
+    }
+
+    #[test]
+    fn share_is_advertised_only_with_files_adapter() {
+        let registry = registry();
+
+        let without_files = MockDesktop::new();
+        let capabilities = registry.capabilities(&without_files.desktop()).unwrap();
+        assert!(!capabilities.accepts(types::SHARE_REQUEST));
+        assert!(!capabilities.accepts(types::SHARE_REQUEST_UPDATE));
+        assert!(!DeviceHost::new(device(), &registry, without_files.desktop()).is_enabled("share"));
+
+        let with_files = MockDesktop::with_files().unwrap();
+        let capabilities = registry.capabilities(&with_files.desktop()).unwrap();
+        assert!(capabilities.accepts(types::SHARE_REQUEST));
+        assert!(capabilities.accepts(types::SHARE_REQUEST_UPDATE));
+        assert!(DeviceHost::new(device(), &registry, with_files.desktop()).is_enabled("share"));
+    }
 }
