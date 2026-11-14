@@ -15,7 +15,7 @@ use handfast_proto::{
 };
 use rustls::pki_types::ServerName;
 use socket2::{SockRef, TcpKeepalive};
-use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
@@ -227,6 +227,7 @@ pub(crate) async fn accept_handshake(
         writer: LinkWriter {
             writer,
             write_timeout: limits.write_timeout,
+            frame: Vec::new(),
         },
         permit,
     })
@@ -335,6 +336,7 @@ pub async fn connect(
         writer: LinkWriter {
             writer,
             write_timeout: limits.write_timeout,
+            frame: Vec::new(),
         },
         permit,
     })
@@ -403,6 +405,7 @@ impl LinkReader {
 pub struct LinkWriter {
     writer: WriteHalf<TlsStream<TcpStream>>,
     write_timeout: Duration,
+    frame: Vec<u8>,
 }
 
 impl LinkWriter {
@@ -415,7 +418,7 @@ impl LinkWriter {
     pub async fn send(&mut self, packet: &Packet) -> Result<()> {
         timeout(
             self.write_timeout,
-            frame::write_frame(&mut self.writer, packet),
+            send_frame(&mut self.writer, &mut self.frame, packet),
         )
         .await
         .map_err(|_| NetError::Timeout("frame write"))??;
@@ -426,6 +429,17 @@ impl LinkWriter {
     pub async fn close(mut self) {
         let _ = self.writer.shutdown().await;
     }
+}
+
+async fn send_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    frame: &mut Vec<u8>,
+    packet: &Packet,
+) -> Result<()> {
+    frame::encode_into(packet, frame)?;
+    writer.write_all(frame).await?;
+    writer.flush().await?;
+    Ok(())
 }
 
 async fn read_hello(tcp: &mut TcpStream, limits: &LinkLimits) -> Result<IdentityHello> {
@@ -502,6 +516,13 @@ fn configure_socket(stream: &TcpStream, limits: &LinkLimits) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use handfast_proto::{types, ProtoError};
+    use serde_json::json;
+    use tokio::io::AsyncReadExt;
+
+    fn ping_packet() -> Packet {
+        Packet::from_body(types::PING, &json!({ "message": "hello" })).expect("build a ping")
+    }
 
     #[test]
     fn limits_default_to_the_desktop_values() {
@@ -630,5 +651,95 @@ mod tests {
             port,
             "the port is rebound while the old connection is closing"
         );
+    }
+
+    #[tokio::test]
+    async fn send_frame_writes_the_encoder_bytes() {
+        let packet = ping_packet();
+        let expected = frame::encode(&packet).expect("encode the expected frame");
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let mut buffer = Vec::new();
+
+        send_frame(&mut client, &mut buffer, &packet)
+            .await
+            .expect("write the frame");
+
+        let mut written = vec![0u8; expected.len()];
+        server
+            .read_exact(&mut written)
+            .await
+            .expect("read the frame");
+        assert_eq!(written, expected, "the frame bytes match the encoder");
+    }
+
+    #[tokio::test]
+    async fn send_frame_reuses_the_buffer_without_leaking_between_frames() {
+        let large = Packet::from_body(types::PING, &json!({ "blob": "x".repeat(64 * 1024) }))
+            .expect("build a large ping");
+        let small = Packet::empty(types::PING).expect("build a small ping");
+        let large_frame = frame::encode(&large).expect("encode the large frame");
+        let small_frame = frame::encode(&small).expect("encode the small frame");
+        let (mut client, mut server) = tokio::io::duplex(256 * 1024);
+        let mut buffer = Vec::new();
+
+        send_frame(&mut client, &mut buffer, &large)
+            .await
+            .expect("write the large frame");
+        let capacity = buffer.capacity();
+        let pointer = buffer.as_ptr();
+        for _ in 0..100 {
+            send_frame(&mut client, &mut buffer, &small)
+                .await
+                .expect("write a small frame");
+            assert_eq!(buffer.as_ptr(), pointer, "the frame buffer is reused");
+            assert_eq!(
+                buffer.capacity(),
+                capacity,
+                "the frame buffer does not grow"
+            );
+        }
+        assert_eq!(buffer, small_frame, "the last frame carries no old bytes");
+
+        let mut written = vec![0u8; large_frame.len() + 100 * small_frame.len()];
+        server
+            .read_exact(&mut written)
+            .await
+            .expect("read every frame");
+        assert_eq!(&written[..large_frame.len()], &large_frame[..]);
+        for chunk in written[large_frame.len()..].chunks(small_frame.len()) {
+            assert_eq!(
+                chunk,
+                &small_frame[..],
+                "each small frame is byte-identical"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn send_frame_rejects_an_oversized_frame_before_writing() {
+        let packet = Packet::new(
+            types::PING,
+            json!({ "blob": "x".repeat(frame::MAX_FRAME_SIZE) }),
+        )
+        .expect("build an oversized ping");
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let mut buffer = Vec::new();
+
+        let error = send_frame(&mut client, &mut buffer, &packet)
+            .await
+            .expect_err("the frame limit rejects the packet");
+        assert!(
+            matches!(error, NetError::Proto(ProtoError::FrameTooLarge { .. })),
+            "{error}"
+        );
+        assert!(buffer.is_empty(), "no partial frame stays in the buffer");
+
+        drop(client);
+        let mut written = Vec::new();
+        server
+            .read_to_end(&mut written)
+            .await
+            .expect("read the peer side");
+        assert!(written.is_empty(), "no bytes reach the peer");
     }
 }
