@@ -1018,10 +1018,12 @@ mod tests {
         assert!(crate::winacl::is_private_to_current_user(&root).unwrap());
         assert!(crate::winacl::is_private_to_current_user(files.temp_dir()).unwrap());
 
-        // A temp file inherits the user-only ACE from `.handfast-tmp`; the
-        // protected flag itself is not inherited.
+        // A temp file inherits the single user ACE from `.handfast-tmp`. The
+        // protected flag is per object and is not inherited, so the strict
+        // check needs the explicit call.
         let temp = files.temp_dir().join("inherited.part");
         std::fs::write(&temp, b"payload").unwrap();
+        assert!(crate::winacl::grants_only_current_user(&temp).unwrap());
         assert!(!crate::winacl::is_private_to_current_user(&temp).unwrap());
         crate::winacl::protect_current_user(&temp).unwrap();
         assert!(crate::winacl::is_private_to_current_user(&temp).unwrap());

@@ -3,13 +3,12 @@
 //! Unix uses mode bits: 0700 for directories and 0600 for the state file. The
 //! Windows equivalent is a protected DACL that grants full control to the
 //! current user and to no other SID. A directory's ACE inherits to children,
-//! so a state file or temp file created inside it starts private.
+//! so a state file or temp file created inside it inherits the single
+//! user-only ACE. The protected flag is per object and is not inherited, so
+//! the child still needs its own call to become protected.
 //!
-//! Every `windows-sys` call lives in this module. The unsafe surface stays one
-//! reviewed file instead of spreading through the daemon and the desktop
-//! adapter.
-
-#![allow(unsafe_code)]
+//! Every `windows-sys` call lives in this module. The unsafe_code allow sits
+//! on the functions that call FFI, so it does not cover the rest of the file.
 
 use std::ffi::c_void;
 use std::io;
@@ -48,6 +47,7 @@ const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 ///
 /// Fails when the security descriptor cannot be written, the process token
 /// cannot be read, or the DACL cannot be built.
+#[allow(unsafe_code)]
 pub fn protect_current_user(path: &Path) -> io::Result<()> {
     let mut name = wide(path);
     let user = current_user_sid()?;
@@ -85,6 +85,27 @@ pub fn protect_current_user(path: &Path) -> io::Result<()> {
 pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
     let name = wide(path);
     let user = current_user_sid()?;
+    let (protected, user_only) = read_dacl(&name, &user)?;
+    Ok(protected && user_only)
+}
+
+/// Whether `path`'s DACL grants full control to the current user and to no
+/// other SID.
+///
+/// Unlike [`is_private_to_current_user`], this ignores the protected flag, so
+/// it reports the effective access a child inherits from its directory.
+#[cfg(test)]
+pub(crate) fn grants_only_current_user(path: &Path) -> io::Result<bool> {
+    let name = wide(path);
+    let user = current_user_sid()?;
+    let (_, user_only) = read_dacl(&name, &user)?;
+    Ok(user_only)
+}
+
+/// Read `name`'s DACL. Returns the protected flag and whether the DACL is
+/// exactly one allow ACE for the current user with full control.
+#[allow(unsafe_code)]
+fn read_dacl(name: &[u16], user: &ProcessUser) -> io::Result<(bool, bool)> {
     let mut dacl: *mut ACL = ptr::null_mut();
     let mut descriptor: *mut c_void = ptr::null_mut();
 
@@ -107,7 +128,7 @@ pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
     }
     let descriptor = SecurityDescriptor(descriptor);
     if dacl.is_null() {
-        return Ok(false);
+        return Ok((false, false));
     }
 
     let mut control = 0u16;
@@ -116,9 +137,7 @@ pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
     if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    if control & SE_DACL_PROTECTED == 0 {
-        return Ok(false);
-    }
+    let protected = control & SE_DACL_PROTECTED != 0;
 
     let mut info = ACL_SIZE_INFORMATION::default();
     // SAFETY: `dacl` points into the live descriptor and `info` has the size
@@ -135,7 +154,7 @@ pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
         return Err(io::Error::last_os_error());
     }
     if info.AceCount != 1 {
-        return Ok(false);
+        return Ok((protected, false));
     }
 
     let mut ace: *mut c_void = ptr::null_mut();
@@ -147,18 +166,20 @@ pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
     // an `ACCESS_ALLOWED_ACE`, the type the ACL was built with.
     let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
     if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE || ace.Mask != FILE_ALL_ACCESS {
-        return Ok(false);
+        return Ok((protected, false));
     }
     let ace_sid = ptr::addr_of!(ace.SidStart) as PSID;
     // SAFETY: `user` owns the token buffer holding its SID and `descriptor`
     // owns the DACL holding the ACE SID.
-    Ok(unsafe { EqualSid(user.sid(), ace_sid) } != 0)
+    let user_only = unsafe { EqualSid(user.sid(), ace_sid) } != 0;
+    Ok((protected, user_only))
 }
 
 /// A security descriptor allocated by `GetNamedSecurityInfoW`.
 struct SecurityDescriptor(*mut c_void);
 
 impl Drop for SecurityDescriptor {
+    #[allow(unsafe_code)]
     fn drop(&mut self) {
         if !self.0.is_null() {
             // SAFETY: `GetNamedSecurityInfoW` documents LocalFree as the
@@ -175,6 +196,7 @@ struct ProcessUser {
 }
 
 impl ProcessUser {
+    #[allow(unsafe_code)]
     fn sid(&self) -> PSID {
         // SAFETY: `GetTokenInformation(TokenUser)` wrote a `TOKEN_USER` at the
         // start of the buffer and its `Sid` points inside the same buffer,
@@ -184,6 +206,7 @@ impl ProcessUser {
     }
 }
 
+#[allow(unsafe_code)]
 fn current_user_sid() -> io::Result<ProcessUser> {
     let mut token: HANDLE = ptr::null_mut();
     // SAFETY: `GetCurrentProcess` returns a pseudo handle that must not be
@@ -197,6 +220,7 @@ fn current_user_sid() -> io::Result<ProcessUser> {
     result
 }
 
+#[allow(unsafe_code)]
 fn token_user(token: HANDLE) -> io::Result<ProcessUser> {
     let mut length = 0u32;
     // SAFETY: a null buffer with length 0 is the documented size probe. It
@@ -223,6 +247,7 @@ fn token_user(token: HANDLE) -> io::Result<ProcessUser> {
     Ok(ProcessUser { buffer })
 }
 
+#[allow(unsafe_code)]
 fn user_acl(sid: PSID, directory: bool) -> io::Result<Vec<u32>> {
     // SAFETY: `sid` points into the live token buffer.
     let sid_len = unsafe { GetLengthSid(sid) } as usize;
@@ -273,7 +298,10 @@ mod tests {
         let child = dir.path().join("state.db");
         std::fs::write(&child, b"state").unwrap();
 
-        // The child inherits the user-only ACE but not the protected flag.
+        // The child inherits the single user ACE. The protected flag is per
+        // object and is not inherited, so the strict check needs the explicit
+        // call.
+        assert!(grants_only_current_user(&child).unwrap());
         assert!(!is_private_to_current_user(&child).unwrap());
         protect_current_user(&child).unwrap();
         assert!(is_private_to_current_user(&child).unwrap());
