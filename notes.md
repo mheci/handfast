@@ -79,7 +79,7 @@ Active parallel wave:
 
 - Unit 4 net payload: merged in `0606bef`.
 - Unit 5 runtime transfer: merged in `578e156`.
-- Unit 6 share plugin: PR [#212](https://github.com/mheci/handfast/pull/212), head `9a9f824`, verifier PASS, owner merging.
+- Unit 6 share plugin: merged in `4c4f0de`.
 - Unit 7 manager share routing: PR [#213](https://github.com/mheci/handfast/pull/213), head `9b6c479`, verifier running.
 - Windows ACLs: PR [#210](https://github.com/mheci/handfast/pull/210), head `f5dcd5f`, re-verifying after the README and ACE-flag fixes.
 - P1 hardening: PR [#211](https://github.com/mheci/handfast/pull/211), head `c88cc33`, verifier FAIL on a vacuous zeroize test, owner fixing.
@@ -88,7 +88,7 @@ Active parallel wave:
 - Notifications backend: merged in `840e7a1`.
 - System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `8dad9f6`, verifier `ses_e276ea7beffe0HklrIgHtASi8B` running.
 - Pause music plugin: merged in `b228c1c`.
-- MPRIS control plugin: PR [#207](https://github.com/mheci/handfast/pull/207), head `b2e3380`, verifier `ses_e276ea7c1ffeeh2idykMQ7x4WF` running.
+- MPRIS control plugin: PR [#207](https://github.com/mheci/handfast/pull/207), verifier PASS on `b2e3380`, rebasing after share.
 - Notifications close fix: merged in `c92dae7`.
 - Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `91a2110`, verifier PASS on code but DIRTY after pause music; rebase after share plugin merges.
 - Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `0a008f9`, verifier PASS, rebase after share plugin merges.
