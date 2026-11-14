@@ -20,7 +20,6 @@ const ACTIONS: &[(&str, MediaAction)] = &[
     ("Previous", MediaAction::Previous),
 ];
 
-/// Upper bound for a peer-supplied player name before it becomes a `playerctl` argument.
 const MAX_PLAYER_BYTES: usize = 256;
 
 struct Request<'a> {

@@ -13,7 +13,6 @@ use crate::roster;
 
 const TITLE: &str = "Find this device";
 
-/// Upper bound for a peer-supplied message before it reaches a desktop notification.
 const MAX_MESSAGE_BYTES: usize = 4 * 1024;
 
 /// Notifies the desktop when a paired device asks to be found.
