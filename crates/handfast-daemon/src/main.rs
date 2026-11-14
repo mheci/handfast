@@ -864,8 +864,12 @@ fn install_backends(
     wayland: bool,
     available: impl Fn(&str) -> bool,
 ) -> Desktop {
-    let clipboard = if wayland { "wl-paste" } else { "xclip" };
-    if available(clipboard) {
+    let clipboard_available = if wayland {
+        available("wl-paste") && available("wl-copy")
+    } else {
+        available("xclip")
+    };
+    if clipboard_available {
         desktop.clipboard = Some(backends::clipboard());
     }
     if available("notify-send") {
@@ -913,11 +917,21 @@ mod tests {
             }
         );
 
-        let wayland = install_backends(Desktop::default(), true, |program| program == "wl-paste");
+        let wayland = install_backends(Desktop::default(), true, |program| {
+            program == "wl-paste" || program == "wl-copy"
+        });
         assert!(wayland.capabilities().clipboard);
 
-        let x11_only = install_backends(Desktop::default(), true, |program| program == "xclip");
-        assert!(!x11_only.capabilities().clipboard);
+        let missing_wl_copy =
+            install_backends(Desktop::default(), true, |program| program == "wl-paste");
+        assert!(!missing_wl_copy.capabilities().clipboard);
+
+        let x11 = install_backends(Desktop::default(), false, |program| program == "xclip");
+        assert!(x11.capabilities().clipboard);
+
+        let xclip_on_wayland =
+            install_backends(Desktop::default(), true, |program| program == "xclip");
+        assert!(!xclip_on_wayland.capabilities().clipboard);
     }
 
     #[test]
