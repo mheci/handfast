@@ -2,6 +2,17 @@
 
 Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`.
 
+Hardening queue, 2026-11-14:
+
+- The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
+- Main is on `main` at `a7325d3`.
+- Unit 11 `#218`: code green at `b455fad`, rebase at `38537b3`, one `git rebase --continue` and force-with-lease push remain.
+- Merge queue with verifier PASS: `#220` clipboard at `a62b808`, `#221` notifications D-Bus at `29517a5`, `#222` link frames at `df66d34`, `#223` interop harness at `97e3781`, `#224` MPRIS at `a7a9abe`, `#225` redaction at `ea7e640`, `#226` system backends at `19020d7`, `#227` payload progress at `ae6870a`.
+- `#229` input plugins: verifier FAIL because `MOUSEPAD` is Implemented while six click fields are parsed and dropped. Demote `MOUSEPAD` to Planned and remove its factory, or add a pointer-button method to `Input`.
+- `#228` testkit and fuzz hardening at `fe95353`: verifier running.
+- Manager hardening is uncommitted in `C:\Users\mah\Projects\handfast-net-manager-hardening`. Handoff script at `C:\Users\mah\AppData\Local\Temp\opencode\manager-hardening-pr.ps1`.
+- `#219` store zeroization is merged in `a7325d3`.
+
 Current state:
 
 - `v0.2.0` is the latest stable release. It has native Debian 12, Ubuntu 24.04 and Arch Linux packages plus an unsigned Windows MSI.
