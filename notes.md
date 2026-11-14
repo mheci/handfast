@@ -91,7 +91,7 @@ Active parallel wave:
 - MPRIS control plugin: merged in `54b85e9`.
 - Notifications close fix: merged in `c92dae7`.
 - Notifications plugin: merged in `c3d86ac`.
-- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `13cb075`, re-verifying the rebase.
+- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `13cb075`, verifier PASS, owner merging.
 - Clipboard backend: merged in `e1f2a99`.
 - Unit 8 prep: done, runner brief in the session record.
 - Unit 9 prep: done. The outbound transfer must run in a task or JoinSet, not inline in the session loop, so a 30 s accept deadline cannot stall packets, pings or pairing.
