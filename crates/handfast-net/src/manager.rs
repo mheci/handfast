@@ -4,7 +4,9 @@
 //! peer table and the active links. Discovery sightings and trust updates are
 //! commands. Handshake tasks report back, link tasks forward frames, and the
 //! manager alone decides which frames pass the gate. Connection and pairing
-//! events are sent with backpressure; packet events use `try_send`.
+//! events are sent with backpressure; packet events use `try_send`. Share
+//! requests travel on a dedicated reliable channel; a full or closed share
+//! channel closes the link instead of dropping the request.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -40,6 +42,12 @@ const COMMAND_QUEUE: usize = 256;
 /// The manager message queue.
 const MESSAGE_QUEUE: usize = 256;
 
+/// The recommended bound for the reliable share event channel.
+///
+/// Share packets are never dropped silently. The caller creates the channel;
+/// this bound matches the design's 32-slot share queue.
+pub const SHARE_EVENT_QUEUE: usize = 32;
+
 /// Whether an unpaired peer may send a packet type.
 ///
 /// Protocol 8 allows only pairing packets before trust is established. The gate
@@ -47,6 +55,10 @@ const MESSAGE_QUEUE: usize = 256;
 #[must_use]
 pub fn is_unpaired_allowed(ptype: &str) -> bool {
     ptype == types::PAIR
+}
+
+fn is_share_packet(ptype: &str) -> bool {
+    ptype == types::SHARE_REQUEST || ptype == types::SHARE_REQUEST_UPDATE
 }
 
 /// A handle for sending packets to one established link.
@@ -94,6 +106,19 @@ impl LinkHandle {
     }
 }
 
+/// A share packet routed on the reliable channel.
+///
+/// Share requests must not travel on the lossy [`LinkEvent::Packet`] path. A
+/// dropped share request leaves the peer waiting for a payload connection that
+/// never comes.
+#[derive(Debug)]
+pub struct ShareEvent {
+    /// Peer that sent the packet.
+    pub device_id: DeviceId,
+    /// The share request or update packet.
+    pub packet: Packet,
+}
+
 /// One event from the manager to its caller.
 #[derive(Debug)]
 pub enum LinkEvent {
@@ -103,6 +128,8 @@ pub enum LinkEvent {
         peer: Identity,
         /// Peer certificate.
         certificate: PeerCertificate,
+        /// Remote socket address of the authenticated link.
+        remote_addr: SocketAddr,
         /// Handle for sending packets to the peer.
         link: LinkHandle,
         /// Whether the trust table pins this certificate.
@@ -148,6 +175,8 @@ pub struct PendingLink {
     pub peer: Identity,
     /// Peer certificate.
     pub certificate: PeerCertificate,
+    /// Remote socket address of the authenticated link.
+    pub remote_addr: SocketAddr,
     /// Handle for sending packets to the peer.
     pub link: LinkHandle,
     /// Packets received before a session existed. The caller bounds the queue.
@@ -194,6 +223,25 @@ impl LinkManagerHandle {
         response.await.map_err(|_| NetError::LinkClosed)?
     }
 
+    /// Close the device's installed link, whether paired or waiting for
+    /// pairing.
+    ///
+    /// Used when a share packet cannot be delivered to the session. The link
+    /// task emits [`LinkEvent::Disconnected`] with the close reason. Closing a
+    /// device with no installed link is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the manager has stopped.
+    pub async fn close(&self, id: DeviceId) -> Result<()> {
+        let (ack, response) = oneshot::channel();
+        self.commands
+            .send(ManagerCommand::Close { id, ack })
+            .await
+            .map_err(|_| NetError::LinkClosed)?;
+        response.await.map_err(|_| NetError::LinkClosed)?
+    }
+
     /// Stop the manager and close every link.
     pub fn shutdown(&self) {
         let _ = self.shutdown.send(true);
@@ -207,7 +255,8 @@ impl LinkManager {
     /// Start the manager with the default supervision tick.
     ///
     /// The manager owns `listener`, the trust snapshot and the admission
-    /// policy. It emits events on `events` and returns a handle plus its task.
+    /// policy. It emits link events on `events`, share packets on
+    /// `share_events`, and returns a handle plus its task.
     #[must_use]
     pub fn start(
         listener: LinkListener,
@@ -215,8 +264,9 @@ impl LinkManager {
         trust: TrustTable,
         limits: LinkLimits,
         events: mpsc::Sender<LinkEvent>,
+        share_events: mpsc::Sender<ShareEvent>,
     ) -> (LinkManagerHandle, JoinHandle<Result<()>>) {
-        Self::start_with_tick(listener, local, trust, limits, events, TICK)
+        Self::start_with_tick(listener, local, trust, limits, events, share_events, TICK)
     }
 
     /// Start the manager with an explicit supervision tick.
@@ -230,6 +280,7 @@ impl LinkManager {
         trust: TrustTable,
         limits: LinkLimits,
         events: mpsc::Sender<LinkEvent>,
+        share_events: mpsc::Sender<ShareEvent>,
         tick: Duration,
     ) -> (LinkManagerHandle, JoinHandle<Result<()>>) {
         let (commands, command_rx) = mpsc::channel(COMMAND_QUEUE);
@@ -245,6 +296,7 @@ impl LinkManager {
             limits,
             policy,
             events,
+            share_events,
             messages,
             peers: HashMap::new(),
             active: HashMap::new(),
@@ -271,6 +323,10 @@ enum ManagerCommand {
         pin: Option<Fingerprint>,
         ack: oneshot::Sender<Result<()>>,
     },
+    Close {
+        id: DeviceId,
+        ack: oneshot::Sender<Result<()>>,
+    },
 }
 
 enum ManagerMessage {
@@ -290,10 +346,10 @@ enum ManagerMessage {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum LinkControl {
     Open,
-    Close,
+    Close(String),
 }
 
 struct ActiveLink {
@@ -308,8 +364,8 @@ struct ActiveLink {
 }
 
 impl ActiveLink {
-    fn close(&self) {
-        let _ = self.control.send(LinkControl::Close);
+    fn close(&self, reason: &str) {
+        let _ = self.control.send(LinkControl::Close(reason.to_string()));
     }
 
     fn release_unpaired(&mut self) {
@@ -333,6 +389,7 @@ struct ManagerState {
     limits: LinkLimits,
     policy: LinkPolicy,
     events: mpsc::Sender<LinkEvent>,
+    share_events: mpsc::Sender<ShareEvent>,
     messages: mpsc::Sender<ManagerMessage>,
     peers: HashMap<DeviceId, PeerState>,
     active: HashMap<DeviceId, ActiveLink>,
@@ -372,6 +429,9 @@ impl ManagerState {
                         }
                         Some(ManagerCommand::SetTrust { id, pin, ack }) => {
                             let _ = ack.send(self.set_trust(id, pin));
+                        }
+                        Some(ManagerCommand::Close { id, ack }) => {
+                            let _ = ack.send(self.close(id));
                         }
                         None => break,
                     }
@@ -547,6 +607,7 @@ impl ManagerState {
 
     async fn install(&mut self, link: Link, link_tasks: &mut JoinSet<()>) {
         let (peer, reader, writer, permit) = link.into_parts();
+        let remote_addr = peer.remote_addr;
         let identity = peer.identity;
         let certificate = peer.certificate;
         let device_id = identity.device_id.clone();
@@ -595,7 +656,7 @@ impl ManagerState {
         };
 
         if let Some(existing) = self.active.remove(&device_id) {
-            existing.close();
+            existing.close("replaced");
             self.emit(LinkEvent::Disconnected {
                 device_id: device_id.clone(),
                 reason: "replaced".to_string(),
@@ -628,6 +689,7 @@ impl ManagerState {
         self.emit(LinkEvent::Connected {
             peer: identity,
             certificate,
+            remote_addr,
             link: handle,
             paired,
         })
@@ -650,6 +712,7 @@ impl ManagerState {
             Pair(PairingRequest),
             Close(&'static str),
             Deliver,
+            Share,
             Drop,
         }
 
@@ -669,7 +732,11 @@ impl ManagerState {
             } else if packet.ptype == types::IDENTITY {
                 GateAction::Close("identity packet after the handshake")
             } else if active.paired {
-                GateAction::Deliver
+                if is_share_packet(packet.ptype.as_str()) {
+                    GateAction::Share
+                } else {
+                    GateAction::Deliver
+                }
             } else {
                 GateAction::Drop
             }
@@ -692,9 +759,7 @@ impl ManagerState {
             }
             GateAction::Close(reason) => {
                 warn!(%device_id, reason, "closing the link");
-                if let Some(active) = self.active.get(&device_id) {
-                    active.close();
-                }
+                self.close_active(&device_id, reason);
             }
             GateAction::Deliver => {
                 let event = LinkEvent::Packet { device_id, packet };
@@ -702,9 +767,32 @@ impl ManagerState {
                     warn!(%error, "dropping a packet for a full event channel");
                 }
             }
+            GateAction::Share => {
+                let event = ShareEvent {
+                    device_id: device_id.clone(),
+                    packet,
+                };
+                match self.share_events.try_send(event) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        warn!(%device_id, "closing the link: share event queue full");
+                        self.close_active(&device_id, "share event queue full");
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        warn!(%device_id, "closing the link: share event receiver dropped");
+                        self.close_active(&device_id, "share event receiver dropped");
+                    }
+                }
+            }
             GateAction::Drop => {
                 debug!(%device_id, ptype = %packet.ptype, "dropping a packet from an unpaired peer");
             }
+        }
+    }
+
+    fn close_active(&self, device_id: &DeviceId, reason: &str) {
+        if let Some(active) = self.active.get(device_id) {
+            active.close(reason);
         }
     }
 
@@ -743,10 +831,15 @@ impl ManagerState {
                 self.trust.remove(&id);
                 if let Some(active) = self.active.get_mut(&id) {
                     active.paired = false;
-                    active.close();
+                    active.close("trust cleared");
                 }
             }
         }
+        Ok(())
+    }
+
+    fn close(&self, id: DeviceId) -> Result<()> {
+        self.close_active(&id, "closed by manager");
         Ok(())
     }
 
@@ -764,7 +857,7 @@ impl ManagerState {
         for id in idle {
             if let Some(active) = self.active.get(&id) {
                 info!(%id, "closing an idle unpaired link");
-                active.close();
+                active.close("unpaired idle timeout");
             }
         }
 
@@ -785,7 +878,7 @@ impl ManagerState {
         handshakes.abort_all();
         while handshakes.join_next().await.is_some() {}
         for active in self.active.values() {
-            active.close();
+            active.close("manager shutting down");
         }
         let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
         while !link_tasks.is_empty() {
@@ -842,8 +935,12 @@ async fn run_link(
                 }
             }
             changed = control.changed() => {
-                if changed.is_err() || matches!(*control.borrow(), LinkControl::Close) {
-                    break "closed by manager".to_string();
+                if changed.is_err() {
+                    break "manager closed".to_string();
+                }
+                let state = control.borrow();
+                if let LinkControl::Close(reason) = &*state {
+                    break reason.clone();
                 }
             }
         }
@@ -871,6 +968,35 @@ mod tests {
         assert!(!is_unpaired_allowed(types::IDENTITY));
     }
 
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn pending_link_carries_the_remote_address() {
+        let device_id = DeviceId::new("00112233445566778899aabbccddeeff").unwrap();
+        let tls = TlsIdentity::generate(device_id.clone()).unwrap();
+        let certificate = PeerCertificate::parse(tls.cert_der()).unwrap();
+        let identity = Identity::new(
+            device_id.clone(),
+            DeviceName::new("pending link test"),
+            DeviceType::Desktop,
+            Capabilities::default(),
+            Some(1716),
+        );
+        let (link, _outbound) = mpsc::channel(1);
+        let remote_addr = SocketAddr::from(([192, 0, 2, 10], 1716));
+        let pending = PendingLink {
+            peer: identity,
+            certificate,
+            remote_addr,
+            link: LinkHandle::from_channel(device_id, link),
+            queued: VecDeque::new(),
+        };
+
+        assert_eq!(
+            pending.remote_addr, remote_addr,
+            "the daemon keeps the authenticated address until the pairing decision"
+        );
+    }
+
     #[test]
     fn peer_ttl_expires_an_idle_entry() {
         let device_id = DeviceId::new("00112233445566778899aabbccddeeff").unwrap();
@@ -894,6 +1020,7 @@ mod tests {
         };
 
         let (events, _events_rx) = mpsc::channel(1);
+        let (share_events, _share_events_rx) = mpsc::channel(1);
         let (messages, _messages_rx) = mpsc::channel(1);
         let mut state = ManagerState {
             tls,
@@ -902,6 +1029,7 @@ mod tests {
             limits: limits.clone(),
             policy: LinkPolicy::new(limits),
             events,
+            share_events,
             messages,
             peers: HashMap::new(),
             active: HashMap::new(),

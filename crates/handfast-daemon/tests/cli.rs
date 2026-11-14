@@ -47,8 +47,7 @@ fn print_identity_is_stable_and_advertises_implemented_plugins() {
 #[test]
 fn print_identity_does_not_generate_a_certificate_or_bind_the_port() {
     let directory = tempfile::tempdir().unwrap();
-    let port = free_tcp_port();
-    let listener = TcpListener::bind(("0.0.0.0", port)).expect("occupy the configured port");
+    let (listener, port) = occupy_tcp_port();
     let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
         .args([
             "--print-identity",
@@ -98,11 +97,10 @@ fn tcp_port_outside_the_range_is_rejected() {
     }
 }
 
-fn free_tcp_port() -> u16 {
+fn occupy_tcp_port() -> (TcpListener, u16) {
     for port in MIN_TCP_PORT..=MAX_TCP_PORT {
         if let Ok(listener) = TcpListener::bind(("0.0.0.0", port)) {
-            drop(listener);
-            return port;
+            return (listener, port);
         }
     }
     panic!("no free TCP port in {MIN_TCP_PORT}-{MAX_TCP_PORT}");

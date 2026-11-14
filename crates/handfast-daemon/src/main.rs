@@ -18,7 +18,7 @@ use clap::Parser;
 use handfast_desktop::Desktop;
 use handfast_net::{
     Discovery, Fingerprint, LinkEvent, LinkLimits, LinkListener, LinkManager, LinkManagerHandle,
-    LocalEndpoint, PendingLink, TrustTable,
+    LocalEndpoint, PendingLink, TrustTable, SHARE_EVENT_QUEUE,
 };
 use handfast_plugins::registry;
 use handfast_proto::{
@@ -160,8 +160,27 @@ async fn run() -> Result<(), Box<dyn Error>> {
         trust.set(DeviceId::new(id)?, Fingerprint::from_bytes(pin));
     }
     let (link_tx, mut link_rx) = mpsc::channel(LINK_EVENT_QUEUE);
-    let (links, manager_task) =
-        LinkManager::start(listener, local, trust, LinkLimits::default(), link_tx);
+    let (share_tx, mut share_rx) = mpsc::channel(SHARE_EVENT_QUEUE);
+    let (links, manager_task) = LinkManager::start(
+        listener,
+        local,
+        trust,
+        LinkLimits::default(),
+        link_tx,
+        share_tx,
+    );
+    // The inbound transfer runner lands with the share session unit. Until
+    // then, drain the reliable channel so a share request cannot fill it and
+    // close the link.
+    let _share_drain = tokio::spawn(async move {
+        while let Some(event) = share_rx.recv().await {
+            tracing::warn!(
+                device_id = %event.device_id,
+                ptype = %event.packet.ptype,
+                "dropping a share packet; the session transfer runner is not implemented"
+            );
+        }
+    });
 
     let local_device_id = identity.device_id.clone();
     let discovery = Discovery::bind(identity, args.discovery_port, tcp_port).await?;
@@ -294,6 +313,7 @@ impl Daemon {
             LinkEvent::Connected {
                 peer,
                 certificate,
+                remote_addr,
                 link,
                 paired,
             } => {
@@ -326,7 +346,7 @@ impl Daemon {
                         self.desktop.clone(),
                         self.events.clone(),
                     );
-                    tracing::info!(%device_id, "paired link connected");
+                    tracing::info!(%device_id, %remote_addr, "paired link connected");
                     self.sessions.insert(device_id, session);
                 } else {
                     self.pending.insert(
@@ -334,12 +354,14 @@ impl Daemon {
                         PendingLink {
                             peer,
                             certificate,
+                            remote_addr,
                             link,
                             queued: VecDeque::new(),
                         },
                     );
                     tracing::info!(
                         %device_id,
+                        %remote_addr,
                         "unpaired link authenticated; waiting for a pairing request"
                     );
                 }
