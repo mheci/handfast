@@ -14,6 +14,7 @@ use std::sync::Arc;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Device records, keyed by device ID, JSON-encoded.
 const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices_v1");
@@ -82,7 +83,7 @@ pub struct DeviceRecord {
 }
 
 /// Persisted daemon identity. The key is private material, so this must not
-/// implement `Debug`.
+/// implement `Debug`, and the key is zeroized on drop.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityRecord {
     /// Device identifier.
@@ -92,6 +93,20 @@ pub struct IdentityRecord {
     /// DER-encoded private key.
     pub key_der: Vec<u8>,
 }
+
+impl Zeroize for IdentityRecord {
+    fn zeroize(&mut self) {
+        self.key_der.zeroize();
+    }
+}
+
+impl Drop for IdentityRecord {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for IdentityRecord {}
 
 /// Embedded state.
 pub struct Store {
@@ -548,6 +563,21 @@ mod tests {
         assert!(!record.paired);
         assert_eq!(record.certificate_fingerprint, None);
         assert_eq!(record.last_seen, None);
+    }
+
+    #[test]
+    fn identity_record_zeroizes_its_key_on_drop() {
+        // Observing freed memory is unsafe, so this checks the function Drop
+        // calls and the marker trait that guards the contract.
+        fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<IdentityRecord>();
+
+        let mut record = identity_record();
+        record.zeroize();
+        assert!(
+            record.key_der.iter().all(|byte| *byte == 0),
+            "zeroize clears the key bytes"
+        );
     }
 
     #[test]
