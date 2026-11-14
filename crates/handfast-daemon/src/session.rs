@@ -244,6 +244,8 @@ impl SessionHandle {
     /// Fails with [`TransferError::Session`] when the queue stays full for the
     /// delivery timeout or the session stopped before it replied. Otherwise
     /// returns the file, packet or payload failure.
+    // The control channel (unit 10) is the first production caller.
+    #[allow(dead_code)]
     pub async fn share_file(&self, path: PathBuf) -> Result<TransferOutcome, TransferError> {
         let (reply, reply_rx) = oneshot::channel();
         match tokio::time::timeout(
@@ -378,6 +380,7 @@ pub enum SessionInput {
     /// One share packet on the reliable path.
     Share(Packet),
     /// One outbound file share. The session replies exactly once.
+    #[allow(dead_code)]
     ShareFile {
         /// Local source file.
         path: PathBuf,
