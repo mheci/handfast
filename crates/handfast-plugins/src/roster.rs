@@ -266,7 +266,7 @@ pub const SFTP: PluginMeta = PluginMeta {
 pub const SHARE: PluginMeta = PluginMeta {
     name: "share",
     title: "Share and receive",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::SHARE_REQUEST, types::SHARE_REQUEST_UPDATE],
     outgoing: &[types::SHARE_REQUEST, types::SHARE_REQUEST_UPDATE],
     desktop: DesktopRequirement::Files,
@@ -421,8 +421,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_five_plugins_are_implemented() {
+    fn exactly_six_plugins_are_implemented() {
         let implemented = ALL.iter().filter(|meta| meta.status == IMPLEMENTED).count();
-        assert_eq!(implemented, 5);
+        assert_eq!(implemented, 6);
+        assert!(ALL
+            .iter()
+            .any(|meta| meta.name == "share" && meta.status == IMPLEMENTED));
     }
 }
