@@ -1035,3 +1035,214 @@ async fn progress_reports_the_bytes_received() {
     assert_eq!(outcome.bytes, bytes.len() as u64);
     assert_eq!(updates.last(), Some(&(bytes.len() as u64)));
 }
+
+#[tokio::test]
+async fn receiver_progress_is_throttled_for_eight_mib() {
+    let _ports = ports().await;
+    let (service, certificate) = payload_service(limits());
+    let port = free_port();
+    let sender = PayloadSender::new(PayloadSenderConfig {
+        bind_port: Some(port),
+        expected_peer_certificate: Some(certificate),
+        ..PayloadSenderConfig::default()
+    })
+    .expect("build the testkit sender");
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let bytes = payload(8 * 1024 * 1024);
+    let offer = PayloadOffer {
+        size: PayloadSize::Known(bytes.len() as u64),
+        port: sender.port(),
+    };
+    // Room for every per-record send the old loop made for 8 MiB, so the
+    // assertion measures the throttle, not channel backpressure.
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(1024);
+    let mut sink = Vec::new();
+
+    let started = Instant::now();
+    let receiving = async {
+        let (send, receive) = tokio::join!(
+            sender.accept_and_send(&bytes),
+            service.receive(peer, offer, &mut sink, Some(progress_tx)),
+        );
+        send.expect("send the payload");
+        receive.expect("receive the payload")
+    };
+    let collecting = async {
+        let mut updates = Vec::new();
+        while let Some(bytes) = progress_rx.recv().await {
+            updates.push(bytes);
+        }
+        updates
+    };
+    let (outcome, updates) = tokio::join!(receiving, collecting);
+    let elapsed = started.elapsed();
+
+    assert_eq!(outcome.bytes, bytes.len() as u64);
+    assert_eq!(outcome.extra_bytes, 0);
+    assert_eq!(sink, bytes, "throttled progress leaves the bytes exact");
+    assert_eq!(
+        updates.last(),
+        Some(&(bytes.len() as u64)),
+        "the final byte count always arrives"
+    );
+    assert!(
+        updates.windows(2).all(|pair| pair[0] < pair[1]),
+        "progress is strictly increasing: {updates:?}"
+    );
+    let count = updates.len();
+    let max_updates = 3 + (elapsed.as_millis() / 500) as usize;
+    assert!(
+        count <= max_updates,
+        "8 MiB produced {count} updates in {elapsed:?}; the 500 ms / 4 MiB contract allows {max_updates}"
+    );
+}
+
+#[tokio::test]
+async fn sender_progress_is_throttled_for_eight_mib() {
+    let _ports = ports().await;
+    let (service, certificate) = payload_service(limits());
+    let receiver = PayloadReceiver::new(PayloadReceiverConfig {
+        expected_peer_certificate: Some(certificate),
+        ..PayloadReceiverConfig::default()
+    })
+    .expect("build the testkit receiver");
+    let receiver_certificate = receiver
+        .cert_der()
+        .expect("the receiver presents a certificate")
+        .to_vec();
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
+    let bytes = payload(8 * 1024 * 1024);
+    let prepared = service
+        .prepare_send(peer, source(&bytes))
+        .await
+        .expect("bind the payload listener");
+    let address = loopback(prepared.port());
+    // Room for every 64 KiB send the old loop made for 8 MiB, so the assertion
+    // measures the throttle, not channel backpressure.
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(1024);
+    let mut sink = Vec::new();
+
+    let started = Instant::now();
+    let sending = async {
+        let (send, receive) = tokio::join!(
+            prepared.start(Some(progress_tx)),
+            receiver.receive(address, bytes.len() as u64, &mut sink),
+        );
+        receive.expect("receive the payload");
+        send.expect("send the payload")
+    };
+    let collecting = async {
+        let mut updates = Vec::new();
+        while let Some(bytes) = progress_rx.recv().await {
+            updates.push(bytes);
+        }
+        updates
+    };
+    let (outcome, updates) = tokio::join!(sending, collecting);
+    let elapsed = started.elapsed();
+
+    assert_eq!(outcome.bytes, bytes.len() as u64);
+    assert_eq!(sink, bytes, "throttled progress leaves the bytes exact");
+    assert_eq!(
+        updates.last(),
+        Some(&(bytes.len() as u64)),
+        "the final byte count always arrives"
+    );
+    assert!(
+        updates.windows(2).all(|pair| pair[0] < pair[1]),
+        "progress is strictly increasing: {updates:?}"
+    );
+    let count = updates.len();
+    let max_updates = 3 + (elapsed.as_millis() / 500) as usize;
+    assert!(
+        count <= max_updates,
+        "8 MiB produced {count} updates in {elapsed:?}; the 500 ms / 4 MiB contract allows {max_updates}"
+    );
+}
+
+#[tokio::test]
+async fn progress_does_not_change_the_size_rules() {
+    let _ports = ports().await;
+
+    let (service, certificate) = payload_service(limits());
+    let port = free_port();
+    let bytes = payload(1024);
+    let sender = PayloadSender::new(PayloadSenderConfig {
+        bind_port: Some(port),
+        truncate_after: Some(512),
+        expected_peer_certificate: Some(certificate),
+        ..PayloadSenderConfig::default()
+    })
+    .expect("build the truncated sender");
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let offer = PayloadOffer {
+        size: PayloadSize::Known(1024),
+        port: sender.port(),
+    };
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+    let mut sink = Vec::new();
+    let receiving = async {
+        let (send, receive) = tokio::join!(
+            sender.accept_and_send(&bytes),
+            service.receive(peer, offer, &mut sink, Some(progress_tx)),
+        );
+        let _ = send;
+        receive
+    };
+    let collecting = async {
+        let mut updates = Vec::new();
+        while let Some(bytes) = progress_rx.recv().await {
+            updates.push(bytes);
+        }
+        updates
+    };
+    let (receive, updates) = tokio::join!(receiving, collecting);
+    match receive {
+        Err(PayloadError::SizeMismatch { expected, got }) => {
+            assert_eq!(expected, 1024);
+            assert_eq!(got, 512);
+        }
+        other => panic!("expected SizeMismatch, got {other:?}"),
+    }
+    assert_eq!(sink.len(), 512, "the truncated bytes reach the sink");
+    assert_eq!(updates.last(), Some(&512));
+
+    let extra = 1024 * 1024;
+    let (service, certificate) = payload_service(limits());
+    let port = free_port();
+    let sender = PayloadSender::new(PayloadSenderConfig {
+        bind_port: Some(port),
+        extra_bytes: extra,
+        expected_peer_certificate: Some(certificate),
+        ..PayloadSenderConfig::default()
+    })
+    .expect("build the extra-byte sender");
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let offer = PayloadOffer {
+        size: PayloadSize::Known(1),
+        port: sender.port(),
+    };
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+    let mut sink = Vec::new();
+    let receiving = async {
+        let (send, receive) = tokio::join!(
+            sender.accept_and_send(b"x"),
+            service.receive(peer, offer, &mut sink, Some(progress_tx)),
+        );
+        send.expect("send the payload");
+        receive.expect("extra bytes inside the cap are accepted")
+    };
+    let collecting = async {
+        let mut updates = Vec::new();
+        while let Some(bytes) = progress_rx.recv().await {
+            updates.push(bytes);
+        }
+        updates
+    };
+    let (outcome, updates) = tokio::join!(receiving, collecting);
+
+    assert_eq!(outcome.bytes, 1 + extra);
+    assert_eq!(outcome.extra_bytes, extra);
+    assert_eq!(sink.len() as u64, 1 + extra);
+    assert_eq!(updates.last(), Some(&(1 + extra)));
+}

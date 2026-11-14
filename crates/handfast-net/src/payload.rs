@@ -255,8 +255,9 @@ impl PayloadService {
     /// `sink`.
     ///
     /// The pending-connect permit is released before the active-transfer
-    /// permit is acquired. Progress is best effort: a full channel drops the
-    /// update, not the transfer.
+    /// permit is acquired. Progress is one update per 500 ms or 4 MiB, plus the
+    /// final byte count, and is best effort: a full channel drops the update,
+    /// not the transfer.
     ///
     /// # Errors
     ///
@@ -366,7 +367,9 @@ impl PreparedSend {
     /// [`PayloadLimits::accept_timeout`]. A failed handshake is discarded and
     /// retried until the deadline or the attempt limit. A source whose byte
     /// count does not match its declared size fails with
-    /// [`PayloadError::SizeMismatch`].
+    /// [`PayloadError::SizeMismatch`]. Progress is one update per 500 ms or
+    /// 4 MiB, plus the final byte count, and is best effort: a full channel
+    /// drops the update, not the transfer.
     ///
     /// # Errors
     ///
@@ -480,6 +483,56 @@ async fn acquire_permit(
     Ok(permit)
 }
 
+/// Minimum interval between progress updates for one transfer.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Byte step that also releases a progress update.
+const PROGRESS_STEP: u64 = 4 * 1024 * 1024;
+
+/// One progress update per `PROGRESS_INTERVAL` or `PROGRESS_STEP`, plus the
+/// exact final byte count.
+struct ProgressThrottle {
+    sender: Option<mpsc::Sender<u64>>,
+    attempted: u64,
+    sent: u64,
+    last_at: Instant,
+}
+
+impl ProgressThrottle {
+    fn new(sender: Option<&mpsc::Sender<u64>>) -> Self {
+        Self {
+            sender: sender.cloned(),
+            attempted: 0,
+            sent: 0,
+            last_at: Instant::now(),
+        }
+    }
+
+    fn update(&mut self, bytes: u64) {
+        let Some(sender) = self.sender.as_ref() else {
+            return;
+        };
+        if bytes.saturating_sub(self.attempted) < PROGRESS_STEP
+            && self.last_at.elapsed() < PROGRESS_INTERVAL
+        {
+            return;
+        }
+        self.attempted = bytes;
+        self.last_at = Instant::now();
+        if sender.try_send(bytes).is_ok() {
+            self.sent = bytes;
+        }
+    }
+
+    fn finish(&mut self, bytes: u64) {
+        if let Some(sender) = self.sender.as_ref() {
+            if bytes != self.sent {
+                let _ = sender.try_send(bytes);
+            }
+        }
+    }
+}
+
 async fn write_source(
     stream: &mut TlsStream<TcpStream>,
     reader: &mut (dyn AsyncRead + Send + Unpin),
@@ -487,6 +540,7 @@ async fn write_source(
     progress: Option<&mpsc::Sender<u64>>,
 ) -> Result<TransferOutcome, PayloadError> {
     let mut buffer = vec![0u8; limits.buffer_size];
+    let mut progress = ProgressThrottle::new(progress);
     let mut written = 0u64;
     loop {
         let read = timeout(limits.io_timeout, reader.read(&mut buffer))
@@ -499,10 +553,9 @@ async fn write_source(
             .await
             .map_err(|_| PayloadError::Timeout("payload write"))??;
         written += read as u64;
-        if let Some(progress) = progress {
-            let _ = progress.try_send(written);
-        }
+        progress.update(written);
     }
+    progress.finish(written);
     timeout(limits.io_timeout, stream.shutdown())
         .await
         .map_err(|_| PayloadError::Timeout("payload close"))??;
@@ -524,6 +577,7 @@ async fn read_payload(
         PayloadSize::Unknown => limits.max_size,
     };
     let mut buffer = vec![0u8; limits.buffer_size];
+    let mut progress = ProgressThrottle::new(progress);
     let mut total = 0u64;
     loop {
         let read = timeout(limits.io_timeout, stream.read(&mut buffer))
@@ -537,10 +591,9 @@ async fn read_payload(
             return Err(PayloadError::TooLarge(cap));
         }
         sink.write_all(&buffer[..read]).await?;
-        if let Some(progress) = progress {
-            let _ = progress.try_send(total);
-        }
+        progress.update(total);
     }
+    progress.finish(total);
     sink.flush().await?;
     match offer.size {
         PayloadSize::Known(expected) if total < expected => Err(PayloadError::SizeMismatch {
