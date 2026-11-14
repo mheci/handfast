@@ -55,7 +55,7 @@ pub fn load_or_generate_tls_identity(
         )
         .into());
     }
-    TlsIdentity::from_parts(stored_id, record.cert_der, record.key_der)
+    TlsIdentity::from_parts(stored_id, record.cert_der.clone(), record.key_der.clone())
         .map_err(|error: TlsError| format!("stored identity is unusable: {error}").into())
 }
 

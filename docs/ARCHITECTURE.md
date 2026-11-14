@@ -25,7 +25,7 @@ The wire contract is frozen independently of the implementation:
 - Protocol version 8.
 - Packet frame: 4-byte big-endian length followed by UTF-8 JSON. Maximum frame
   size 1 MiB.
-- UDP discovery on port 1716. TCP control and payload links use the 1714-1764
+- UDP discovery on port 1716. TCP control and payload links use the 1716-1764
   range.
 - TLS 1.2 and TLS 1.3. Certificates are self-signed, the device ID is the
   certificate common name, and peers pin the certificate fingerprint learned

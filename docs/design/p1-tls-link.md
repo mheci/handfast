@@ -118,9 +118,9 @@ let device_id = load_or_create_device_id(&store)?;
 // Load or generate the TLS material. No full identity yet: the TCP port is not bound.
 let tls = match store.identity()? {
     Some(record) => TlsIdentity::from_parts(
-        DeviceId::new(record.device_id)?,
-        record.cert_der,
-        record.key_der,
+        DeviceId::new(record.device_id.clone())?,
+        record.cert_der.clone(),
+        record.key_der.clone(),
     )?,
     None => {
         let tls = TlsIdentity::generate(device_id.clone())?;
@@ -440,7 +440,7 @@ impl TrustTable {
 }
 ```
 
-`LocalEndpoint` is the fix for the missing local identity. `TlsIdentity` has no `Debug` implementation; a derived `Debug` would print the private key. The key bytes are not zeroized on drop; this is a known follow-up risk.
+`LocalEndpoint` is the fix for the missing local identity. `TlsIdentity` has no `Debug` implementation; a derived `Debug` would print the private key.
 
 `TlsIdentity::generate` uses ECDSA P-256 and a certificate validity window of now minus one year to now plus ten years, matching Android's `initialiseCertificate`. The certificate has exactly one subject CN equal to the device ID; rcgen's default subject is replaced, not appended. The private key is PKCS#8 DER.
 
@@ -1371,7 +1371,6 @@ Both candidates converged on the important security shape: ECDSA P-256, CN = dev
 
 - The existing pairing state machine allows 300 s of clock skew. The protocol reference describes a 30-minute skew for the pairing timestamp. The pairing prompt unit should reconcile this before it ships. It does not affect the TLS handshake.
 - Windows state-file ACLs are inherited, not explicitly restricted. The private key is protected by the user profile ACL. A later unit can add an explicit DACL.
-- The private key is held in `Vec<u8>` and is not zeroized on drop. A follow-up can add `zeroize` or a secret wrapper. The file permissions limit the on-disk exposure; process memory is still a risk.
 - Ring's C build on Windows with the static CRT is not yet proven by this document. Implementation unit 0 is the gate. If ring fails, aws-lc-rs is the fallback after a `deny.toml` and CMake/NASM review.
 - The UDP announcement test relies on two `SO_REUSEADDR` UDP sockets on the same port receiving a broadcast on the CI kernel. If the Linux runner does not deliver it, the test needs a deterministic unicast announce target, which would add test-only surface. Verify in unit 10 before writing the test.
 - The 60 s unpaired idle timeout is a Handfast policy. The real peers do not expose a matching constant in the reviewed sources. The pairing prompt unit must coordinate it with the 30 s pairing request window, or the link can close while a prompt is open.

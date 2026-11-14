@@ -277,6 +277,103 @@ async fn rejected_pairing_writes_no_pin_and_starts_no_session() {
 }
 
 #[tokio::test]
+async fn unpair_clears_pins_and_stops_the_session() {
+    let _serial = serial().await;
+    let directory = tempfile::tempdir().unwrap();
+    let tcp_port = free_tcp_port();
+    let identity = print_identity(directory.path(), tcp_port);
+    let daemon_id = identity["body"]["deviceId"].as_str().unwrap().to_string();
+    let discovery_port = free_udp_port();
+    let log = directory.path().join("daemon.log");
+    let mut daemon = spawn_daemon_filtered(
+        directory.path(),
+        tcp_port,
+        discovery_port,
+        Some("y\n"),
+        &log,
+        "debug",
+    );
+    wait_for_state_file(directory.path(), &mut daemon).await;
+    wait_for_log(&log, "TCP listener bound", &mut daemon).await;
+
+    let config = testkit_peer();
+    let mut peer = dial(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, tcp_port)),
+        &daemon_id,
+        &config,
+    )
+    .await
+    .expect("the testkit peer completes the link");
+    wait_for_log(&log, "unpaired link authenticated", &mut daemon).await;
+
+    peer.send(&config.identity.pair_packet(true, Some(unix_now())))
+        .await
+        .expect("send a pairing request");
+    let response = peer
+        .recv()
+        .await
+        .expect("the pairing response arrives")
+        .expect("the daemon answers");
+    assert_eq!(response.body.get("pair"), Some(&json!(true)));
+    wait_for_log(&log, "pairing accepted", &mut daemon).await;
+
+    peer.send(&config.identity.ping_packet("before unpair"))
+        .await
+        .expect("send a ping before unpair");
+    wait_for_log(&log, "plugin events", &mut daemon).await;
+
+    peer.send(&config.identity.pair_packet(false, None))
+        .await
+        .expect("send an unpair request");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match tokio::time::timeout_at(deadline, peer.recv()).await {
+            // Plugin packets from the running session may arrive before the
+            // close. Only the close is part of this contract.
+            Ok(Ok(Some(_))) => {}
+            Ok(Ok(None)) | Ok(Err(_)) => break,
+            Err(_) => panic!("the manager did not close the link on unpair"),
+        }
+    }
+    wait_for_log(&log, "device session closing", &mut daemon).await;
+    assert!(
+        read_log(&log)
+            .lines()
+            .any(|line| line.contains("device session closing") && line.contains("unpaired")),
+        "the session stopped for the unpair reason: {}",
+        read_log(&log)
+    );
+
+    // The manager rate-limits inbound connections per IP for 500 ms.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    // The manager pin is gone when a fresh link from the same peer is unpaired.
+    let again = dial(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, tcp_port)),
+        &daemon_id,
+        &config,
+    )
+    .await
+    .expect("the testkit peer reconnects");
+    wait_for_log_count(&log, "unpaired link authenticated", 2, &mut daemon).await;
+
+    again.close().await.expect("close the testkit link");
+    stop(daemon);
+
+    let store = Store::open(directory.path().join("state.db")).unwrap();
+    let record = store
+        .device(TEST_PEER_ID)
+        .unwrap()
+        .expect("the authenticated peer is persisted");
+    assert!(!record.paired, "unpair clears the legacy paired flag");
+    assert_eq!(
+        record.certificate_fingerprint, None,
+        "unpair clears the durable pin"
+    );
+    assert!(store.trust_table().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn exhausted_range_exits_before_discovery() {
     let _serial = serial().await;
     let directory = tempfile::tempdir().unwrap();
@@ -518,6 +615,17 @@ fn spawn_daemon(
     stdin: Option<&str>,
     log: &Path,
 ) -> Child {
+    spawn_daemon_filtered(directory, tcp_port, discovery_port, stdin, log, "info")
+}
+
+fn spawn_daemon_filtered(
+    directory: &Path,
+    tcp_port: u16,
+    discovery_port: u16,
+    stdin: Option<&str>,
+    log: &Path,
+    filter: &str,
+) -> Child {
     let stderr = std::fs::File::create(log).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_handfastd"));
     command
@@ -529,7 +637,7 @@ fn spawn_daemon(
             "--discovery-port",
             &discovery_port.to_string(),
         ])
-        .env("RUST_LOG", "info")
+        .env("RUST_LOG", filter)
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr));
     match stdin {
@@ -580,6 +688,25 @@ async fn wait_for_log(log: &Path, needle: &str, daemon: &mut Child) {
         assert!(
             Instant::now() < deadline,
             "the log never contained {needle:?}: {}",
+            read_log(log)
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_log_count(log: &Path, needle: &str, count: usize, daemon: &mut Child) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if read_log(log).matches(needle).count() >= count {
+            return;
+        }
+        assert!(
+            daemon.try_wait().unwrap().is_none(),
+            "handfastd exited while waiting for {count} x {needle:?}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "the log never contained {count} x {needle:?}: {}",
             read_log(log)
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
