@@ -5,10 +5,13 @@ Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`
 Hardening queue, 2026-11-14:
 
 - The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
-- Main is at `a6077e9`. The P1 share implementation is complete: TLS link, pairing, share/file, control channel and daemon composition are merged.
-- Merged in the first wave: `#219` store zeroization, `#220` clipboard, `#221` notifications D-Bus, `#222` link frames, `#223` interop harness, `#225` redaction, `#227` payload progress, `#228` testkit and fuzz hardening, `#218` unit 11, `#224` MPRIS, `#229` input plugins, `#230` manager hardening.
-- `#226` system backends is the last current-queue PR, verifying at `bbee74e`.
-- Second fix wave: TLS key zeroization `ses_e259cab2effe7yPtYJT3LTT7uV`, store decode zeroization `ses_e259cab2dffefrj0m9mc0FYTe7`, discovery throttle `ses_e259cab23ffdM5nZLhR7VjKqas`, session drop diagnostics `ses_e259cab1effeqdJHiW0kBu2Ks6`, frame capacity `ses_e259cab1dffeLYwDaLdMozP43Q`, MPRIS metadata `ses_e25971272ffdSC6fNtAaeU98xa`, notifications race `ses_e25971271ffet2OJJbaFcYE0ZK`, payload final progress `ses_e2597126cffdfR3U0rv8HGp2X0`, docs parity `ses_e25971268ffeO3G4t0NiCZkV9W`, interop harness `ses_e25971267ffe5u1vxY2G2qiZHO`.
+- Main is at `2468a5b`. The P1 share implementation and the first hardening wave are complete.
+- The manual P1 exit gate remains: a real Android phone and a real KDE Connect desktop client. Run `scripts/interop-share.sh` or `.ps1` and follow `docs/INTEROP.md`. CI cannot replace it.
+- Merged in the first wave: `#219` store zeroization, `#220` clipboard, `#221` notifications D-Bus, `#222` link frames, `#223` interop harness, `#225` redaction, `#227` payload progress, `#228` testkit and fuzz hardening, `#218` unit 11, `#224` MPRIS, `#229` input plugins, `#230` manager hardening, `#226` system backends.
+- Merged in the second wave: `#232` frame capacity, `#233` discovery throttle, `#235` payload final progress.
+- Open second wave: `#231` session drops at `e3cc231` verifying, `#234` store decode at `e31adcf` verifying, `#236` MPRIS metadata at `3891cc4` verifying, `#237` notifications race at `42e2be0` CI failing on its own new test and in a fix round, `#238` TLS zeroize at `6836046` verifying, `#239` docs parity at `51dd0bf` updating after the backends merge.
+- Interop harness follow-up owner `ses_e25971267ffe5u1vxY2G2qiZHO` has not opened its PR yet.
+- New independent units: daemon backend wiring `ses_e25818e15ffekt1B67LXwFGVbA` and screensaver refcount `ses_e25818e15ffd40n3WdZL0ROr6N`.
 - Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. Then the remaining P2-P4 plugins and backends.
 
 Current state:
