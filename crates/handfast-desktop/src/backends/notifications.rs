@@ -15,7 +15,7 @@ use crate::traits::Notifier;
 const PROGRAM: &str = "notify-send";
 const GDBUS: &str = "gdbus";
 
-const MAX_PEER_ID_BYTES: usize = 256;
+const MAX_PEER_ID_BYTES: usize = 512;
 const MAX_TRACKED_IDS: usize = 1024;
 const REPLACE_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
