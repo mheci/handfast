@@ -23,10 +23,11 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     AclSizeInformation, AddAccessAllowedAceEx, EqualSid, GetAce, GetAclInformation, GetLengthSid,
-    GetSecurityDescriptorControl, GetTokenInformation, InitializeAcl, TokenUser,
+    GetSecurityDescriptorControl, GetTokenInformation, InitializeAcl, TokenOwner, TokenUser,
     ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE,
-    DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
-    SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+    DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, TOKEN_INFORMATION_CLASS,
+    TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -89,6 +90,55 @@ pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
     Ok(facts.protected && facts.user_only)
 }
 
+/// Whether `path`'s owner is the current process user or the owner SID its
+/// token sets on new objects.
+///
+/// An elevated Administrators token creates objects owned by the
+/// Administrators group, so both SIDs count as the current user. A state path
+/// owned by anyone else can be written through a link the owner planted before
+/// the daemon started, so the daemon rejects it before opening the path.
+///
+/// # Errors
+///
+/// Fails when the security descriptor cannot be read or the process token
+/// cannot be opened.
+#[allow(unsafe_code)]
+pub fn is_owned_by_current_user(path: &Path) -> io::Result<bool> {
+    let name = wide(path);
+    let user = current_user_sid()?;
+    let default_owner = current_owner_sid()?;
+    let mut owner: PSID = ptr::null_mut();
+    let mut descriptor: *mut c_void = ptr::null_mut();
+
+    // SAFETY: `name` is a live null-terminated UTF-16 buffer. The call fills
+    // `owner` and `descriptor`; `descriptor` owns both and is freed below. No
+    // DACL or SACL is requested or returned.
+    let result = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    // The guard owns the memory `owner` points into, so it outlives EqualSid.
+    let _descriptor = SecurityDescriptor(descriptor);
+    if owner.is_null() {
+        return Ok(false);
+    }
+    // SAFETY: `owner` points into the live descriptor, and `user` and
+    // `default_owner` own the token buffers holding their SIDs.
+    Ok(unsafe { EqualSid(user.sid(), owner) } != 0
+        || unsafe { EqualSid(default_owner.sid(), owner) } != 0)
+}
+
 /// The current process token's user SID as a string.
 ///
 /// Use this for a same-user boundary such as a named-pipe name or DACL.
@@ -137,7 +187,7 @@ struct DaclFacts {
 /// Read `name`'s DACL. `user_only` means exactly one allow ACE for the current
 /// user with full control.
 #[allow(unsafe_code)]
-fn read_dacl(name: &[u16], user: &ProcessUser) -> io::Result<DaclFacts> {
+fn read_dacl(name: &[u16], user: &TokenSid) -> io::Result<DaclFacts> {
     let mut dacl: *mut ACL = ptr::null_mut();
     let mut descriptor: *mut c_void = ptr::null_mut();
 
@@ -235,53 +285,67 @@ impl Drop for SecurityDescriptor {
     }
 }
 
-/// The process token's user SID, backed by the token information buffer the
-/// SID points into.
-struct ProcessUser {
+/// A SID read from the process token, backed by the buffer the SID points
+/// into.
+struct TokenSid {
     buffer: Vec<u64>,
+    class: TOKEN_INFORMATION_CLASS,
 }
 
-impl ProcessUser {
+impl TokenSid {
     #[allow(unsafe_code)]
     fn sid(&self) -> PSID {
-        // SAFETY: `GetTokenInformation(TokenUser)` wrote a `TOKEN_USER` at the
-        // start of the buffer and its `Sid` points inside the same buffer,
-        // which `self` keeps alive.
-        let user = unsafe { &*self.buffer.as_ptr().cast::<TOKEN_USER>() };
-        user.User.Sid
+        // SAFETY: `GetTokenInformation` wrote the class's struct at the start
+        // of the buffer and its SID points inside the same buffer, which
+        // `self` keeps alive.
+        unsafe {
+            if self.class == TokenOwner {
+                (*self.buffer.as_ptr().cast::<TOKEN_OWNER>()).Owner
+            } else {
+                (*self.buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid
+            }
+        }
     }
 }
 
+fn current_user_sid() -> io::Result<TokenSid> {
+    process_token_sid(TokenUser)
+}
+
+fn current_owner_sid() -> io::Result<TokenSid> {
+    process_token_sid(TokenOwner)
+}
+
 #[allow(unsafe_code)]
-fn current_user_sid() -> io::Result<ProcessUser> {
+fn process_token_sid(class: TOKEN_INFORMATION_CLASS) -> io::Result<TokenSid> {
     let mut token: HANDLE = ptr::null_mut();
     // SAFETY: `GetCurrentProcess` returns a pseudo handle that must not be
     // closed; `OpenProcessToken` fills `token` on success.
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    let result = token_user(token);
+    let result = token_sid(token, class);
     // SAFETY: `token` was opened above and is not used again.
     unsafe { CloseHandle(token) };
     result
 }
 
 #[allow(unsafe_code)]
-fn token_user(token: HANDLE) -> io::Result<ProcessUser> {
+fn token_sid(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> io::Result<TokenSid> {
     let mut length = 0u32;
     // SAFETY: a null buffer with length 0 is the documented size probe. It
     // writes the required size even though it returns false.
-    unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut length) };
+    unsafe { GetTokenInformation(token, class, ptr::null_mut(), 0, &mut length) };
     if length == 0 {
         return Err(io::Error::last_os_error());
     }
-    // u64 elements align the buffer for the TOKEN_USER pointer and the SID.
+    // u64 elements align the buffer for the token struct and the SID.
     let mut buffer = vec![0u64; (length as usize).div_ceil(size_of::<u64>())];
     // SAFETY: the buffer is at least `length` bytes and correctly aligned.
     let ok = unsafe {
         GetTokenInformation(
             token,
-            TokenUser,
+            class,
             buffer.as_mut_ptr().cast(),
             length,
             &mut length,
@@ -290,7 +354,7 @@ fn token_user(token: HANDLE) -> io::Result<ProcessUser> {
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(ProcessUser { buffer })
+    Ok(TokenSid { buffer, class })
 }
 
 #[allow(unsafe_code)]
@@ -356,6 +420,16 @@ mod tests {
     fn current_user_sid_string_is_a_sid() {
         let sid = current_user_sid_string().unwrap();
         assert!(sid.starts_with("S-1-"), "{sid}");
+    }
+
+    #[test]
+    fn file_created_by_this_process_is_owned_by_the_current_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("state.db");
+        std::fs::write(&file, b"state").unwrap();
+
+        assert!(is_owned_by_current_user(&file).unwrap());
+        assert!(is_owned_by_current_user(dir.path()).unwrap());
     }
 
     #[test]
