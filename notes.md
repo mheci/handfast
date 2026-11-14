@@ -94,6 +94,7 @@ Active parallel wave:
 - Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), rebasing after notifications.
 - Clipboard backend: merged in `e1f2a99`.
 - Unit 8 prep: done, runner brief in the session record.
+- Unit 9 prep: read-only, `ses_e2749efb4ffefsy69XCcPUXwIu`.
 
 Comment review follow-ups:
 
