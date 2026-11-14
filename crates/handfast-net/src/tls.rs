@@ -22,6 +22,11 @@ use rustls::{
 use crate::error::TlsError;
 use crate::identity::TlsIdentity;
 
+// shortcut: the parsed EcdsaKeyPair rustls keeps for the config lifetime is
+// not zeroized on drop in ring 0.17; the PKCS#8 copy passed to rustls is
+// zeroized by its ring key provider after parsing. Upgrade when rustls or ring
+// zeroizes a loaded signing key, or when the configs are rebuilt per handshake.
+
 /// TLS 1.3 first so a peer that offers both negotiates 1.3. TLS 1.2 stays for
 /// the official Android client, whose `SSLContext` caps it at 1.2.
 const PROTOCOL_VERSIONS: &[&rustls::SupportedProtocolVersion] =

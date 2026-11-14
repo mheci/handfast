@@ -127,7 +127,8 @@ impl TlsIdentity {
     ///
     /// The certificate must parse with exactly one common name equal to
     /// `device_id`, and the private key must match the certificate public key.
-    /// A stored identity is never silently regenerated.
+    /// A stored identity is never silently regenerated. The private key bytes
+    /// are zeroized on every path, including a validation failure.
     ///
     /// # Errors
     ///
@@ -138,13 +139,16 @@ impl TlsIdentity {
         cert_der: Vec<u8>,
         key_der: Vec<u8>,
     ) -> Result<Self, TlsError> {
+        // The guard wraps before the first return, so a rejected key is
+        // zeroized instead of freed as plain bytes.
+        let key_der = Zeroizing::new(key_der);
         if cert_der.is_empty() {
             return Err(TlsError::Certificate("empty certificate".to_string()));
         }
         if key_der.is_empty() {
             return Err(TlsError::Certificate("empty private key".to_string()));
         }
-        if pkcs8_der_len(&key_der) != Some(key_der.len()) {
+        if pkcs8_der_len(key_der.as_slice()) != Some(key_der.len()) {
             return Err(TlsError::Certificate(
                 "private key is not one PKCS#8 DER sequence".to_string(),
             ));
@@ -175,7 +179,7 @@ impl TlsIdentity {
         Ok(Self {
             device_id,
             cert_der,
-            key_der: Zeroizing::new(key_der),
+            key_der,
             fingerprint,
         })
     }
@@ -747,6 +751,43 @@ mod tests {
             TlsIdentity::from_parts(device_id(DEVICE_A), generated.cert_der().to_vec(), key_der),
             Err(TlsError::Certificate(_))
         ));
+    }
+
+    #[test]
+    fn rejected_key_is_dropped_through_the_zeroizing_guard() {
+        let generated = TlsIdentity::generate(device_id(DEVICE_A)).expect("generate identity");
+        let mut rejected = generated.key_der().to_vec();
+        rejected.extend_from_slice(&[0, 1, 2]);
+        let error =
+            TlsIdentity::from_parts(device_id(DEVICE_A), generated.cert_der().to_vec(), rejected)
+                .err()
+                .expect("trailing key bytes are rejected");
+        assert!(matches!(error, TlsError::Certificate(_)));
+
+        // Freed memory cannot be read back without unsafe, so the guard is
+        // pinned by type on the stored key; TlsIdentity has no Debug impl (see
+        // the compile_fail doctest). The rejected path must not carry key
+        // bytes into its error.
+        let accepted = TlsIdentity::from_parts(
+            device_id(DEVICE_A),
+            generated.cert_der().to_vec(),
+            generated.key_der().to_vec(),
+        )
+        .expect("the generated material loads");
+        let guard: &Zeroizing<Vec<u8>> = &accepted.key_der;
+        assert_eq!(guard.as_slice(), generated.key_der());
+
+        let key_hex: String = generated
+            .key_der()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let debug = format!("{error:?}");
+        assert!(!debug.contains(&key_hex), "no key bytes in Debug: {debug}");
+        assert!(
+            !error.to_string().contains(&key_hex),
+            "no key bytes in Display"
+        );
     }
 
     #[test]
