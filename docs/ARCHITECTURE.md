@@ -199,7 +199,8 @@ Tables:
 
 Schemas are versioned by table name and migrated with copy-on-open. The
 database lives at `$XDG_DATA_HOME/handfast/state.db`. On Unix the directory is
-0700 and the file is 0600.
+0700 and the file is 0600. On Windows both get a protected DACL for the current
+user; see [Windows state-file and incoming-file ACLs](#windows-state-file-and-incoming-file-acls).
 
 ## IPC
 
@@ -228,30 +229,58 @@ schema. Requests are idempotent; events are broadcast.
 - The daemon runs as a user service with `NoNewPrivileges`, `ProtectSystem=strict`
   and a restricted address family set.
 
-### Windows state-file ACL follow-up
+### Windows state-file and incoming-file ACLs
 
 The Unix path sets the state directory to 0700 and `state.db` to 0600. Windows
-currently inherits the user profile ACL. This is a known P1 security gap and is
-not silently claimed as fixed.
+gets an explicit protected DACL instead of the inherited profile ACL. The same
+policy covers the incoming root and its `.handfast-tmp` directory.
 
-The exact follow-up:
+The DACL policy:
 
-- API: add `windows-sys` with `Win32_Security`,
-  `Win32_Security_Authorization` and `Win32_Storage_FileSystem`. Build a DACL
-  with `InitializeAcl` and `AddAccessAllowedAceEx` for the current user SID
+- One access-allowed ACE for the current user SID from the process token
   (`OpenProcessToken` plus `GetTokenInformation(TokenUser)`) with
-  `FILE_ALL_ACCESS`, plus `SYSTEM` and the local `Administrators` group with
-  read access. Apply it with `SetNamedSecurityInfoW` using
-  `SE_FILE_OBJECT`, `DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION`
-  so inherited ACEs are removed. The workspace `unsafe_code = deny` needs a
-  narrow, reviewed `#[allow(unsafe_code)]` module or a safe wrapper crate; that
-  decision is part of the follow-up.
-- Test: create a temporary state directory, call `secure_state_dir` and
-  `secure_state_file`, read the DACL back with `GetNamedSecurityInfoW`, and
-  assert it is protected and contains exactly the current user, `SYSTEM` and
-  `Administrators`. Add a second local test user and assert opening the file
-  fails. Run the test in the existing `windows` CI job.
-- The test must run on `windows-latest`; it cannot be approximated on Unix.
+  `FILE_ALL_ACCESS`.
+- `SetNamedSecurityInfoW` with `SE_FILE_OBJECT` and
+  `DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION`, so
+  inherited profile ACEs are removed.
+- A directory's ACE carries `OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE`. A
+  `state.db` or incoming temp file created later starts with the same single
+  user ACE before its own explicit call.
+- No SYSTEM or Administrators ACE. The state holds the device private key and
+  incoming files hold user data. Those principals can already take ownership or
+  use backup privileges, so a permanent read ACE adds exposure without adding a
+  capability.
+
+The implementation is `handfast-desktop::winacl`, the only module with
+`windows-sys` 0.61 calls. The daemon already depends on `handfast-desktop`, so
+the helper is shared without a new crate and the unsafe surface stays one
+reviewed file. `GetNamedSecurityInfoW` reads the DACL back. Applying the same
+ACL twice is idempotent. It runs:
+
+- on the data directory at startup, before the store opens;
+- on `state.db` immediately after the store creates it;
+- on the incoming root and `.handfast-tmp` in `LocalFiles::new`, whether they
+  were created or already existed.
+
+On Windows a failure to set the DACL is fatal, not a warning.
+
+The test is a `#[cfg(windows)]` read-back. It asserts the DACL is protected,
+has exactly one ACE, and that ACE grants `FILE_ALL_ACCESS` to the current user
+SID. It covers the state directory, the state file, the incoming root and
+`.handfast-tmp`. The `windows` CI job runs it. The second local user rejection
+is a manual step because CI has no second interactive account:
+
+1. Create a standard local user.
+2. As an administrator, create `C:\acl-test` and grant the second user read
+   access to that folder only. Do not let the grant inherit.
+3. As the primary user, run `handfastd --data-dir C:\acl-test\data` and stop it
+   after `state.db` exists.
+4. As the second user, `type C:\acl-test\data\state.db` and
+   `dir C:\acl-test\data` must both be denied. The second user can read
+   `C:\acl-test`, so the denial comes from the state DACL.
+
+The incoming root and `.handfast-tmp` get the same DACL from
+`LocalFiles::new`; the read-back test covers them.
 
 ## CI design
 
