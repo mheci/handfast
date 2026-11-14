@@ -14,7 +14,7 @@ pub mod share;
 pub mod types;
 
 pub use error::{ProtoError, Result};
-pub use frame::{decode, encode, read_frame, write_frame, MAX_FRAME_SIZE};
+pub use frame::{decode, encode, encode_into, read_frame, write_frame, MAX_FRAME_SIZE};
 pub use identity::{
     Capabilities, DeviceId, DeviceName, DeviceType, DiscoveryAnnouncement, Identity, IdentityHello,
     PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT, PROTOCOL_VERSION,

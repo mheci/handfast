@@ -14,22 +14,41 @@ pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 ///
 /// Fails when the packet cannot be serialized or exceeds the frame limit.
 pub fn encode(packet: &Packet) -> Result<Vec<u8>> {
+    let mut frame = Vec::new();
+    encode_into(packet, &mut frame)?;
+    Ok(frame)
+}
+
+/// Encode a packet into a complete frame, reusing `frame`.
+///
+/// The buffer is cleared first. On success it holds exactly the bytes
+/// [`encode`] returns. On error it is empty.
+///
+/// # Errors
+///
+/// Fails when the packet cannot be serialized or exceeds the frame limit.
+pub fn encode_into(packet: &Packet, frame: &mut Vec<u8>) -> Result<()> {
     packet.validate()?;
-    let payload = serde_json::to_vec(packet)?;
-    let size = payload.len();
+    frame.clear();
+    frame.extend_from_slice(&[0u8; 4]);
+    if let Err(error) = serde_json::to_writer(&mut *frame, packet) {
+        frame.clear();
+        return Err(error.into());
+    }
+    let size = frame.len() - 4;
     if size == 0 {
+        frame.clear();
         return Err(ProtoError::EmptyFrame);
     }
     if size + 4 > MAX_FRAME_SIZE {
+        frame.clear();
         return Err(ProtoError::FrameTooLarge {
             size: size + 4,
             max: MAX_FRAME_SIZE,
         });
     }
-    let mut frame = Vec::with_capacity(size + 4);
-    frame.extend_from_slice(&(size as u32).to_be_bytes());
-    frame.extend_from_slice(&payload);
-    Ok(frame)
+    frame[..4].copy_from_slice(&(size as u32).to_be_bytes());
+    Ok(())
 }
 
 /// Decode a complete frame.
