@@ -14,7 +14,7 @@ use std::sync::Arc;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Device records, keyed by device ID, JSON-encoded.
 const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices_v1");
@@ -226,13 +226,18 @@ impl Store {
         Ok(Some(serde_json::from_slice(value.value())?))
     }
 
+    /// Serialize the identity into a buffer that is zeroized on drop.
+    fn serialize_identity(record: &IdentityRecord) -> Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(serde_json::to_vec(record)?))
+    }
+
     /// Store the daemon identity, replacing any previous value.
     ///
     /// # Errors
     ///
     /// Fails when the record cannot be serialized or written.
     pub fn set_identity(&self, record: &IdentityRecord) -> Result<()> {
-        let value = serde_json::to_vec(record)?;
+        let value = Self::serialize_identity(record)?;
         let write = self.database.begin_write()?;
         {
             let mut table = write.open_table(IDENTITY)?;
@@ -614,6 +619,19 @@ mod tests {
         assert_eq!(loaded.device_id, record.device_id);
         assert_eq!(loaded.cert_der, record.cert_der);
         assert_eq!(loaded.key_der, record.key_der);
+    }
+
+    #[test]
+    fn identity_serialization_buffer_is_zeroizing() {
+        // The buffer type is the guard: any early return in set_identity drops
+        // it through Zeroizing, which zeroizes the serialized key.
+        let record = identity_record();
+        let buffer: Zeroizing<Vec<u8>> = Store::serialize_identity(&record).unwrap();
+        assert_eq!(
+            buffer.as_slice(),
+            serde_json::to_vec(&record).unwrap().as_slice(),
+            "the zeroizing buffer carries the bytes the store writes"
+        );
     }
 
     #[test]
