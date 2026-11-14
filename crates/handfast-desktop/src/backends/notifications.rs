@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
@@ -13,6 +14,13 @@ use crate::traits::Notifier;
 
 const PROGRAM: &str = "notify-send";
 const GDBUS: &str = "gdbus";
+
+/// Longest peer notification ID accepted for tracking.
+const MAX_PEER_ID_BYTES: usize = 256;
+/// Most peer notification IDs tracked before the map is cleared.
+const MAX_TRACKED_IDS: usize = 1024;
+/// Upper bound on the best-effort close of a replaced notification.
+const REPLACE_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Output captured from a finished command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +59,7 @@ pub struct TokioCommandRunner;
 impl CommandRunner for TokioCommandRunner {
     async fn run(&self, program: &str, args: &[String]) -> io::Result<CommandOutput> {
         let output = tokio::process::Command::new(program)
+            .kill_on_drop(true)
             .args(args)
             .output()
             .await?;
@@ -68,10 +77,8 @@ impl CommandRunner for TokioCommandRunner {
 pub struct CommandNotifier {
     runner: Arc<dyn CommandRunner>,
     /// Peer notification ID to the ID `notify-send` assigned to the displayed
-    /// notification.
-    // shortcut: entries only leave on close or replacement, so a peer that
-    // never cancels grows the map; bound it or add a TTL when that traffic
-    // appears.
+    /// notification. Cleared at [`MAX_TRACKED_IDS`] so an uncancelled peer
+    /// cannot grow it without bound.
     ids: Arc<Mutex<HashMap<String, u32>>>,
 }
 
@@ -170,6 +177,12 @@ fn exit_error(program: &str, output: &CommandOutput) -> DesktopError {
 #[async_trait]
 impl Notifier for CommandNotifier {
     async fn notify(&self, notification: &Notification) -> Result<()> {
+        let peer_id = notification.id.as_deref();
+        if peer_id.is_some_and(|id| id.len() > MAX_PEER_ID_BYTES) {
+            return Err(DesktopError::Backend(format!(
+                "notification id exceeds {MAX_PEER_ID_BYTES} bytes"
+            )));
+        }
         let args = Self::args(notification);
         let output = self
             .runner
@@ -179,19 +192,30 @@ impl Notifier for CommandNotifier {
         if !output.success() {
             return Err(exit_error(PROGRAM, &output));
         }
-        let Some(peer_id) = notification.id.as_deref() else {
+        let Some(peer_id) = peer_id else {
             return Ok(());
         };
         let backend_id = output.stdout.trim().parse::<u32>().ok();
-        // The replace and the close it triggers run under one lock, so a
-        // concurrent close cannot remove the id this replace just stored.
-        let mut ids = self.ids.lock().await;
-        if let Some(previous) = ids.remove(peer_id) {
-            // A stale notification must not fail the new one.
-            let _ = self.close_backend(previous).await;
-        }
-        if let Some(backend_id) = backend_id {
-            ids.insert(peer_id.to_string(), backend_id);
+        // Store the new id before closing the old one, so a cancelled close
+        // cannot leave the displayed notification untracked.
+        let previous = {
+            let mut ids = self.ids.lock().await;
+            let previous = ids.remove(peer_id);
+            if let Some(backend_id) = backend_id {
+                if ids.len() >= MAX_TRACKED_IDS {
+                    ids.clear();
+                    eprintln!(
+                        "handfast-desktop: notification id map reached {MAX_TRACKED_IDS} entries; clearing it"
+                    );
+                }
+                ids.insert(peer_id.to_string(), backend_id);
+            }
+            previous
+        };
+        if let Some(previous) = previous {
+            // A stale notification must not fail the new one, and a hung close
+            // must not stall other devices.
+            let _ = tokio::time::timeout(REPLACE_CLOSE_TIMEOUT, self.close_backend(previous)).await;
         }
         Ok(())
     }
@@ -553,6 +577,130 @@ mod tests {
             1,
             "close must not spawn when no id was stored"
         );
+    }
+
+    #[tokio::test]
+    async fn overlong_peer_id_is_rejected() {
+        let (notifier, runner) = notifier(FakeOutcome::printing("7"));
+        let id = "x".repeat(MAX_PEER_ID_BYTES + 1);
+        let error = notifier
+            .notify(&posted(Some(id.as_str())))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, DesktopError::Backend(_)),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            runner.calls().is_empty(),
+            "a rejected id must not spawn notify-send"
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_id_at_the_length_cap_is_tracked() {
+        let (notifier, runner) = notifier(FakeOutcome::printing("7"));
+        let id = "x".repeat(MAX_PEER_ID_BYTES);
+        notifier.notify(&posted(Some(id.as_str()))).await.unwrap();
+        notifier.close(&id).await.unwrap();
+        assert_eq!(runner.calls().len(), 2, "expected notify-send then gdbus");
+    }
+
+    #[tokio::test]
+    async fn the_id_map_is_bounded() {
+        let (notifier, runner) = notifier(FakeOutcome::printing("5"));
+        for index in 0..MAX_TRACKED_IDS {
+            let id = format!("peer-{index}");
+            notifier.notify(&posted(Some(id.as_str()))).await.unwrap();
+        }
+        assert_eq!(runner.calls().len(), MAX_TRACKED_IDS);
+
+        notifier.close("peer-0").await.unwrap();
+        assert_eq!(
+            runner.calls().len(),
+            MAX_TRACKED_IDS + 1,
+            "an id at the cap is still tracked"
+        );
+
+        notifier.notify(&posted(Some("peer-0"))).await.unwrap();
+        notifier
+            .notify(&posted(Some("peer-overflow")))
+            .await
+            .unwrap();
+        assert_eq!(runner.calls().len(), MAX_TRACKED_IDS + 3);
+
+        notifier.close("peer-1").await.unwrap();
+        assert_eq!(
+            runner.calls().len(),
+            MAX_TRACKED_IDS + 3,
+            "the overflow must clear the older ids"
+        );
+        notifier.close("peer-overflow").await.unwrap();
+        assert_eq!(
+            runner.calls().len(),
+            MAX_TRACKED_IDS + 4,
+            "the overflow id must stay closable"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hung_previous_close_times_out_without_losing_the_new_id() {
+        let (notifier, runner) = notifier(FakeOutcome::printing("1"));
+        notifier.notify(&posted(Some("peer-1"))).await.unwrap();
+        runner.set_notify(FakeOutcome::printing("2"));
+
+        let (release, gate) = tokio::sync::oneshot::channel();
+        runner.gate_next_gdbus(gate);
+        let replacement = posted(Some("peer-1"));
+        tokio::time::timeout(Duration::from_secs(2), notifier.notify(&replacement))
+            .await
+            .expect("the replacement must not wait on a hung close")
+            .unwrap();
+
+        notifier.close("peer-1").await.unwrap();
+        let closed: Vec<String> = runner
+            .calls()
+            .into_iter()
+            .filter(|(program, _)| program == GDBUS)
+            .map(|(_, args)| args.last().unwrap().clone())
+            .collect();
+        assert_eq!(
+            closed.last().map(String::as_str),
+            Some("2"),
+            "the replacement must stay closable after the old close times out"
+        );
+        drop(release);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_previous_close_keeps_the_new_id_closable() {
+        let (notifier, runner) = notifier(FakeOutcome::printing("1"));
+        notifier.notify(&posted(Some("peer-1"))).await.unwrap();
+        runner.set_notify(FakeOutcome::printing("2"));
+
+        let (release, gate) = tokio::sync::oneshot::channel();
+        runner.gate_next_gdbus(gate);
+        let replacing = tokio::spawn({
+            let notifier = notifier.clone();
+            async move { notifier.notify(&posted(Some("peer-1"))).await }
+        });
+        runner.wait_for_calls(3).await;
+        replacing.abort();
+        assert!(replacing.await.unwrap_err().is_cancelled());
+
+        notifier.close("peer-1").await.unwrap();
+        let closed: Vec<String> = runner
+            .calls()
+            .into_iter()
+            .filter(|(program, _)| program == GDBUS)
+            .map(|(_, args)| args.last().unwrap().clone())
+            .collect();
+        assert_eq!(
+            closed.last().map(String::as_str),
+            Some("2"),
+            "a cancelled close of the old id must not lose the replacement"
+        );
+        drop(release);
     }
 
     #[tokio::test]
