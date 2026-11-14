@@ -12,7 +12,6 @@ use serde_json::{json, Value};
 
 use crate::roster;
 
-/// Reject peer timestamps more than five minutes ahead of local time.
 const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1_000;
 
 fn now_ms() -> Option<i64> {
@@ -22,13 +21,17 @@ fn now_ms() -> Option<i64> {
         .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
 }
 
-fn is_out_of_order(timestamp: Option<i64>, last_applied_ms: i64) -> bool {
+fn is_out_of_order(timestamp: Option<i64>, last_applied_ms: i64, now: Option<i64>) -> bool {
     let Some(timestamp) = timestamp else {
         return false;
     };
-    // A local clock error skips the future check, so a broken clock cannot drop valid packets.
-    timestamp <= last_applied_ms
-        || now_ms().is_some_and(|now| timestamp > now.saturating_add(MAX_CLOCK_SKEW_MS))
+    if timestamp <= last_applied_ms {
+        return true;
+    }
+    let Some(now) = now else {
+        return true;
+    };
+    timestamp > now.saturating_add(MAX_CLOCK_SKEW_MS)
 }
 
 /// Applies inbound clipboard text and emits a typed event.
@@ -72,7 +75,7 @@ impl Plugin for ClipboardPlugin {
         }
 
         let timestamp = packet.body.get("timestamp").and_then(Value::as_i64);
-        if is_out_of_order(timestamp, self.last_timestamp_ms) {
+        if is_out_of_order(timestamp, self.last_timestamp_ms, now_ms()) {
             return Ok(PluginOutput::new());
         }
 
@@ -222,6 +225,31 @@ mod tests {
 
     #[tokio::test]
     async fn future_timestamp_is_ignored_and_does_not_poison_later_packets() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let mut plugin = ClipboardPlugin::new();
+
+        let poisoned = clipboard_connect_packet("poison", i64::MAX).unwrap();
+        let output = plugin.on_packet(&mut ctx, &poisoned).await.unwrap();
+        assert!(output.events.is_empty());
+        assert!(mock.clipboard().is_none());
+        assert_eq!(plugin.last_timestamp_ms(), 0);
+
+        let later = clipboard_connect_packet("later", 1_000).unwrap();
+        plugin.on_packet(&mut ctx, &later).await.unwrap();
+        assert_eq!(mock.clipboard().as_deref(), Some("later"));
+        assert_eq!(plugin.last_timestamp_ms(), 1_000);
+    }
+
+    #[tokio::test]
+    async fn missing_clock_rejects_future_timestamps() {
+        assert!(is_out_of_order(Some(i64::MAX), 0, None));
+
         let mock = MockDesktop::new();
         let desktop = mock.desktop();
         let device = device();
