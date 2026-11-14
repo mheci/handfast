@@ -64,10 +64,16 @@ impl Inhibitor for TokioInhibitor {
     }
 }
 
+/// The one inhibit process, shared by every connected device.
+struct Active {
+    holders: usize,
+    inhibition: Box<dyn Inhibition>,
+}
+
 /// Screensaver inhibition through `systemd-inhibit`.
 pub struct SystemdInhibitor {
     inhibitor: Arc<dyn Inhibitor>,
-    active: tokio::sync::Mutex<Option<Box<dyn Inhibition>>>,
+    active: tokio::sync::Mutex<Option<Active>>,
 }
 
 impl SystemdInhibitor {
@@ -99,8 +105,9 @@ impl Default for SystemdInhibitor {
 #[async_trait]
 impl Screensaver for SystemdInhibitor {
     async fn inhibit(&self, reason: &str) -> Result<()> {
-        let mut active = self.active.lock().await;
-        if active.is_some() {
+        let mut state = self.active.lock().await;
+        if let Some(active) = state.as_mut() {
+            active.holders += 1;
             return Ok(());
         }
         let why = format!("--why={reason}");
@@ -118,42 +125,59 @@ impl Screensaver for SystemdInhibitor {
                 DesktopError::Backend(format!("failed to run {PROGRAM}: {error}"))
             }
         })?;
-        *active = Some(inhibition);
+        *state = Some(Active {
+            holders: 1,
+            inhibition,
+        });
         Ok(())
     }
 
     async fn release(&self) -> Result<()> {
-        let mut active = self.active.lock().await;
-        if let Some(inhibition) = active.take() {
-            inhibition.release().await.map_err(|error| {
-                DesktopError::Backend(format!("failed to stop {PROGRAM}: {error}"))
-            })?;
+        let mut state = self.active.lock().await;
+        let Some(mut active) = state.take() else {
+            return Ok(());
+        };
+        active.holders -= 1;
+        if active.holders > 0 {
+            *state = Some(active);
+            return Ok(());
         }
-        Ok(())
+        drop(state);
+        active
+            .inhibition
+            .release()
+            .await
+            .map_err(|error| DesktopError::Backend(format!("failed to stop {PROGRAM}: {error}")))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
     #[derive(Clone, Default)]
     struct FakeInhibition {
-        released: Arc<AtomicBool>,
+        releases: Arc<AtomicUsize>,
+    }
+
+    impl FakeInhibition {
+        fn releases(&self) -> usize {
+            self.releases.load(Ordering::SeqCst)
+        }
     }
 
     #[async_trait]
     impl Inhibition for FakeInhibition {
         async fn release(&self) -> io::Result<()> {
-            self.released.store(true, Ordering::SeqCst);
+            self.releases.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
 
     struct FakeInhibitor {
-        failure: Option<io::ErrorKind>,
+        failure: Mutex<Option<io::ErrorKind>>,
         calls: Mutex<Vec<Vec<String>>>,
         inhibition: FakeInhibition,
     }
@@ -170,7 +194,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(args.iter().map(|arg| arg.to_string()).collect());
-            match self.failure {
+            match self.failure.lock().unwrap().take() {
                 Some(kind) => Err(io::Error::from(kind)),
                 None => Ok(Box::new(self.inhibition.clone())),
             }
@@ -180,7 +204,7 @@ mod tests {
     fn screensaver(failure: Option<io::ErrorKind>) -> (SystemdInhibitor, Arc<FakeInhibitor>) {
         let inhibition = FakeInhibition::default();
         let inhibitor = Arc::new(FakeInhibitor {
-            failure,
+            failure: Mutex::new(failure),
             calls: Mutex::new(Vec::new()),
             inhibition: inhibition.clone(),
         });
@@ -209,7 +233,7 @@ mod tests {
                 "infinity",
             ])]
         );
-        assert!(!inhibitor.inhibition.released.load(Ordering::SeqCst));
+        assert_eq!(inhibitor.inhibition.releases(), 0);
     }
 
     #[tokio::test]
@@ -229,9 +253,45 @@ mod tests {
         screensaver.inhibit("reason").await.unwrap();
         screensaver.release().await.unwrap();
 
-        assert!(inhibitor.inhibition.released.load(Ordering::SeqCst));
+        assert_eq!(inhibitor.inhibition.releases(), 1);
         screensaver.release().await.unwrap();
+        assert_eq!(inhibitor.inhibition.releases(), 1);
         assert_eq!(inhibitor.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn inhibition_is_refcounted_across_holders() {
+        let (screensaver, inhibitor) = screensaver(None);
+
+        screensaver.release().await.unwrap();
+        assert_eq!(inhibitor.inhibition.releases(), 0);
+
+        screensaver.inhibit("first").await.unwrap();
+        screensaver.inhibit("second").await.unwrap();
+        assert_eq!(inhibitor.calls().len(), 1);
+
+        screensaver.release().await.unwrap();
+        assert_eq!(inhibitor.inhibition.releases(), 0);
+
+        screensaver.release().await.unwrap();
+        assert_eq!(inhibitor.inhibition.releases(), 1);
+
+        screensaver.release().await.unwrap();
+        assert_eq!(inhibitor.inhibition.releases(), 1);
+        assert_eq!(inhibitor.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_spawn_is_retried_by_the_next_inhibit() {
+        let (screensaver, inhibitor) = screensaver(Some(io::ErrorKind::PermissionDenied));
+
+        assert!(screensaver.inhibit("reason").await.is_err());
+        screensaver.inhibit("reason").await.unwrap();
+
+        assert_eq!(inhibitor.calls().len(), 2);
+
+        screensaver.release().await.unwrap();
+        assert_eq!(inhibitor.inhibition.releases(), 1);
     }
 
     #[tokio::test]
