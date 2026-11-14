@@ -12,9 +12,7 @@ use handfast_net::{
     Fingerprint, LinkEvent, LinkLimits, LinkListener, LinkManager, LinkManagerHandle,
     LocalEndpoint, ShareEvent, TlsIdentity, TrustTable,
 };
-use handfast_proto::{
-    types, Capabilities, DeviceId, DeviceName, DeviceType, Identity, PayloadTransferInfo,
-};
+use handfast_proto::{types, Capabilities, DeviceId, DeviceName, DeviceType, Identity};
 use handfast_testkit::payload_peer::{PayloadSender, PayloadSenderConfig};
 use handfast_testkit::peer::PeerConfig;
 use handfast_testkit::tls_peer::{dial, TlsPeerConfig, TlsVersion};
@@ -75,7 +73,7 @@ fn share_file(port: u16) -> WirePacket {
             .cloned()
             .unwrap_or_default(),
         payload_size: Some(1),
-        payload_transfer_info: Some(PayloadTransferInfo::new(port)),
+        payload_transfer_info: Some(json!({ "port": port })),
     }
 }
 

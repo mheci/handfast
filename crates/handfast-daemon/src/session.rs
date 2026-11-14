@@ -682,7 +682,7 @@ async fn receive_transfer(
         PayloadSize::Known(bytes) => Some(bytes),
         PayloadSize::Unknown => None,
     };
-    let incoming = match files
+    let mut incoming = match files
         .open_incoming(IncomingRequest {
             filename,
             size: declared,
