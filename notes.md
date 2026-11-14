@@ -81,12 +81,12 @@ Active parallel wave:
 - Unit 5 runtime transfer: merged in `578e156`.
 - Unit 6 share plugin: merged in `4c4f0de`.
 - Unit 7 manager share routing: merged in `4dc1aa7`.
-- Unit 8 inbound session runner: branch `feat/inbound-runner`, owner `ses_e27624f69ffePp39O7upPyN1eB`, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit8-inbound-runner-brief.md`.
+- Unit 8 inbound session runner: PR [#215](https://github.com/mheci/handfast/pull/215), head `4d05816`, clippy fix in flight. Tests, Windows and the other 7 checks pass.
 - Windows ACLs: merged in `4f4a7cf`. The P1 Windows state and incoming ACL blocker is cleared.
 - P1 hardening: merged in `b4d41ba`.- Share docs and fuzz: merged in `c36802a`.
 - Connectivity report plugin: merged in `b74f2d8`.
 - Notifications backend: merged in `840e7a1`.
-- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `e054893`, verifier PASS, owner merging.
+- System volume plugin: merged in `88f8d9b`.
 - Pause music plugin: merged in `b228c1c`.
 - MPRIS control plugin: merged in `54b85e9`.
 - Notifications close fix: merged in `c92dae7`.
