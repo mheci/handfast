@@ -1,5 +1,7 @@
 //! Clipboard plugin.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use async_trait::async_trait;
 use handfast_proto::{types, Packet, ProtoError};
 use handfast_runtime::{
@@ -9,6 +11,28 @@ use handfast_runtime::{
 use serde_json::{json, Value};
 
 use crate::roster;
+
+const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1_000;
+
+fn now_ms() -> Option<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+}
+
+fn is_out_of_order(timestamp: Option<i64>, last_applied_ms: i64, now: Option<i64>) -> bool {
+    let Some(timestamp) = timestamp else {
+        return false;
+    };
+    if timestamp <= last_applied_ms {
+        return true;
+    }
+    let Some(now) = now else {
+        return true;
+    };
+    timestamp > now.saturating_add(MAX_CLOCK_SKEW_MS)
+}
 
 /// Applies inbound clipboard text and emits a typed event.
 #[derive(Debug, Default)]
@@ -50,19 +74,17 @@ impl Plugin for ClipboardPlugin {
             return Ok(PluginOutput::new());
         }
 
+        let timestamp = packet.body.get("timestamp").and_then(Value::as_i64);
+        if is_out_of_order(timestamp, self.last_timestamp_ms, now_ms()) {
+            return Ok(PluginOutput::new());
+        }
+
         let Some(content) = packet.body.get("content").and_then(Value::as_str) else {
             return Ok(PluginOutput::new().with_event(PluginEvent::Log {
                 level: LogLevel::Warn,
                 message: "clipboard packet without content".to_string(),
             }));
         };
-        let timestamp = packet.body.get("timestamp").and_then(Value::as_i64);
-
-        if packet.ptype == types::CLIPBOARD_CONNECT
-            && timestamp.is_some_and(|value| value <= self.last_timestamp_ms)
-        {
-            return Ok(PluginOutput::new());
-        }
 
         let Some(clipboard) = ctx.desktop.clipboard.as_ref() else {
             return Err(PluginError::UnsupportedDesktop("clipboard"));
@@ -174,6 +196,79 @@ mod tests {
         assert_eq!(mock.clipboard().as_deref(), Some("new"));
         assert!(output.events.is_empty());
         assert_eq!(plugin.last_timestamp_ms(), 2_000);
+    }
+
+    #[tokio::test]
+    async fn stale_clipboard_packet_is_ignored() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let mut plugin = ClipboardPlugin::new();
+
+        let newer = clipboard_connect_packet("new", 2_000).unwrap();
+        plugin.on_packet(&mut ctx, &newer).await.unwrap();
+        let stale = Packet::from_body(
+            types::CLIPBOARD,
+            &json!({"content": "old", "timestamp": 1_000}),
+        )
+        .unwrap();
+        let output = plugin.on_packet(&mut ctx, &stale).await.unwrap();
+
+        assert_eq!(mock.clipboard().as_deref(), Some("new"));
+        assert!(output.events.is_empty());
+        assert_eq!(plugin.last_timestamp_ms(), 2_000);
+    }
+
+    #[tokio::test]
+    async fn future_timestamp_is_ignored_and_does_not_poison_later_packets() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let mut plugin = ClipboardPlugin::new();
+
+        let poisoned = clipboard_connect_packet("poison", i64::MAX).unwrap();
+        let output = plugin.on_packet(&mut ctx, &poisoned).await.unwrap();
+        assert!(output.events.is_empty());
+        assert!(mock.clipboard().is_none());
+        assert_eq!(plugin.last_timestamp_ms(), 0);
+
+        let later = clipboard_connect_packet("later", 1_000).unwrap();
+        plugin.on_packet(&mut ctx, &later).await.unwrap();
+        assert_eq!(mock.clipboard().as_deref(), Some("later"));
+        assert_eq!(plugin.last_timestamp_ms(), 1_000);
+    }
+
+    #[tokio::test]
+    async fn missing_clock_rejects_future_timestamps() {
+        assert!(is_out_of_order(Some(i64::MAX), 0, None));
+
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let mut plugin = ClipboardPlugin::new();
+
+        let poisoned = clipboard_connect_packet("poison", i64::MAX).unwrap();
+        let output = plugin.on_packet(&mut ctx, &poisoned).await.unwrap();
+        assert!(output.events.is_empty());
+        assert!(mock.clipboard().is_none());
+        assert_eq!(plugin.last_timestamp_ms(), 0);
+
+        let later = clipboard_connect_packet("later", 1_000).unwrap();
+        plugin.on_packet(&mut ctx, &later).await.unwrap();
+        assert_eq!(mock.clipboard().as_deref(), Some("later"));
+        assert_eq!(plugin.last_timestamp_ms(), 1_000);
     }
 
     #[tokio::test]
