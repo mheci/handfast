@@ -86,12 +86,12 @@ Active parallel wave:
 - P1 hardening: merged in `b4d41ba`.- Share docs and fuzz: merged in `c36802a`.
 - Connectivity report plugin: merged in `b74f2d8`.
 - Notifications backend: merged in `840e7a1`.
-- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `8dad9f6`, verifier PASS, rebase after find-this-device.
+- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), rebasing after find-this-device.
 - Pause music plugin: merged in `b228c1c`.
 - MPRIS control plugin: merged in `54b85e9`.
 - Notifications close fix: merged in `c92dae7`.
 - Notifications plugin: merged in `c3d86ac`.
-- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `13cb075`, verifier PASS, owner merging.
+- Find this device plugin: merged in `53e3b0f`.
 - Clipboard backend: merged in `e1f2a99`.
 - Unit 8 prep: done, runner brief in the session record.
 - Unit 9 prep: done. The outbound transfer must run in a task or JoinSet, not inline in the session loop, so a 30 s accept deadline cannot stall packets, pings or pairing.
