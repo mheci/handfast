@@ -79,8 +79,8 @@ Active work:
 
 - Branch: `feat/net-payload`
 - Owner: net payload worker `ses_e2991d601ffed1ItEJBmttFs7r`
-- PR: pending
-- Verifier: pending
+- PR: [#199](https://github.com/mheci/handfast/pull/199), head `7ac24c8`
+- Verifier: `ses_e27f24bdfffet4ZklBjC4UAKx9`, running
 - Evidence: payload send and receive for 1 byte, 1 MiB and 8 MiB over TLS 1.2/1.3; exact DER trust; truncation, extra bytes, unknown size and size caps; wrong certificate, missing client certificate and raw TCP; accept and idle timeouts, the backed-up control link, cancellation, concurrency, port bounds and port exhaustion; all 9 checks.
 
 Share design decisions:
