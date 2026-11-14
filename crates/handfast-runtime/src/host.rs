@@ -29,7 +29,8 @@ pub struct Dispatch {
     pub events: Vec<PluginEvent>,
     /// Transfer intents from all plugins.
     pub transfers: Vec<Transfer>,
-    /// Failures. Failed plugins are disabled for this device.
+    /// Failures. Failed plugins are skipped for connects and packets, but
+    /// still receive disconnect cleanup.
     pub errors: Vec<RuntimeError>,
 }
 
