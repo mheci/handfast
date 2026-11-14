@@ -116,9 +116,9 @@ pub const MOUSEPAD: PluginMeta = PluginMeta {
 pub const MPRISCONTROL: PluginMeta = PluginMeta {
     name: "mpriscontrol",
     title: "Multimedia control receiver",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::MPRIS_REQUEST],
-    outgoing: &[types::MPRIS],
+    outgoing: &[],
     desktop: DesktopRequirement::Media,
 };
 
@@ -421,11 +421,14 @@ mod tests {
     }
 
     #[test]
-    fn exactly_six_plugins_are_implemented() {
-        let implemented = ALL.iter().filter(|meta| meta.status == IMPLEMENTED).count();
-        assert_eq!(implemented, 6);
-        assert!(ALL
+    fn implemented_roster_matches_the_registry() {
+        let implemented: HashSet<&str> = ALL
             .iter()
-            .any(|meta| meta.name == "share" && meta.status == IMPLEMENTED));
+            .filter(|meta| meta.status == IMPLEMENTED)
+            .map(|meta| meta.name)
+            .collect();
+        let registry = crate::registry();
+        let registered: HashSet<&str> = registry.metas().map(|meta| meta.name).collect();
+        assert_eq!(implemented, registered);
     }
 }

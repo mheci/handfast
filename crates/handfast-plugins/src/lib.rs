@@ -9,6 +9,7 @@
 pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
+pub mod mpriscontrol;
 pub mod pausemusic;
 pub mod ping;
 pub mod roster;
@@ -19,6 +20,7 @@ use handfast_runtime::{PluginMeta, Registry};
 pub use battery::{BatteryFactory, BatteryPlugin};
 pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
+pub use mpriscontrol::{MprisControlFactory, MprisControlPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
 pub use share::{ShareFactory, SharePlugin};
@@ -33,6 +35,7 @@ pub fn registry() -> Registry {
         Box::new(connectivity_report::ConnectivityReportFactory),
         Box::new(pausemusic::PauseMusicFactory),
         Box::new(share::ShareFactory),
+        Box::new(mpriscontrol::MprisControlFactory),
     ])
 }
 
