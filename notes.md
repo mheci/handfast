@@ -5,7 +5,7 @@ Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`
 Hardening queue, 2026-11-14:
 
 - The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
-- Main is at `07a7ece`. The P1 share implementation and the first two hardening waves are complete. Third wave mostly merged.
+- Main is at `bceaa91`. The P1 share implementation and the first two hardening waves are complete. Third wave complete.
 - The manual P1 exit gate remains: a real Android phone and a real KDE Connect desktop client. Run `scripts/interop-share.sh` or `.ps1` and follow `docs/INTEROP.md`. CI cannot replace it.
 - Merged in the first wave: `#219` store zeroization, `#220` clipboard, `#221` notifications D-Bus, `#222` link frames, `#223` interop harness, `#225` redaction, `#227` payload progress, `#228` testkit and fuzz hardening, `#218` unit 11, `#224` MPRIS, `#229` input plugins, `#230` manager hardening, `#226` system backends.
 - Merged in the second wave: `#232` frame capacity, `#233` discovery throttle, `#235` payload final progress, `#234` store decode zeroization, `#231` session drop diagnostics, `#236` MPRIS no-track distinction, `#237` notification id serialization, `#240` screensaver refcount, `#241` interop harness fixes, `#238` TLS key zeroization, `#239` docs parity, `#242` daemon backend wiring.
@@ -14,8 +14,8 @@ Hardening queue, 2026-11-14:
 - Desktop audit complete, 16 findings. Third wave launched, one owner per file set: notifier lifecycle `ses_e254d2c93ffdyyotZKPD9X4VL2`, notification namespace `ses_e254d2c92ffe3fJlvwgDmxS3NB`, peer string caps `ses_e254d2c8cffddcd5y8guebO1uX`, pause/resume on disconnect `ses_e254d2c87ffeLR6vyG0tjGGaeD`, files hardening `ses_e254d2c85ffeb9S3aJbHBhz1y2`, session stop preempt `ses_e254cc475ffdi4rBlOHVmyxMFP`, share dedupe `ses_e254cc473ffeWHEpMuxDfB6BbG`, clipboard and volume gates `ses_e254cc46fffeoJNQRkcpqFQKMu`, screensaver child lifetime `ses_e254cc46effeRtDQ6u7yDvZ7jn`.
 - Network audit complete, 9 findings. Discovery flood `ses_e2548894effepI0tKr4e5bdcgD` (discovery.rs, main.rs, store.rs) and pending handshake admission `ses_e2548894effdiDiAfFH202Nbzh` (manager.rs, policy.rs) are in PRs.
 - Third wave merged: `#243` peer caps, `#244` clipboard and volume gates, `#245` notification namespace, `#246` share dedupe, `#247` screensaver lifetime, `#248` files hardening, `#249` notifier lifecycle, `#250` pending handshakes, `#251` session stop, `#253` pause/resume.
-- Third wave open: `#252` discovery flood in a fix round for the eviction commit-rate bound and the Windows port test.
-- Fourth wave merged: `#254` incoming space reservation, `#255` interop harness nits, `#256` session stop design docs.
+- Third wave complete: all PRs merged, `#252` last at `bceaa91`.
+- Fourth wave: `#254` incoming space reservation, `#255` interop harness nits, `#256` session stop design docs merged. Share-during-pairing fix `ses_e24f69053ffepIDwlqgnOp2frM` running on main.rs.
 - Docs follow-up: `docs/design/p1-share-file.md:782` still says the runner has two `JoinSet`s; the merged runner has three. One-word fix in a later docs cleanup.
 - Docs: session stop design update `ses_e2514130cffeoBL4ut4vXRwmPG`.
 - Queued: pairing prompt and share race (pairing.rs, main.rs) after `#252`, state dir and file owner checks (identity.rs, main.rs, store.rs) after `#252`, Windows control pipe token (deferred). The eager queued-file handshake (session.rs) is held until the manual interop gate shows the real client's handshake timing.
