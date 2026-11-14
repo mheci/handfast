@@ -89,9 +89,9 @@ Active parallel wave:
 - System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), rebase and `requestSinks` response in flight.
 - Pause music plugin: merged in `b228c1c`.
 - MPRIS control plugin: PR [#207](https://github.com/mheci/handfast/pull/207), rebase in flight.
-- Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `24ace6d`, verifier `ses_e27810a5fffeWZNWS2ycZSUs87` running; roster narrowing in flight.
-- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), rebase in flight.
-- Clipboard backend: PR [#203](https://github.com/mheci/handfast/pull/203), head `63b65bc`, verifier `ses_e27810a70ffei81I692xlyD4mu` running.
+- Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `91a2110`, verifier PASS on code but DIRTY after pause music; rebase after share plugin merges.
+- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `0a008f9`, verifier PASS, rebase after share plugin merges.
+- Clipboard backend: merged in `e1f2a99`.
 - Unit 8 prep: done, runner brief in the session record.
 
 Comment review follow-ups:
