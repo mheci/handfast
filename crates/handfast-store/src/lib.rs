@@ -11,13 +11,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, Table, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Device records, keyed by device ID, JSON-encoded.
 const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices_v1");
+const MAX_UNTRUSTED_DEVICES: usize = 1024;
 /// Plugin enablement, keyed by `device_id + 0x1f + plugin`.
 const PLUGIN_STATE: TableDefinition<&str, u8> = TableDefinition::new("plugin_state_v1");
 /// Settings, keyed by name.
@@ -232,24 +233,71 @@ impl Store {
         let write = self.database.begin_write()?;
         {
             let mut table = write.open_table(DEVICES)?;
-            let value = match table.get(id)? {
+            let existing = match table.get(id)? {
                 Some(value) => {
                     let mut device: DeviceRecord = serde_json::from_slice(value.value())?;
                     device.last_seen = last_seen;
-                    serde_json::to_vec(&device)?
+                    Some(device)
                 }
-                None => serde_json::to_vec(&DeviceRecord {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    device_type: device_type.to_string(),
-                    paired: false,
-                    last_seen,
-                    certificate_fingerprint: None,
-                })?,
+                None => None,
             };
-            table.insert(id, value.as_slice())?;
+            match existing {
+                Some(device) => {
+                    let value = serde_json::to_vec(&device)?;
+                    table.insert(id, value.as_slice())?;
+                }
+                None => {
+                    Self::insert_untrusted_device(&mut table, id, name, device_type, last_seen)?;
+                }
+            }
         }
         write.commit()?;
+        Ok(())
+    }
+
+    fn evict_oldest_untrusted(table: &mut Table<'_, &str, &[u8]>) -> Result<()> {
+        let mut untrusted = 0usize;
+        let mut oldest: Option<(String, Option<i64>)> = None;
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let device: DeviceRecord = serde_json::from_slice(value.value())?;
+            if device.paired || device.certificate_fingerprint.is_some() {
+                continue;
+            }
+            untrusted += 1;
+            if oldest
+                .as_ref()
+                .is_none_or(|(_, last_seen)| device.last_seen < *last_seen)
+            {
+                oldest = Some((key.value().to_string(), device.last_seen));
+            }
+        }
+        if untrusted < MAX_UNTRUSTED_DEVICES {
+            return Ok(());
+        }
+        if let Some((oldest, _)) = oldest {
+            table.remove(oldest.as_str())?;
+        }
+        Ok(())
+    }
+
+    fn insert_untrusted_device(
+        table: &mut Table<'_, &str, &[u8]>,
+        id: &str,
+        name: &str,
+        device_type: &str,
+        last_seen: Option<i64>,
+    ) -> Result<()> {
+        Self::evict_oldest_untrusted(table)?;
+        let value = serde_json::to_vec(&DeviceRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            device_type: device_type.to_string(),
+            paired: false,
+            last_seen,
+            certificate_fingerprint: None,
+        })?;
+        table.insert(id, value.as_slice())?;
         Ok(())
     }
 
@@ -362,24 +410,24 @@ impl Store {
         let write = self.database.begin_write()?;
         {
             let mut table = write.open_table(DEVICES)?;
-            let device = match table.get(id)? {
+            let existing = match table.get(id)? {
                 Some(value) => {
                     let mut device: DeviceRecord = serde_json::from_slice(value.value())?;
                     device.name = name.to_string();
                     device.device_type = device_type.to_string();
-                    device
+                    Some(device)
                 }
-                None => DeviceRecord {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    device_type: device_type.to_string(),
-                    paired: false,
-                    last_seen: None,
-                    certificate_fingerprint: None,
-                },
+                None => None,
             };
-            let value = serde_json::to_vec(&device)?;
-            table.insert(id, value.as_slice())?;
+            match existing {
+                Some(device) => {
+                    let value = serde_json::to_vec(&device)?;
+                    table.insert(id, value.as_slice())?;
+                }
+                None => {
+                    Self::insert_untrusted_device(&mut table, id, name, device_type, None)?;
+                }
+            }
         }
         write.commit()?;
         Ok(())
@@ -574,6 +622,107 @@ mod tests {
         assert!(!record.paired);
         assert_eq!(record.certificate_fingerprint, None);
         assert_eq!(record.last_seen, Some(1_700_000_200));
+    }
+
+    fn untrusted_id(index: usize) -> String {
+        format!("u{index:031x}")
+    }
+
+    #[test]
+    fn discovery_evicts_the_oldest_untrusted_device_at_the_cap() {
+        let (_directory, store) = test_store();
+
+        let mut paired = device("paired", "Paired");
+        paired.paired = true;
+        paired.last_seen = Some(0);
+        store.upsert_device(&paired).unwrap();
+
+        let mut trusted = device("trusted", "Trusted");
+        trusted.last_seen = Some(0);
+        store.upsert_device(&trusted).unwrap();
+        assert!(store.set_trusted("trusted", Some([4u8; 32])).unwrap());
+
+        for index in 0..=MAX_UNTRUSTED_DEVICES {
+            store
+                .record_discovery(
+                    &untrusted_id(index),
+                    "Phone",
+                    "phone",
+                    Some(index as i64 + 1),
+                )
+                .unwrap();
+        }
+
+        assert!(
+            store.device(&untrusted_id(0)).unwrap().is_none(),
+            "the oldest unpaired device is evicted"
+        );
+        let next = store.device(&untrusted_id(1)).unwrap().unwrap();
+        assert_eq!(next.last_seen, Some(2));
+        let newest = store
+            .device(&untrusted_id(MAX_UNTRUSTED_DEVICES))
+            .unwrap()
+            .unwrap();
+        assert_eq!(newest.last_seen, Some(MAX_UNTRUSTED_DEVICES as i64 + 1));
+        assert!(
+            store.device("paired").unwrap().unwrap().paired,
+            "a paired row older than every unpaired row is kept"
+        );
+        let trusted = store.device("trusted").unwrap().unwrap();
+        assert_eq!(trusted.certificate_fingerprint, Some([4u8; 32]));
+    }
+
+    #[test]
+    fn authenticated_identity_insert_evicts_the_oldest_untrusted_device() {
+        let (_directory, store) = test_store();
+
+        let mut paired = device("paired", "Paired");
+        paired.paired = true;
+        paired.last_seen = Some(0);
+        store.upsert_device(&paired).unwrap();
+
+        let mut trusted = device("trusted", "Trusted");
+        trusted.last_seen = Some(0);
+        store.upsert_device(&trusted).unwrap();
+        assert!(store.set_trusted("trusted", Some([5u8; 32])).unwrap());
+
+        for index in 0..MAX_UNTRUSTED_DEVICES {
+            store
+                .record_discovery(
+                    &untrusted_id(index),
+                    "Phone",
+                    "phone",
+                    Some(index as i64 + 1),
+                )
+                .unwrap();
+        }
+
+        store
+            .record_authenticated_identity("authenticated", "New phone", "phone")
+            .unwrap();
+
+        assert!(
+            store.device(&untrusted_id(0)).unwrap().is_none(),
+            "the oldest unpaired, unpinned device is evicted"
+        );
+        assert!(store.device(&untrusted_id(1)).unwrap().is_some());
+        let inserted = store.device("authenticated").unwrap().unwrap();
+        assert_eq!(inserted.name, "New phone");
+        assert!(!inserted.paired);
+        assert_eq!(inserted.certificate_fingerprint, None);
+        assert!(
+            store.device("paired").unwrap().unwrap().paired,
+            "a paired row is kept"
+        );
+        assert_eq!(
+            store
+                .device("trusted")
+                .unwrap()
+                .unwrap()
+                .certificate_fingerprint,
+            Some([5u8; 32]),
+            "a pinned row is kept"
+        );
     }
 
     #[test]

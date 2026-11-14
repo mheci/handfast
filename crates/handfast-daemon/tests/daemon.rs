@@ -1,8 +1,10 @@
 //! Daemon composition tests.
 //!
-//! The startup test observes the daemon's own discovery announcement and then
-//! connects to the advertised TCP port. The link tests use the independent
-//! testkit peer; no production link code runs in the test process.
+//! The Unix startup test observes the daemon's own discovery announcement and
+//! then connects to the advertised TCP port. The portable startup test reads
+//! the bound TCP port from the daemon log, so it never shares the discovery
+//! port. The link tests use the independent testkit peer; no production link
+//! code runs in the test process.
 
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -11,9 +13,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use handfast_net::Discovery;
 use handfast_net::{
-    Discovery, Fingerprint, LinkEvent, LinkLimits, LinkListener, LinkManager, LocalEndpoint,
-    PeerCertificate, TlsIdentity, TrustTable,
+    Fingerprint, LinkEvent, LinkLimits, LinkListener, LinkManager, LocalEndpoint, PeerCertificate,
+    TlsIdentity, TrustTable,
 };
 use handfast_proto::{
     types, Capabilities, DeviceId, DeviceName, DeviceType, Identity, MAX_TCP_PORT, MIN_TCP_PORT,
@@ -40,6 +44,7 @@ async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
     SERIAL.lock().await
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn startup_binds_the_next_port_and_announces_the_actual_port() {
     let _serial = serial().await;
@@ -75,6 +80,38 @@ async fn startup_binds_the_next_port_and_announces_the_actual_port() {
     TcpStream::connect(("127.0.0.1", announcement.tcp_port))
         .await
         .expect("the announced TCP port accepts before discovery announces");
+
+    stop(daemon);
+    drop(occupied);
+}
+
+#[tokio::test]
+async fn startup_binds_the_next_port_and_logs_the_actual_port() {
+    let _serial = serial().await;
+    let directory = tempfile::tempdir().unwrap();
+    let occupied_port = free_tcp_port_below_max();
+
+    let occupied = std::net::TcpListener::bind(("0.0.0.0", occupied_port))
+        .expect("occupy the configured start port");
+    let discovery_port = free_udp_port();
+
+    let log = directory.path().join("daemon.log");
+    let mut daemon = spawn_daemon(directory.path(), occupied_port, discovery_port, None, &log);
+    wait_for_state_file(directory.path(), &mut daemon).await;
+    wait_for_log(&log, "TCP listener bound", &mut daemon).await;
+
+    let actual_port = logged_tcp_port(&log).expect("the log names the bound TCP port");
+    assert_ne!(
+        actual_port, occupied_port,
+        "the daemon scanned past the occupied port"
+    );
+    assert!(
+        (MIN_TCP_PORT..=MAX_TCP_PORT).contains(&actual_port),
+        "the bound port is in the KDE Connect range"
+    );
+    TcpStream::connect(("127.0.0.1", actual_port))
+        .await
+        .expect("the bound TCP port accepts connections");
 
     stop(daemon);
     drop(occupied);
@@ -589,6 +626,7 @@ fn testkit_peer() -> TlsPeerConfig {
     TlsPeerConfig::ecdsa(config, TlsVersion::Both).expect("build the testkit peer")
 }
 
+#[cfg(unix)]
 fn receiver_identity() -> Identity {
     Identity::new(
         DeviceId::generate(),
@@ -731,6 +769,15 @@ async fn wait_for_log_count(log: &Path, needle: &str, count: usize, daemon: &mut
 fn read_log(log: &Path) -> String {
     let raw = std::fs::read_to_string(log).unwrap_or_default();
     strip_ansi(&raw)
+}
+
+fn logged_tcp_port(log: &Path) -> Option<u16> {
+    read_log(log)
+        .lines()
+        .find(|line| line.contains("TCP listener bound"))
+        .and_then(|line| line.split("tcp_port=").nth(1))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|port| port.parse().ok())
 }
 
 /// Remove ANSI CSI sequences so assertions see the plain log text. The daemon

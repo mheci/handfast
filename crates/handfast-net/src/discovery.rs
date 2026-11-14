@@ -11,6 +11,25 @@ use crate::error::Result;
 /// KDE Connect's well-known discovery port.
 pub const DISCOVERY_PORT: u16 = 1716;
 
+/// Bounds how long one `recv` call can hold the task before yielding.
+const MALFORMED_DATAGRAM_BUDGET: usize = 32;
+
+#[derive(Default)]
+struct MalformedBudget {
+    seen: usize,
+}
+
+impl MalformedBudget {
+    fn record_and_should_yield(&mut self) -> bool {
+        self.seen += 1;
+        if self.seen >= MALFORMED_DATAGRAM_BUDGET {
+            self.seen = 0;
+            return true;
+        }
+        false
+    }
+}
+
 /// UDP discovery socket bound to a local port.
 pub struct Discovery {
     socket: UdpSocket,
@@ -31,6 +50,10 @@ impl Discovery {
             identity.tcp_port = Some(tcp_port);
         }
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        // SO_REUSEADDR lets a restart rebind a port still held by a closing
+        // socket. It is Unix only, matching the TCP listener; on Windows it
+        // would let another local process bind the same port.
+        #[cfg(unix)]
         socket.set_reuse_address(true)?;
         socket.set_broadcast(true)?;
         socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)).into())?;
@@ -92,20 +115,24 @@ impl Discovery {
     /// Fails when the socket read fails.
     pub async fn recv(&self) -> Result<(SocketAddr, DiscoveryAnnouncement)> {
         let mut buffer = vec![0u8; 64 * 1024];
+        let mut budget = MalformedBudget::default();
         loop {
             let (size, address) = self.socket.recv_from(&mut buffer).await?;
-            let packet: Packet = match serde_json::from_slice(&buffer[..size]) {
-                Ok(packet) => packet,
+            let ignored = match serde_json::from_slice::<Packet>(&buffer[..size]) {
+                Ok(packet) => match DiscoveryAnnouncement::from_packet(&packet) {
+                    Ok(announcement) => return Ok((address, announcement)),
+                    Err(error) => {
+                        tracing::debug!(%address, %error, "ignoring invalid discovery announcement");
+                        true
+                    }
+                },
                 Err(error) => {
                     tracing::debug!(%address, %error, "ignoring malformed discovery datagram");
-                    continue;
+                    true
                 }
             };
-            match DiscoveryAnnouncement::from_packet(&packet) {
-                Ok(announcement) => return Ok((address, announcement)),
-                Err(error) => {
-                    tracing::debug!(%address, %error, "ignoring invalid discovery announcement");
-                }
+            if ignored && budget.record_and_should_yield() {
+                tokio::task::yield_now().await;
             }
         }
     }
@@ -196,6 +223,40 @@ mod tests {
                 .is_err(),
             "a malformed datagram was accepted"
         );
+    }
+
+    #[test]
+    fn malformed_budget_yields_every_thirty_two_datagrams() {
+        let mut budget = MalformedBudget::default();
+        for _ in 0..MALFORMED_DATAGRAM_BUDGET - 1 {
+            assert!(!budget.record_and_should_yield());
+        }
+        assert!(
+            budget.record_and_should_yield(),
+            "the thirty-second datagram yields"
+        );
+        assert!(
+            !budget.record_and_should_yield(),
+            "the budget resets after a yield"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_valid_announcement_after_the_malformed_budget_is_accepted() {
+        let (receiver, target) = bind_receiver().await;
+        let raw = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        for _ in 0..MALFORMED_DATAGRAM_BUDGET + 8 {
+            raw.send_to(b"{not json", target).await.unwrap();
+        }
+        raw.send_to(desktop_datagram(1716).as_bytes(), target)
+            .await
+            .unwrap();
+
+        let (_, received) = tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.device_name.as_str(), "kde-desktop");
     }
 
     #[tokio::test]
