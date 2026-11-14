@@ -84,7 +84,7 @@ pub struct DeviceRecord {
 
 /// Persisted daemon identity. The key is private material, so this must not
 /// implement `Debug`, and the key is zeroized on drop.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct IdentityRecord {
     /// Device identifier.
     pub device_id: String,
@@ -92,6 +92,61 @@ pub struct IdentityRecord {
     pub cert_der: Vec<u8>,
     /// DER-encoded private key.
     pub key_der: Vec<u8>,
+}
+
+impl<'de> Deserialize<'de> for IdentityRecord {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            device_id: String,
+            cert_der: Vec<u8>,
+            #[serde(deserialize_with = "deserialize_key_der")]
+            key_der: Zeroizing<Vec<u8>>,
+        }
+
+        let Wire {
+            device_id,
+            cert_der,
+            mut key_der,
+        } = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            device_id,
+            cert_der,
+            key_der: std::mem::take(&mut *key_der),
+        })
+    }
+}
+
+/// Read the key into a buffer that zeroizes when decoding fails part way.
+fn deserialize_key_der<'de, D>(deserializer: D) -> std::result::Result<Zeroizing<Vec<u8>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct KeyVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for KeyVisitor {
+        type Value = Zeroizing<Vec<u8>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a byte array")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut key = Zeroizing::new(Vec::new());
+            while let Some(byte) = seq.next_element::<u8>()? {
+                key.push(byte);
+            }
+            Ok(key)
+        }
+    }
+
+    deserializer.deserialize_seq(KeyVisitor)
 }
 
 impl Zeroize for IdentityRecord {
@@ -632,6 +687,44 @@ mod tests {
             serde_json::to_vec(&record).unwrap().as_slice(),
             "the zeroizing buffer carries the bytes the store writes"
         );
+    }
+
+    #[test]
+    fn identity_schema_round_trips_unchanged() {
+        let record = identity_record();
+        let json = serde_json::json!({
+            "device_id": record.device_id.as_str(),
+            "cert_der": [1, 2, 3],
+            "key_der": [4, 5, 6],
+        });
+        assert_eq!(serde_json::to_value(&record).unwrap(), json);
+        let decoded: IdentityRecord = serde_json::from_value(json).unwrap();
+        assert!(decoded == record, "round trip preserves the record");
+    }
+
+    #[test]
+    fn malformed_identity_record_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.db");
+        {
+            let database = Database::create(&path).unwrap();
+            let write = database.begin_write().unwrap();
+            {
+                let malformed = br#"{"device_id":"a","key_der":[4,5,6],"cert_der":"not bytes"}"#;
+                let mut identity = write.open_table(IDENTITY).unwrap();
+                identity.insert(&1u8, &malformed[..]).unwrap();
+            }
+            write.commit().unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        assert!(matches!(store.identity(), Err(StoreError::Json(_))));
+    }
+
+    #[test]
+    fn malformed_identity_key_is_rejected() {
+        let record = br#"{"device_id":"a","cert_der":[1],"key_der":[4,5,300]}"#;
+        assert!(serde_json::from_slice::<IdentityRecord>(record).is_err());
     }
 
     #[test]
