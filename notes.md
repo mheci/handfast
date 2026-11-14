@@ -11,6 +11,7 @@ Hardening queue, 2026-11-14:
 - Merged in the second wave: `#232` frame capacity, `#233` discovery throttle, `#235` payload final progress, `#234` store decode zeroization, `#231` session drop diagnostics, `#236` MPRIS no-track distinction, `#237` notification id serialization, `#240` screensaver refcount, `#241` interop harness fixes, `#238` TLS key zeroization, `#239` docs parity, `#242` daemon backend wiring.
 - The daemon now installs Files plus the six CLI adapters when their tools exist, and identity capabilities follow the installed adapters.
 - Read-only audits running: P1 network and share security `ses_e2565ed05ffeeK7UWW763yFjY6`, desktop and plugin correctness `ses_e2565ed05ffdTZuAu0rk6w50hc`. Their findings seed the third wave.
+- Desktop audit complete, 16 findings. Third wave launched, one owner per file set: notifier lifecycle `ses_e254d2c93ffdyyotZKPD9X4VL2`, notification namespace `ses_e254d2c92ffe3fJlvwgDmxS3NB`, peer string caps `ses_e254d2c8cffddcd5y8guebO1uX`, pause/resume on disconnect `ses_e254d2c87ffeLR6vyG0tjGGaeD`, files hardening `ses_e254d2c85ffeb9S3aJbHBhz1y2`, session stop preempt `ses_e254cc475ffdi4rBlOHVmyxMFP`, share dedupe `ses_e254cc473ffeWHEpMuxDfB6BbG`, clipboard and volume gates `ses_e254cc46fffeoJNQRkcpqFQKMu`, screensaver child lifetime `ses_e254cc46effeRtDQ6u7yDvZ7jn`.
 - Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. Then the remaining P2-P4 plugins and backends.
 
 Current state:
