@@ -117,12 +117,29 @@ async fn self_announcements_are_ignored() {
     let (mut daemon, port) = spawn_daemon(directory.path(), tcp_port);
     wait_for_state_file(directory.path(), &mut daemon).await;
 
+    // Positive control: the same socket and persistence path record a real
+    // peer, so a missing self record below is not a dead listener.
+    let control_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let control_port = free_tcp_port();
+    let control = format!(
+        r#"{{"id":0,"type":"kdeconnect.identity","body":{{"deviceId":"{control_id}","deviceName":"control peer","protocolVersion":8,"tcpPort":{control_port}}}}}"#
+    );
+    let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let target = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        assert!(
+            daemon.try_wait().unwrap().is_none(),
+            "handfastd exited before receiving the control announcement"
+        );
+        let _ = sender.send_to(control.as_bytes(), target).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
     let peer_port = free_tcp_port();
     let datagram = format!(
         r#"{{"id":0,"type":"kdeconnect.identity","body":{{"deviceId":"{daemon_id}","deviceName":"self","protocolVersion":8,"tcpPort":{peer_port}}}}}"#
     );
-    let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let target = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     for _ in 0..20 {
         let _ = sender.send_to(datagram.as_bytes(), target).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -131,6 +148,15 @@ async fn self_announcements_are_ignored() {
     stop(daemon);
 
     let store = Store::open(directory.path().join("state.db")).unwrap();
+    let record = store
+        .device(control_id)
+        .unwrap()
+        .expect("the control announcement is persisted");
+    assert_eq!(record.name, "control peer");
+    assert_eq!(record.device_type, "unknown");
+    assert!(!record.paired);
+    assert_eq!(record.certificate_fingerprint, None);
+    assert!(record.last_seen.unwrap_or_default() > 0);
     assert!(
         store.device(&daemon_id).unwrap().is_none(),
         "the daemon must not persist or dial its own announcement"
