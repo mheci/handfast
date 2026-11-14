@@ -130,12 +130,12 @@ impl Notifier for CommandNotifier {
         )))
     }
 
-    async fn close(&self, id: &str) -> Result<()> {
-        // notify-send exposes no notification handle, so there is nothing to close.
-        if id.is_empty() {
-            return Err(DesktopError::Backend("empty notification id".to_string()));
-        }
-        Ok(())
+    async fn close(&self, _id: &str) -> Result<()> {
+        // shortcut: this backend has no close command, so the notification
+        // remains until the notification daemon expires it. Upgrade by
+        // capturing the id with `notify-send --print-id` and closing through
+        // `org.freedesktop.Notifications`, or by moving to the D-Bus backend.
+        Err(DesktopError::Unsupported("notify-send close"))
     }
 }
 
@@ -271,10 +271,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_is_a_no_op_success() {
+    async fn close_reports_unsupported_without_spawning() {
         let (notifier, runner) = notifier(FakeOutcome::Success);
-        notifier.close("42").await.unwrap();
-        assert!(notifier.close("").await.is_err(), "empty id is rejected");
+        for id in ["42", ""] {
+            let error = notifier.close(id).await.unwrap_err();
+            assert!(
+                matches!(&error, DesktopError::Unsupported("notify-send close")),
+                "close({id:?}) must report unsupported, got {error:?}"
+            );
+        }
         assert!(runner.calls().is_empty(), "close must not spawn a process");
     }
 
