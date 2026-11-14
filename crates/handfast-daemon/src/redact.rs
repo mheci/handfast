@@ -113,8 +113,10 @@ fn log_plugin_event(device_id: &DeviceId, event: &PluginEvent) {
             );
         }
         PluginEvent::Log { level, message } => {
-            // Plugin log messages are local diagnostics, not peer bodies. The
-            // share plugin emits only static strings.
+            // Plugin log messages are local diagnostics, not peer bodies, but
+            // some plugins build them from peer fields. Escape control bytes so
+            // a peer cannot forge or split a log line.
+            let message = sanitize_message(message);
             tracing::info!(
                 %device_id,
                 event = "Log",
@@ -126,13 +128,22 @@ fn log_plugin_event(device_id: &DeviceId, event: &PluginEvent) {
     }
 }
 
+/// Escape control and non-printable characters in a plugin log message.
+///
+/// `char::escape_default` turns C0 controls, DEL, C1 controls, bidi controls
+/// and ANSI escape bytes into visible escapes, so a peer-supplied field cannot
+/// inject a newline or a terminal sequence into the daemon log.
+fn sanitize_message(message: &str) -> String {
+    message.chars().flat_map(char::escape_default).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 
     use handfast_proto::DeviceId;
-    use handfast_runtime::PluginEvent;
+    use handfast_runtime::{LogLevel, PluginEvent};
 
     use super::log_plugin_events;
 
@@ -195,5 +206,44 @@ mod tests {
         assert!(log.contains(&format!("bytes={}", text.len())), "{log}");
         assert!(log.contains("event=\"ShareUrl\""), "{log}");
         assert!(log.contains(&format!("bytes={}", url.len())), "{log}");
+    }
+
+    #[test]
+    fn log_message_escapes_control_characters() {
+        let buffer = Buffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+
+        let message = "line\ncarriage\rnull\0escape\u{1b}[31m bidi\u{202e}";
+        let events = [PluginEvent::Log {
+            level: LogLevel::Info,
+            message: message.to_string(),
+        }];
+        let device_id = DeviceId::new("00112233445566778899aabbccddeeff").expect("a valid ID");
+
+        tracing::subscriber::with_default(subscriber, || {
+            log_plugin_events(&device_id, &events);
+        });
+
+        let log = String::from_utf8(buffer.0.lock().expect("the log buffer is readable").clone())
+            .expect("the log is UTF-8");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2, "the message must not add a log line: {log}");
+        for line in &lines {
+            assert!(
+                !line.chars().any(char::is_control),
+                "raw control character in the log: {log}"
+            );
+            assert!(!line.contains('\u{202e}'), "raw bidi control: {log}");
+        }
+        assert!(log.contains("\\n"), "{log}");
+        assert!(log.contains("\\r"), "{log}");
+        assert!(log.contains("\\u{0}") || log.contains("\\0"), "{log}");
+        assert!(log.contains("\\u{1b}"), "{log}");
+        assert!(log.contains("\\u{202e}"), "{log}");
     }
 }

@@ -255,7 +255,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
     };
 
     loop {
+        // Link events are handled before share events so a Connected event
+        // creates the session before a share packet for the same link arrives.
         tokio::select! {
+            biased;
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("shutting down");
                 break;
@@ -712,4 +715,28 @@ fn default_data_dir() -> PathBuf {
         return PathBuf::from(home).join(".local/share/handfast");
     }
     PathBuf::from("handfast-data")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn link_events_are_preferred_over_share_events() {
+        for _ in 0..64 {
+            let (link_tx, mut link_rx) = mpsc::channel(1);
+            let (share_tx, mut share_rx) = mpsc::channel(1);
+            link_tx.send(()).await.expect("send a link event");
+            share_tx.send(()).await.expect("send a share event");
+            let winner = tokio::select! {
+                biased;
+                _ = link_rx.recv() => "link",
+                _ = share_rx.recv() => "share",
+            };
+            assert_eq!(
+                winner, "link",
+                "the daemon select must handle a pending link event before a share event"
+            );
+        }
+    }
 }
