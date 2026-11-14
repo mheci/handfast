@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use crate::error::{DesktopError, Result};
 use crate::model::{Notification, Urgency};
@@ -91,14 +92,6 @@ impl CommandNotifier {
             runner,
             ids: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    fn ids(&self) -> MutexGuard<'_, HashMap<String, u32>> {
-        // Only map operations run under the lock, so a poisoned guard still
-        // holds a usable map.
-        self.ids
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn args(notification: &Notification) -> Vec<String> {
@@ -190,24 +183,26 @@ impl Notifier for CommandNotifier {
             return Ok(());
         };
         let backend_id = output.stdout.trim().parse::<u32>().ok();
-        let previous = self.ids().remove(peer_id);
-        if let Some(previous) = previous {
+        // The replace and the close it triggers run under one lock, so a
+        // concurrent close cannot remove the id this replace just stored.
+        let mut ids = self.ids.lock().await;
+        if let Some(previous) = ids.remove(peer_id) {
             // A stale notification must not fail the new one.
             let _ = self.close_backend(previous).await;
         }
         if let Some(backend_id) = backend_id {
-            self.ids().insert(peer_id.to_string(), backend_id);
+            ids.insert(peer_id.to_string(), backend_id);
         }
         Ok(())
     }
 
     async fn close(&self, id: &str) -> Result<()> {
-        let backend_id = self.ids().get(id).copied();
-        let Some(backend_id) = backend_id else {
+        let mut ids = self.ids.lock().await;
+        let Some(backend_id) = ids.get(id).copied() else {
             return Ok(());
         };
         self.close_backend(backend_id).await?;
-        self.ids().remove(id);
+        ids.remove(id);
         Ok(())
     }
 }
