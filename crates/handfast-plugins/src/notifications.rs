@@ -37,7 +37,6 @@ fn string_field(packet: &Packet, key: &str) -> String {
         .to_string()
 }
 
-/// Reject values a desktop notification daemon should never receive.
 fn validate_field(
     name: &str,
     value: &str,
