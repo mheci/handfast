@@ -5,10 +5,10 @@ Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`
 Hardening queue, 2026-11-14:
 
 - The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
-- Main is at `4a6d568` after the hardening wave.
-- Unit 11 `#218` is at `24a3228`, all 9 checks green, verifier running.
-- Merged in this wave: `#219` store zeroization, `#220` clipboard, `#221` notifications D-Bus, `#222` link frames, `#223` interop harness, `#225` redaction, `#227` payload progress, `#228` testkit and fuzz hardening.
-- Remaining: `#224` MPRIS at `a6dbc79` is re-verifying after the rebase. `#226` system backends waits for `#224`. `#229` input plugins at `025f150` is re-verifying after the mousepad fix. `#218` unit 11 is verifying at `24a3228`. `#230` manager hardening is verifying at `47c3e61`.
+- Main is at `82c7f08`. The P1 share implementation is complete: TLS link, pairing, share/file, control channel and daemon composition are merged.
+- Merged in this wave: `#219` store zeroization, `#220` clipboard, `#221` notifications D-Bus, `#222` link frames, `#223` interop harness, `#225` redaction, `#227` payload progress, `#228` testkit and fuzz hardening, `#218` unit 11, `#224` MPRIS, `#229` input plugins.
+- Remaining: `#226` system backends is rebasing after the desktop backend merges. `#230` manager hardening is verifying.
+- Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. Then the remaining P2-P4 plugins and backends.
 
 Current state:
 
