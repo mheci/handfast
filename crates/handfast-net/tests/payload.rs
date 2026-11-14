@@ -62,7 +62,7 @@ fn source(bytes: &[u8]) -> PayloadSource {
     }
 }
 
-fn peer(device: &str, address: SocketAddr, certificate: &[u8]) -> PayloadPeer {
+fn payload_peer(device: &str, address: SocketAddr, certificate: &[u8]) -> PayloadPeer {
     PayloadPeer {
         device_id: device_id(device),
         address,
@@ -73,7 +73,7 @@ fn peer(device: &str, address: SocketAddr, certificate: &[u8]) -> PayloadPeer {
 fn dummy_peer() -> PayloadPeer {
     let trusted = TlsPeerConfig::ecdsa(PeerConfig::server(), TlsVersion::Both)
         .expect("build a test certificate");
-    peer(
+    payload_peer(
         PEER_DEVICE_ID,
         SocketAddr::from(([127, 0, 0, 1], 0)),
         trusted.cert_der(),
@@ -108,7 +108,7 @@ async fn sender_streams_one_byte_one_mib_and_eight_mib() {
             .cert_der()
             .expect("the receiver presents a certificate")
             .to_vec();
-        let peer = peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
+        let peer = payload_peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
         let bytes = payload(size);
         let prepared = service
             .prepare_send(peer, source(&bytes))
@@ -144,7 +144,7 @@ async fn receiver_reads_one_byte_one_mib_and_eight_mib() {
             ..PayloadSenderConfig::default()
         })
         .expect("build the testkit sender");
-        let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+        let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
         let bytes = payload(size);
         let offer = PayloadOffer {
             size: PayloadSize::Known(size as u64),
@@ -182,7 +182,7 @@ async fn tls_12_and_13_negotiate_with_ecdsa_and_rsa_peers() {
                 .cert_der()
                 .expect("the receiver presents a certificate")
                 .to_vec();
-            let peer = peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
+            let peer = payload_peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
             let prepared = service
                 .prepare_send(peer, source(b"x"))
                 .await
@@ -207,7 +207,7 @@ async fn tls_12_and_13_negotiate_with_ecdsa_and_rsa_peers() {
                 ..PayloadSenderConfig::default()
             })
             .expect("build the testkit sender");
-            let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+            let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
             let offer = PayloadOffer {
                 size: PayloadSize::Known(1),
                 port: sender.port(),
@@ -237,7 +237,7 @@ async fn truncated_payload_is_a_size_mismatch() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let offer = PayloadOffer {
         size: PayloadSize::Known(1024),
         port: sender.port(),
@@ -272,7 +272,7 @@ async fn extra_bytes_within_the_cap_are_accepted_and_reported() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let offer = PayloadOffer {
         size: PayloadSize::Known(1),
         port: sender.port(),
@@ -304,7 +304,7 @@ async fn extra_bytes_beyond_the_cap_are_too_large() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let offer = PayloadOffer {
         size: PayloadSize::Known(1),
         port: sender.port(),
@@ -335,7 +335,7 @@ async fn unknown_size_reads_to_eof_and_caps_at_max_size() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let offer = PayloadOffer {
         size: PayloadSize::Unknown,
         port: sender.port(),
@@ -362,7 +362,7 @@ async fn unknown_size_reads_to_eof_and_caps_at_max_size() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let offer = PayloadOffer {
         size: PayloadSize::Unknown,
         port: sender.port(),
@@ -394,7 +394,7 @@ async fn wrong_sender_certificate_is_rejected() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(port), &trusted_certificate);
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(port), &trusted_certificate);
     let offer = PayloadOffer {
         size: PayloadSize::Known(4),
         port,
@@ -427,7 +427,7 @@ async fn wrong_receiver_certificate_is_rejected() {
     let trusted = TlsPeerConfig::ecdsa(PeerConfig::server(), TlsVersion::Both)
         .expect("build the trusted certificate");
     let trusted_certificate = trusted.cert_der().to_vec();
-    let peer = peer(PEER_DEVICE_ID, loopback(0), &trusted_certificate);
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(0), &trusted_certificate);
     let prepared = service
         .prepare_send(peer, source(b"x"))
         .await
@@ -633,7 +633,7 @@ async fn dropping_the_receive_future_closes_the_socket_and_releases_the_permit()
         ..PayloadSenderConfig::default()
     })
     .expect("build the stalled sender");
-    let peer = peer(
+    let peer = payload_peer(
         PEER_DEVICE_ID,
         loopback(stalled_sender.port()),
         stalled_sender.cert_der(),
@@ -670,7 +670,7 @@ async fn dropping_the_receive_future_closes_the_socket_and_releases_the_permit()
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let offer = PayloadOffer {
         size: PayloadSize::Known(1),
         port: sender.port(),
@@ -704,7 +704,7 @@ async fn concurrent_transfers_complete() {
             .cert_der()
             .expect("the receiver presents a certificate")
             .to_vec();
-        let peer = peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
+        let peer = payload_peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
         let bytes = payload(64 * 1024);
         let prepared = service
             .prepare_send(peer, source(&bytes))
@@ -777,7 +777,7 @@ async fn pending_cap_waits_then_times_out() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let offer = PayloadOffer {
         size: PayloadSize::Known(1),
         port: sender.port(),
@@ -859,7 +859,7 @@ async fn queued_connection_defers_the_tls_handshake() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let offer = PayloadOffer {
         size: PayloadSize::Known(4),
         port: sender.port(),
@@ -902,7 +902,7 @@ async fn failed_attempt_then_valid_client_succeeds() {
         .cert_der()
         .expect("the receiver presents a certificate")
         .to_vec();
-    let peer = peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
     let bytes = payload(1024);
     let prepared = service
         .prepare_send(peer, source(&bytes))
@@ -943,7 +943,7 @@ async fn sender_write_deadline_fires_when_the_receiver_stalls() {
         .cert_der()
         .expect("the receiver presents a certificate")
         .to_vec();
-    let peer = peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(0), &receiver_certificate);
     let bytes = payload(64 * 1024 * 1024);
     let prepared = service
         .prepare_send(peer, source(&bytes))
@@ -977,7 +977,7 @@ async fn sender_stall_triggers_the_receiver_idle_timeout() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let offer = PayloadOffer {
         size: PayloadSize::Known(4),
         port: sender.port(),
@@ -1006,7 +1006,7 @@ async fn progress_reports_the_bytes_received() {
         ..PayloadSenderConfig::default()
     })
     .expect("build the testkit sender");
-    let peer = peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
+    let peer = payload_peer(PEER_DEVICE_ID, loopback(sender.port()), sender.cert_der());
     let bytes = payload(1024 * 1024);
     let offer = PayloadOffer {
         size: PayloadSize::Known(bytes.len() as u64),

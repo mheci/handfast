@@ -343,6 +343,16 @@ pub struct PreparedSend {
     _permit: OwnedSemaphorePermit,
 }
 
+impl std::fmt::Debug for PreparedSend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedSend")
+            .field("peer", &self.peer.device_id)
+            .field("port", &self.port)
+            .field("bound_at", &self.bound_at)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PreparedSend {
     /// The bound port to put in `payloadTransferInfo.port`.
     #[must_use]
@@ -393,7 +403,7 @@ impl PreparedSend {
     }
 
     async fn handshake(
-        &self,
+        &mut self,
         tcp: TcpStream,
         acceptor: &TlsAcceptor,
     ) -> Result<TlsStream<TcpStream>, PayloadError> {
@@ -446,6 +456,16 @@ pub struct PendingPayload {
     offer: PayloadOffer,
     connected_at: Instant,
     _permit: OwnedSemaphorePermit,
+}
+
+impl std::fmt::Debug for PendingPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingPayload")
+            .field("peer", &self.peer.device_id)
+            .field("offer", &self.offer)
+            .field("connected_at", &self.connected_at)
+            .finish_non_exhaustive()
+    }
 }
 
 async fn acquire_permit(
