@@ -557,3 +557,25 @@ async fn read_payload(
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits_default_to_the_design_values() {
+        let limits = PayloadLimits::default();
+        assert_eq!(limits.connect_timeout, Duration::from_secs(5));
+        assert_eq!(limits.handshake_timeout, Duration::from_secs(8));
+        assert_eq!(limits.accept_timeout, Duration::from_secs(30));
+        assert_eq!(limits.io_timeout, Duration::from_secs(8));
+        assert_eq!(limits.max_attempts, 3);
+        assert_eq!(limits.max_size, 2 * 1024 * 1024 * 1024);
+        assert_eq!(limits.max_extra, 64 * 1024 * 1024);
+        assert_eq!(limits.buffer_size, 64 * 1024);
+        assert_eq!(limits.max_active, 8);
+        assert_eq!(limits.max_pending_connects, 8);
+        assert_eq!(limits.port_min, 1739);
+        assert_eq!(limits.port_max, 1764);
+    }
+}
