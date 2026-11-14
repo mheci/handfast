@@ -79,22 +79,27 @@ Active parallel wave:
 
 - Unit 4 net payload: merged in `0606bef`.
 - Unit 5 runtime transfer: merged in `578e156`.
-- Unit 6 share plugin: branch `feat/share-plugin`, owner `ses_e27cd9f38ffek37OGHsPTmlcri`, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit6-share-plugin-brief.md`.
-- Unit 7 manager share routing: branch `feat/manager-share`, owner `ses_e27e4050fffegnN3rrtSkKTw64`.
-- Windows ACLs: PR [#210](https://github.com/mheci/handfast/pull/210), head `671bf22`, verifier `ses_e27c2303cffdAs44LboRjRlvhG` running.
-- P1 hardening: PR [#211](https://github.com/mheci/handfast/pull/211), head `c88cc33`, verifier `ses_e27c02477ffeW37I1jGMW8kSUd` running.
-- Share docs and fuzz: PR [#200](https://github.com/mheci/handfast/pull/200), head `bf09aed`, verifier PASS, owner merging.
-- Comment review: `ses_e27c447b9ffedl4KstEcpciHVo` scanning the wave for comment and workaround findings.
+- Unit 6 share plugin: PR [#212](https://github.com/mheci/handfast/pull/212), rebasing onto `b228c1c` after pause music merged.
+- Unit 7 manager share routing: PR [#213](https://github.com/mheci/handfast/pull/213), test failure, owner fixing.
+- Windows ACLs: PR [#210](https://github.com/mheci/handfast/pull/210), head `671bf22`, verifier FAIL on a stale README note, comment and README fix in flight.
+- P1 hardening: PR [#211](https://github.com/mheci/handfast/pull/211), head `c88cc33`, verifier FAIL on a vacuous zeroize test, owner fixing.
+- Share docs and fuzz: merged in `c36802a`.
 - Connectivity report plugin: merged in `b74f2d8`.
-- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `b1a222f`, verifier `ses_e27caad5bffepXpjnnbo60z27U` running.
-- Pause music plugin: PR [#205](https://github.com/mheci/handfast/pull/205), head `eb37035`, verifier FAIL on a false outgoing capability, owner fixing.
-- MPRIS control plugin: PR [#207](https://github.com/mheci/handfast/pull/207), head `28c7d23`, verifier `ses_e27c87c49ffdhF6CsfTpQD7ppm` running.
-- Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `e2869b6`, verifier FAIL on the `Notification.urgency` break, owner rebasing.
-- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `50b9520`, verifier PASS, owner merging.
-- Clipboard backend: PR [#203](https://github.com/mheci/handfast/pull/203), head `0d90c27`, verifier FAIL on the write hang, owner fixing.
 - Notifications backend: merged in `840e7a1`.
-- Unit 6 prep: done, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit6-share-plugin-brief.md`.
+- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), rebase and `requestSinks` response in flight.
+- Pause music plugin: merged in `b228c1c`.
+- MPRIS control plugin: PR [#207](https://github.com/mheci/handfast/pull/207), rebase in flight.
+- Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `24ace6d`, verifier `ses_e27810a5fffeWZNWS2ycZSUs87` running; roster narrowing in flight.
+- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), rebase in flight.
+- Clipboard backend: PR [#203](https://github.com/mheci/handfast/pull/203), head `63b65bc`, verifier `ses_e27810a70ffei81I692xlyD4mu` running.
 - Unit 8 prep: done, runner brief in the session record.
+
+Comment review follow-ups:
+
+- The merged notifications backend comment says notify-send has no close handle. That is false. `notify-send` can print an id. The current close is a no-op. Fix the comment and either use D-Bus close or return Unsupported when notifications are wired.
+- The INTEROP dependency note is a deferred-deletion marker. Replace it with a tracked issue when units 10 and 11 land.
+- The MPRIS per-player failure path and the systemvolume volume-only mute behavior are untested or differ from upstream. Park for the backend units.
+- The notifications plugin roster narrowing and the Windows ACL comment fixes are in flight.
 
 Wave rules:
 
