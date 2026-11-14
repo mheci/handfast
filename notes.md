@@ -81,7 +81,7 @@ Active parallel wave:
 - Unit 5 runtime transfer: merged in `578e156`.
 - Unit 6 share plugin: merged in `4c4f0de`.
 - Unit 7 manager share routing: merged in `4dc1aa7`.
-- Unit 8 inbound session runner: PR [#215](https://github.com/mheci/handfast/pull/215), head `4d05816`, clippy fix in flight. Tests, Windows and the other 7 checks pass.
+- Unit 8 inbound session runner: PR [#215](https://github.com/mheci/handfast/pull/215), head `ab3c0de`, all 9 checks green, verifier running.
 - Windows ACLs: merged in `4f4a7cf`. The P1 Windows state and incoming ACL blocker is cleared.
 - P1 hardening: merged in `b4d41ba`.- Share docs and fuzz: merged in `c36802a`.
 - Connectivity report plugin: merged in `b74f2d8`.
