@@ -11,6 +11,7 @@ pub mod error;
 pub mod event;
 pub mod host;
 pub mod plugin;
+pub mod transfer;
 
 pub use device::Device;
 pub use error::{PluginError, RuntimeError};
@@ -20,3 +21,4 @@ pub use plugin::{
     DesktopRequirement, Plugin, PluginContext, PluginFactory, PluginMeta, PluginOutput,
     PluginStatus, Registry,
 };
+pub use transfer::Transfer;
