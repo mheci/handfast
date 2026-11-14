@@ -94,30 +94,44 @@ impl CommandRunner for TokioRunner {
         stdin: Option<&[u8]>,
     ) -> io::Result<CommandOutput> {
         let mut command = tokio::process::Command::new(program);
+        command.args(args).kill_on_drop(true);
+        let Some(input) = stdin else {
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let output = command.spawn()?.wait_with_output().await?;
+            return Ok(CommandOutput {
+                success: output.status.success(),
+                code: output.status.code(),
+                stdout: output.stdout,
+                stderr: output.stderr,
+            });
+        };
+
+        // wl-copy and xclip fork a selection owner that keeps stderr open, and
+        // xclip also keeps stdout open, so wait_with_output() would block on
+        // EOF. Discard stdout, capture stderr in a file, and wait only for the
+        // direct child.
+        let stderr_file = tempfile::NamedTempFile::new()?;
         command
-            .args(args)
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(stderr_file.reopen()?));
         let mut child = command.spawn()?;
-        if let Some(input) = stdin {
-            let mut pipe = child
-                .stdin
-                .take()
-                .ok_or_else(|| io::Error::other(format!("{program} stdin was not piped")))?;
-            pipe.write_all(input).await?;
-        }
-        let output = child.wait_with_output().await?;
+        let mut pipe = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other(format!("{program} stdin was not piped")))?;
+        pipe.write_all(input).await?;
+        drop(pipe);
+        let status = child.wait().await?;
+        let stderr = tokio::fs::read(stderr_file.path()).await?;
         Ok(CommandOutput {
-            success: output.status.success(),
-            code: output.status.code(),
-            stdout: output.stdout,
-            stderr: output.stderr,
+            success: status.success(),
+            code: status.code(),
+            stdout: Vec::new(),
+            stderr: stderr.trim_ascii().to_vec(),
         })
     }
 }
@@ -403,5 +417,23 @@ mod tests {
             ),
             "unexpected error: {error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_does_not_wait_for_a_grandchild_holding_stderr() {
+        // The background sleep inherits stderr and outlives the shell, which
+        // matches the wl-copy and xclip selection owner.
+        let script = "(sleep 5) & cat >/dev/null";
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            TokioRunner.run("sh", &["-c", script], Some(b"hi")),
+        )
+        .await
+        .expect("write must return before the grandchild exits")
+        .expect("runner");
+
+        assert!(output.success);
+        assert!(output.stderr.is_empty());
     }
 }
