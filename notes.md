@@ -80,7 +80,8 @@ Active parallel wave:
 - Unit 4 net payload: merged in `0606bef`.
 - Unit 5 runtime transfer: merged in `578e156`.
 - Unit 6 share plugin: merged in `4c4f0de`.
-- Unit 7 manager share routing: PR [#213](https://github.com/mheci/handfast/pull/213), head `9b6c479`, verifier PASS, owner merging.
+- Unit 7 manager share routing: merged in `4dc1aa7`.
+- Unit 8 inbound session runner: branch `feat/inbound-runner`, owner `ses_e27624f69ffePp39O7upPyN1eB`, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit8-inbound-runner-brief.md`.
 - Windows ACLs: PR [#210](https://github.com/mheci/handfast/pull/210), head `f5dcd5f`, re-verifying after the README and ACE-flag fixes.
 - P1 hardening: PR [#211](https://github.com/mheci/handfast/pull/211), head `c88cc33`, verifier FAIL on a vacuous zeroize test, owner fixing.
 - Share docs and fuzz: merged in `c36802a`.
