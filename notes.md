@@ -95,7 +95,7 @@ Active parallel wave:
 - Clipboard backend: merged in `e1f2a99`.
 - Unit 8 prep: done, runner brief in the session record.
 - Unit 9 prep: done. The outbound transfer must run in a task or JoinSet, not inline in the session loop, so a 30 s accept deadline cannot stall packets, pings or pairing.
-- Unit 10 prep: read-only, `ses_e273499b7ffeukKuTiaHMk3mQu`.
+- Unit 10 prep: done. Control frame, Unix peer check, Windows pipe DACL, `hfctl`, error contract and tests are mapped.
 - Unit 11 prep: done. Startup order, session wiring, limits, docs, test matrix and the manual gate are mapped.
 
 Comment review follow-ups:
