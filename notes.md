@@ -91,7 +91,7 @@ Active parallel wave:
 - Pause music plugin: merged in `b228c1c`.
 - MPRIS control plugin: merged in `54b85e9`.
 - Notifications close fix: merged in `c92dae7`.
-- Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `1b8ff85`, re-verifying the rebase.
+- Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `1b8ff85`, verifier PASS, owner merging.
 - Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `0a008f9`, verifier PASS, rebase after notifications.
 - Clipboard backend: merged in `e1f2a99`.
 - Unit 8 prep: done, runner brief in the session record.
