@@ -86,6 +86,13 @@ impl Desktop {
         self
     }
 
+    /// Install an MPRIS media adapter.
+    #[must_use]
+    pub fn with_media(mut self, media: Arc<dyn Media>) -> Self {
+        self.media = Some(media);
+        self
+    }
+
     /// Install a clipboard adapter.
     #[must_use]
     pub fn with_clipboard(mut self, clipboard: Arc<dyn Clipboard>) -> Self {
