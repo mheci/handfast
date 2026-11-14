@@ -89,7 +89,7 @@ Active parallel wave:
 - System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `8dad9f6`, verifier `ses_e276ea7beffe0HklrIgHtASi8B` running.
 - Pause music plugin: merged in `b228c1c`.
 - MPRIS control plugin: PR [#207](https://github.com/mheci/handfast/pull/207), head `b2e3380`, verifier `ses_e276ea7c1ffeeh2idykMQ7x4WF` running.
-- Notifications close fix: PR [#214](https://github.com/mheci/handfast/pull/214), head `b4b2ea7`, verifier PASS, owner merging.
+- Notifications close fix: merged in `c92dae7`.
 - Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `91a2110`, verifier PASS on code but DIRTY after pause music; rebase after share plugin merges.
 - Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `0a008f9`, verifier PASS, rebase after share plugin merges.
 - Clipboard backend: merged in `e1f2a99`.
