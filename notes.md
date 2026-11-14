@@ -83,7 +83,7 @@ Active parallel wave:
 - Unit 7 manager share routing: merged in `4dc1aa7`.
 - Unit 8 inbound session runner: merged in `c429058`.
 - Unit 9 outbound share: merged in `89eaf75`.
-- Unit 10 control channel: PR [#217](https://github.com/mheci/handfast/pull/217), head `98ffe7c`, verifier FAIL on a stale-socket startup race; comment and race fixes in flight.
+- Unit 10 control channel: PR [#217](https://github.com/mheci/handfast/pull/217), head `f6f8f67`, fixes green; adding the Windows daemon lib test step before re-verification.
 - Incident: commit `708fee3` accidentally swept the unit 10 working files into main and was reverted by `6241ec8`. Main's tree is restored to `488e851`; PR #217 remains the source of truth.
 - Windows ACLs: merged in `4f4a7cf`. The P1 Windows state and incoming ACL blocker is cleared.
 - P1 hardening: merged in `b4d41ba`.
