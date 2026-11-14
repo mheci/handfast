@@ -803,9 +803,18 @@ struct DiscoverySighting {
 
 impl DiscoveryWrites {
     fn should_write(&self, device_id: &DeviceId, now: Instant) -> bool {
-        self.peers.get(device_id).is_none_or(|sighting| {
-            now.saturating_duration_since(sighting.written_at) >= DISCOVERY_WRITE_INTERVAL
-        })
+        match self.peers.get(device_id) {
+            Some(sighting) => {
+                now.saturating_duration_since(sighting.written_at) >= DISCOVERY_WRITE_INTERVAL
+            }
+            None => {
+                self.peers.len() < DISCOVERY_WRITE_PEERS
+                    || self.peers.values().any(|sighting| {
+                        now.saturating_duration_since(sighting.written_at)
+                            >= DISCOVERY_WRITE_INTERVAL
+                    })
+            }
+        }
     }
 
     fn record_written(&mut self, device_id: &DeviceId, now: Instant) {
@@ -1033,7 +1042,7 @@ mod tests {
             "the cache stays capped"
         );
         assert!(
-            writes.should_write(&ids[0], start + Duration::from_secs(1)),
+            !writes.peers.contains_key(&ids[0]),
             "the oldest entry is evicted"
         );
         assert!(
@@ -1049,6 +1058,26 @@ mod tests {
         assert!(
             writes.peers.contains_key(&ids[2]),
             "rewriting an existing peer evicts no one"
+        );
+    }
+
+    #[test]
+    fn discovery_write_cache_skips_new_peers_until_an_entry_expires() {
+        let start = Instant::now();
+        let mut writes = DiscoveryWrites::default();
+        for index in 0..DISCOVERY_WRITE_PEERS {
+            let id = DeviceId::new(format!("{index:032x}")).unwrap();
+            writes.record_written(&id, start);
+        }
+
+        let fresh = DeviceId::new(format!("{:032x}", DISCOVERY_WRITE_PEERS)).unwrap();
+        assert!(
+            !writes.should_write(&fresh, start + Duration::from_secs(1)),
+            "a new peer is skipped while every entry is fresh"
+        );
+        assert!(
+            writes.should_write(&fresh, start + DISCOVERY_WRITE_INTERVAL),
+            "a new peer is written once an entry expires"
         );
     }
 }
