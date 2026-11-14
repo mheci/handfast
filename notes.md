@@ -83,16 +83,15 @@ Active parallel wave:
 - Unit 7 manager share routing: merged in `4dc1aa7`.
 - Unit 8 inbound session runner: branch `feat/inbound-runner`, owner `ses_e27624f69ffePp39O7upPyN1eB`, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit8-inbound-runner-brief.md`.
 - Windows ACLs: merged in `4f4a7cf`. The P1 Windows state and incoming ACL blocker is cleared.
-- P1 hardening: PR [#211](https://github.com/mheci/handfast/pull/211), head `f4b3a1f`, verifier PASS, owner merging.
-- Share docs and fuzz: merged in `c36802a`.
+- P1 hardening: merged in `b4d41ba`.- Share docs and fuzz: merged in `c36802a`.
 - Connectivity report plugin: merged in `b74f2d8`.
 - Notifications backend: merged in `840e7a1`.
-- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `8dad9f6`, verifier PASS, rebase after MPRIS.
+- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `8dad9f6`, verifier PASS, rebase after find-this-device.
 - Pause music plugin: merged in `b228c1c`.
 - MPRIS control plugin: merged in `54b85e9`.
 - Notifications close fix: merged in `c92dae7`.
-- Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `1b8ff85`, verifier PASS, owner merging.
-- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `0a008f9`, verifier PASS, rebase after notifications.
+- Notifications plugin: merged in `c3d86ac`.
+- Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), rebasing after notifications.
 - Clipboard backend: merged in `e1f2a99`.
 - Unit 8 prep: done, runner brief in the session record.
 
