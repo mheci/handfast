@@ -182,10 +182,10 @@ impl DeviceSession {
         deps: Option<TransferDeps>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(SESSION_QUEUE);
-        let (stop_tx, _) = watch::channel(None);
+        let (stop_tx, stop_rx) = watch::channel(None);
         let handle = SessionHandle {
             tx,
-            stop_tx: stop_tx.clone(),
+            stop_tx,
             delivery_timeout: limits.delivery_timeout,
             drops: Arc::new(AtomicU64::new(0)),
         };
@@ -197,7 +197,7 @@ impl DeviceSession {
             events,
             SessionChannels {
                 input: rx,
-                stop: stop_tx,
+                stop: stop_rx,
             },
             deps,
         ));
@@ -709,25 +709,20 @@ enum SessionStep {
     Send(Option<Result<(), JoinError>>),
 }
 
-/// Wait for a stop and return its reason.
 async fn next_stop(stop: &mut watch::Receiver<Option<String>>) -> String {
     loop {
         if let Some(reason) = stop.borrow_and_update().clone() {
             return reason;
         }
-        // The session task holds a sender, so `changed` cannot fail.
         if stop.changed().await.is_err() {
-            return "session stop channel closed".to_string();
+            std::future::pending::<()>().await;
         }
     }
 }
 
-/// The channels the session task listens on.
 struct SessionChannels {
-    /// Inbound packets and shares.
     input: mpsc::Receiver<SessionInput>,
-    /// Stop signal shared with the handle.
-    stop: watch::Sender<Option<String>>,
+    stop: watch::Receiver<Option<String>>,
 }
 
 async fn run(
@@ -739,10 +734,10 @@ async fn run(
     channels: SessionChannels,
     deps: Option<TransferDeps>,
 ) {
-    let SessionChannels { mut input, stop } = channels;
-    // Holding a sender in the task keeps `next_stop` from seeing a closed
-    // channel, so the input channel close stays the normal exit path.
-    let mut stop_rx = stop.subscribe();
+    let SessionChannels {
+        mut input,
+        mut stop,
+    } = channels;
     let device_id = peer.device_id.clone();
     let device = Device {
         id: peer.device_id,
@@ -777,7 +772,7 @@ async fn run(
             Some(runner) => {
                 tokio::select! {
                     biased;
-                    reason = next_stop(&mut stop_rx) => SessionStep::Stop(reason),
+                    reason = next_stop(&mut stop) => SessionStep::Stop(reason),
                     input = input.recv() => SessionStep::Input(input),
                     joined = runner.receives.join_next(), if receives_open => {
                         SessionStep::Receive(joined)
@@ -793,7 +788,7 @@ async fn run(
             None => {
                 tokio::select! {
                     biased;
-                    reason = next_stop(&mut stop_rx) => SessionStep::Stop(reason),
+                    reason = next_stop(&mut stop) => SessionStep::Stop(reason),
                     input = input.recv() => SessionStep::Input(input),
                 }
             }
@@ -803,7 +798,7 @@ async fn run(
             SessionStep::Stop(reason) => break reason,
             SessionStep::Input(None) => break "session channel closed".to_string(),
             SessionStep::Input(Some(input)) => {
-                if let Some(reason) = stop_rx.borrow().clone() {
+                if let Some(reason) = stop.borrow().clone() {
                     break reason;
                 }
                 handle_input(input, &mut host, &mut runner, &link, &events, &device_id).await;
