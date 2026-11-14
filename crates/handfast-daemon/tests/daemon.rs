@@ -1024,10 +1024,7 @@ fn temp_entries(incoming: &Path) -> usize {
         .unwrap_or(0)
 }
 
-async fn run_hfctl(data_dir: &Path, device: &str, path: &Path) -> std::process::Output {
-    let data_dir = data_dir.to_path_buf();
-    let device = device.to_string();
-    let path = path.to_path_buf();
+async fn run_hfctl(data_dir: PathBuf, device: String, path: PathBuf) -> std::process::Output {
     tokio::time::timeout(
         Duration::from_secs(30),
         tokio::task::spawn_blocking(move || {
@@ -1315,7 +1312,7 @@ async fn two_queued_files_arrive_in_order() {
     let _serial = serial().await;
     let directory = tempfile::tempdir().unwrap();
     let log = directory.path().join("daemon.log");
-    let (mut daemon, mut peer, config, _) =
+    let (daemon, mut peer, config, _) =
         spawn_and_pair(directory.path(), &log, free_udp_port()).await;
 
     let first_port = free_payload_port();
@@ -1376,7 +1373,7 @@ async fn large_first_file_with_a_queued_second_completes_both() {
     let _serial = serial().await;
     let directory = tempfile::tempdir().unwrap();
     let log = directory.path().join("daemon.log");
-    let (mut daemon, mut peer, config, _) =
+    let (daemon, mut peer, config, _) =
         spawn_and_pair(directory.path(), &log, free_udp_port()).await;
 
     let first_port = free_payload_port();
@@ -1436,7 +1433,7 @@ async fn duplicate_filename_gets_a_suffix() {
     let _serial = serial().await;
     let directory = tempfile::tempdir().unwrap();
     let log = directory.path().join("daemon.log");
-    let (mut daemon, mut peer, config, _) =
+    let (daemon, mut peer, config, _) =
         spawn_and_pair(directory.path(), &log, free_udp_port()).await;
     let root = incoming_dir(directory.path());
 
@@ -1547,7 +1544,11 @@ async fn outbound_hfctl_share_reaches_a_testkit_receiver() {
     let expected = bytes.clone();
     let len = expected.len() as u64;
 
-    let share = tokio::spawn(run_hfctl(directory.path(), TEST_PEER_ID, &source));
+    let share = tokio::spawn(run_hfctl(
+        directory.path().to_path_buf(),
+        TEST_PEER_ID.to_string(),
+        source,
+    ));
     let packet = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let packet = peer
@@ -1606,7 +1607,11 @@ async fn outbound_empty_file_sends_no_payload_listener() {
     let source = source_dir.path().join("empty.txt");
     std::fs::write(&source, b"").expect("write the empty source file");
 
-    let share = tokio::spawn(run_hfctl(directory.path(), TEST_PEER_ID, &source));
+    let share = tokio::spawn(run_hfctl(
+        directory.path().to_path_buf(),
+        TEST_PEER_ID.to_string(),
+        source,
+    ));
     let packet = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let packet = peer
@@ -1654,7 +1659,12 @@ async fn outbound_with_no_free_payload_port_sends_no_packet() {
     let source = source_dir.path().join("report.pdf");
     std::fs::write(&source, b"payload").expect("write the source file");
 
-    let output = run_hfctl(directory.path(), TEST_PEER_ID, &source).await;
+    let output = run_hfctl(
+        directory.path().to_path_buf(),
+        TEST_PEER_ID.to_string(),
+        source,
+    )
+    .await;
     assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
     assert!(
         stderr(&output).contains("no payload port"),
