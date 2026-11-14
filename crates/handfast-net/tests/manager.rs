@@ -993,6 +993,42 @@ async fn a_full_share_queue_closes_the_link() {
 }
 
 #[tokio::test]
+async fn a_closed_share_channel_closes_the_link() {
+    let config = peer(PEER_ID);
+    let pin = Fingerprint::of_certificate(config.cert_der());
+    let mut trust = TrustTable::default();
+    trust.set(device_id(PEER_ID), pin);
+    let mut harness = start(
+        LOCAL_ID,
+        trust,
+        LinkLimits::default(),
+        Duration::from_millis(100),
+    )
+    .await;
+    drop(harness.share_events);
+    let mut testkit = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the paired link is admitted");
+    assert!(expect_connected(&mut harness.events).await);
+
+    testkit
+        .send(&share_text())
+        .await
+        .expect("send the share request");
+
+    let (disconnected, reason) = expect_disconnected(&mut harness.events).await;
+    assert_eq!(disconnected, device_id(PEER_ID));
+    assert_eq!(reason, "share event receiver dropped");
+    let closed = tokio::time::timeout(Duration::from_secs(2), testkit.recv())
+        .await
+        .expect("the peer sees the close");
+    assert!(matches!(closed, Ok(None) | Err(_)), "the link closes");
+
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
 async fn connected_carries_the_dialed_remote_address() {
     let mut harness = start(
         LOCAL_ID,
