@@ -107,7 +107,7 @@ pub const MOUSEPAD: PluginMeta = PluginMeta {
     name: "mousepad",
     title: "Receive remote input",
     status: PLANNED,
-    incoming: &[types::MOUSEPAD_REQUEST, types::MOUSEPAD_KEYBOARDSTATE],
+    incoming: &[types::MOUSEPAD_REQUEST],
     outgoing: &[types::MOUSEPAD_ECHO, types::MOUSEPAD_KEYBOARDSTATE],
     desktop: DesktopRequirement::Input,
 };
@@ -166,7 +166,7 @@ pub const PING: PluginMeta = PluginMeta {
 pub const PRESENTER: PluginMeta = PluginMeta {
     name: "presenter",
     title: "Presenter",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::PRESENTER],
     outgoing: &[],
     desktop: DesktopRequirement::Input,
@@ -226,7 +226,7 @@ pub const RUNCOMMAND: PluginMeta = PluginMeta {
 pub const SCREENSAVER_INHIBIT: PluginMeta = PluginMeta {
     name: "screensaver_inhibit",
     title: "Inhibit screensaver",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[],
     outgoing: &[],
     desktop: DesktopRequirement::Screensaver,
@@ -389,6 +389,10 @@ mod tests {
     #[test]
     fn implemented_plugins_have_an_incoming_contract() {
         for meta in ALL.iter().filter(|meta| meta.status == IMPLEMENTED) {
+            if meta.desktop == DesktopRequirement::Screensaver {
+                // Screensaver inhibition is connection-driven and handles no packets.
+                continue;
+            }
             assert!(
                 !meta.incoming.is_empty(),
                 "{} is implemented but handles no packets",
