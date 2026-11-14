@@ -29,7 +29,8 @@ pub struct Dispatch {
     pub events: Vec<PluginEvent>,
     /// Transfer intents from all plugins.
     pub transfers: Vec<Transfer>,
-    /// Failures. Failed plugins are disabled for this device.
+    /// Failures. Failed plugins are skipped for connects and packets, but
+    /// still receive disconnect cleanup.
     pub errors: Vec<RuntimeError>,
 }
 
@@ -200,7 +201,9 @@ impl DeviceHost {
         result
     }
 
-    /// Call `on_disconnect` on every enabled plugin.
+    /// Call `on_disconnect` on every enabled plugin, including plugins that
+    /// failed earlier. A failed plugin still holds cleanup state, such as
+    /// players it paused.
     pub async fn on_disconnect(&mut self) -> Dispatch {
         let mut result = Dispatch::default();
         let Self {
@@ -208,14 +211,11 @@ impl DeviceHost {
             desktop,
             plugins,
             enabled,
-            failed,
+            ..
         } = self;
         for plugin in plugins.iter_mut() {
             let meta = plugin.meta();
-            if meta.status != PluginStatus::Implemented
-                || !enabled.contains(meta.name)
-                || failed.contains(meta.name)
-            {
+            if meta.status != PluginStatus::Implemented || !enabled.contains(meta.name) {
                 continue;
             }
             match invoke(plugin.as_mut(), device, desktop, Call::Disconnect).await {
@@ -461,6 +461,26 @@ mod tests {
         assert_eq!(
             *calls.lock().unwrap(),
             vec!["connect".to_string(), "disconnect".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnect_reaches_a_plugin_that_failed_dispatch() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut host = host(vec![Box::new(TestFactory {
+            meta: meta("panics", PluginStatus::Implemented, &[types::PING]),
+            calls: Arc::clone(&calls),
+            panic_on_packet: true,
+            hang_on_packet: false,
+        })]);
+
+        let failed = host.dispatch(&ping()).await;
+        assert_eq!(failed.errors.len(), 1);
+        let disconnect = host.on_disconnect().await;
+        assert!(disconnect.errors.is_empty());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![types::PING.to_string(), "disconnect".to_string()]
         );
     }
 

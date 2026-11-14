@@ -134,6 +134,24 @@ impl Plugin for PauseMusicPlugin {
             CallEvent::Other => Ok(PluginOutput::new()),
         }
     }
+
+    async fn on_disconnect(
+        &mut self,
+        ctx: &mut PluginContext<'_>,
+    ) -> Result<PluginOutput, PluginError> {
+        if self.paused.is_empty() {
+            return Ok(PluginOutput::new());
+        }
+        let Some(media) = ctx.desktop.media.as_deref() else {
+            let paused = self.paused.len();
+            self.paused.clear();
+            return Ok(PluginOutput::new().with_event(PluginEvent::Log {
+                level: LogLevel::Warn,
+                message: format!("cannot resume {paused} players without a media adapter"),
+            }));
+        };
+        self.resume(media).await
+    }
 }
 
 /// Builds pause music plugin instances.
@@ -237,6 +255,14 @@ mod tests {
             };
             self.plugin.on_packet(&mut ctx, packet).await.unwrap()
         }
+
+        async fn disconnect(&mut self) -> PluginOutput {
+            let mut ctx = PluginContext {
+                device: &self.device,
+                desktop: &self.desktop,
+            };
+            self.plugin.on_disconnect(&mut ctx).await.unwrap()
+        }
     }
 
     fn telephony(body: Value) -> Packet {
@@ -306,6 +332,51 @@ mod tests {
                 ("playing".to_string(), MediaAction::Pause),
                 ("playing".to_string(), MediaAction::Play),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnect_resumes_paused_players() {
+        let mut harness = Harness::new(&[("alpha", true), ("beta", true)]);
+        harness.run(&telephony(json!({"event": "ringing"}))).await;
+        let output = harness.disconnect().await;
+        assert_eq!(
+            harness.mock.media_actions(),
+            vec![
+                ("alpha".to_string(), MediaAction::Pause),
+                ("beta".to_string(), MediaAction::Pause),
+                ("alpha".to_string(), MediaAction::Play),
+                ("beta".to_string(), MediaAction::Play),
+            ]
+        );
+        assert!(matches!(
+            output.events.as_slice(),
+            [PluginEvent::Log {
+                level: LogLevel::Info,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn disconnect_without_media_adapter_warns_and_forgets_paused_players() {
+        let mut harness = Harness::new(&[("alpha", true)]);
+        harness.run(&telephony(json!({"event": "ringing"}))).await;
+        let media = harness.desktop.media.take();
+        let output = harness.disconnect().await;
+        assert!(matches!(
+            output.events.as_slice(),
+            [PluginEvent::Log {
+                level: LogLevel::Warn,
+                ..
+            }]
+        ));
+        harness.desktop.media = media;
+        let output = harness.disconnect().await;
+        assert!(output.events.is_empty());
+        assert_eq!(
+            harness.mock.media_actions(),
+            vec![("alpha".to_string(), MediaAction::Pause)]
         );
     }
 
