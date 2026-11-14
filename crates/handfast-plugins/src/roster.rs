@@ -30,7 +30,7 @@ pub const CLIPBOARD: PluginMeta = PluginMeta {
 pub const CONNECTIVITY_REPORT: PluginMeta = PluginMeta {
     name: "connectivity_report",
     title: "Connectivity monitor",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::CONNECTIVITY_REPORT],
     outgoing: &[types::CONNECTIVITY_REPORT_REQUEST],
     desktop: DesktopRequirement::None,
@@ -421,8 +421,8 @@ mod tests {
     }
 
     #[test]
-    fn exactly_three_plugins_are_implemented_in_p0() {
+    fn exactly_four_plugins_are_implemented() {
         let implemented = ALL.iter().filter(|meta| meta.status == IMPLEMENTED).count();
-        assert_eq!(implemented, 3);
+        assert_eq!(implemented, 4);
     }
 }
