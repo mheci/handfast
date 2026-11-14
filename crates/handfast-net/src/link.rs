@@ -456,7 +456,9 @@ async fn exchange_identity(
     Ok(identity)
 }
 
-pub(crate) fn peer_certificate_der(stream: &TlsStream<TcpStream>) -> Result<Vec<u8>, TlsError> {
+pub(crate) fn peer_certificate_der(
+    stream: &TlsStream<TcpStream>,
+) -> std::result::Result<Vec<u8>, TlsError> {
     let certificates = stream
         .get_ref()
         .1
