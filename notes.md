@@ -82,7 +82,7 @@ Active parallel wave:
 - Unit 6 share plugin: merged in `4c4f0de`.
 - Unit 7 manager share routing: merged in `4dc1aa7`.
 - Unit 8 inbound session runner: merged in `c429058`.
-- Unit 9 outbound share: branch `feat/outbound-share`, owner `ses_e270a45a8ffegO6Ta0wSKcr1K1`, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit9-outbound-brief.md`.
+- Unit 9 outbound share: PR [#216](https://github.com/mheci/handfast/pull/216), head `6b3deb4`, all 9 checks green, verifier running.
 - Windows ACLs: merged in `4f4a7cf`. The P1 Windows state and incoming ACL blocker is cleared.
 - P1 hardening: merged in `b4d41ba`.- Share docs and fuzz: merged in `c36802a`.
 - Connectivity report plugin: merged in `b74f2d8`.
