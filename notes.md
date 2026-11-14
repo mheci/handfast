@@ -5,12 +5,12 @@ Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`
 Hardening queue, 2026-11-14:
 
 - The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
-- Main is at `91ca5cb`. The P1 share implementation and the first hardening wave are complete.
+- Main is at `059ea92`. The P1 share implementation and the first two hardening waves are complete. No open PRs.
 - The manual P1 exit gate remains: a real Android phone and a real KDE Connect desktop client. Run `scripts/interop-share.sh` or `.ps1` and follow `docs/INTEROP.md`. CI cannot replace it.
 - Merged in the first wave: `#219` store zeroization, `#220` clipboard, `#221` notifications D-Bus, `#222` link frames, `#223` interop harness, `#225` redaction, `#227` payload progress, `#228` testkit and fuzz hardening, `#218` unit 11, `#224` MPRIS, `#229` input plugins, `#230` manager hardening, `#226` system backends.
-- Merged in the second wave: `#232` frame capacity, `#233` discovery throttle, `#235` payload final progress, `#234` store decode zeroization, `#231` session drop diagnostics, `#236` MPRIS no-track distinction, `#237` notification id serialization, `#240` screensaver refcount, `#241` interop harness fixes, `#238` TLS key zeroization, `#239` docs parity.
-- Last open PR: `#242` daemon backend wiring, rebasing onto `91ca5cb` and updating the ARCHITECTURE composition note, then re-verifying.
-- Read-only audits running: P1 network and share security `ses_e2565ed05ffeeK7UWW763yFjY6`, desktop and plugin correctness `ses_e2565ed05ffdTZuAu0rk6w50hc`.
+- Merged in the second wave: `#232` frame capacity, `#233` discovery throttle, `#235` payload final progress, `#234` store decode zeroization, `#231` session drop diagnostics, `#236` MPRIS no-track distinction, `#237` notification id serialization, `#240` screensaver refcount, `#241` interop harness fixes, `#238` TLS key zeroization, `#239` docs parity, `#242` daemon backend wiring.
+- The daemon now installs Files plus the six CLI adapters when their tools exist, and identity capabilities follow the installed adapters.
+- Read-only audits running: P1 network and share security `ses_e2565ed05ffeeK7UWW763yFjY6`, desktop and plugin correctness `ses_e2565ed05ffdTZuAu0rk6w50hc`. Their findings seed the third wave.
 - Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. Then the remaining P2-P4 plugins and backends.
 
 Current state:
