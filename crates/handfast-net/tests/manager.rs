@@ -4,7 +4,7 @@
 //! test reaches into the manager's state; every assertion is an event, a
 //! closed socket or a policy rejection.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ use handfast_testkit::tls_peer::{accept, dial, TlsPeerConfig, TlsVersion};
 use handfast_testkit::WirePacket;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -121,6 +121,17 @@ async fn refusing_listener() -> SocketAddr {
         }
     });
     address
+}
+
+async fn connect_from(source: Ipv4Addr, target: SocketAddr) -> TcpStream {
+    let socket = TcpSocket::new_v4().expect("build a source socket");
+    socket
+        .bind(SocketAddr::from((source, 0)))
+        .expect("bind the source address");
+    socket
+        .connect(target)
+        .await
+        .expect("connect from the source address")
 }
 
 struct Harness {
@@ -340,6 +351,72 @@ async fn pending_cap_closes_extra_connections() {
         .expect("the pending cap closes the extra connection");
     assert_eq!(read.expect("read the close"), 0);
     drop(first);
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn one_ip_cannot_hold_every_pending_slot() {
+    let limits = LinkLimits {
+        max_pending: 2,
+        per_ip_interval: Duration::ZERO,
+        handshake_timeout: Duration::from_secs(5),
+        ..LinkLimits::default()
+    };
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        limits,
+        Duration::from_millis(100),
+    )
+    .await;
+    let attacker = Ipv4Addr::new(127, 0, 0, 2);
+    let mut silent = Vec::new();
+    for _ in 0..2 {
+        silent.push(connect_from(attacker, harness.address).await);
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let config = peer(PEER_ID);
+    let _legit = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("a second IP completes a handshake while the first IP is silent");
+    assert!(!expect_connected(&mut harness.events).await);
+
+    drop(silent);
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn a_reconnect_from_the_same_ip_is_admitted_after_the_window() {
+    let limits = LinkLimits {
+        max_pending: 1,
+        per_ip_interval: Duration::from_millis(100),
+        ..LinkLimits::default()
+    };
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        limits,
+        Duration::from_millis(100),
+    )
+    .await;
+    let config = peer(PEER_ID);
+    let first = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the first link from the IP is admitted");
+    assert!(!expect_connected(&mut harness.events).await);
+    drop(first);
+    let (disconnected, _reason) = expect_disconnected(&mut harness.events).await;
+    assert_eq!(disconnected, device_id(PEER_ID));
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _second = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the same IP reconnects after the window");
+    assert!(!expect_connected(&mut harness.events).await);
+
     harness.handle.shutdown();
     let _ = harness.task.await;
 }
