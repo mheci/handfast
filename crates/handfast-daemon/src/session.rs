@@ -283,6 +283,12 @@ struct TransferDeps {
     connects: Arc<AtomicUsize>,
 }
 
+/// The result of one eager connect task.
+type ConnectResult = (u64, Result<PendingPayload, PayloadError>);
+
+/// The join outcome of one eager connect task.
+type ConnectJoin = Result<ConnectResult, JoinError>;
+
 /// One queued receive. Only the front slot may start.
 enum Slot {
     /// An empty file, or a file whose eager connect is not spawned yet.
@@ -306,9 +312,7 @@ impl Slot {
 }
 
 /// The one active receive for a peer.
-struct ActiveReceive {
-    id: u64,
-}
+struct ActiveReceive;
 
 /// Inbound share transfer state for one peer.
 ///
@@ -322,7 +326,7 @@ struct TransferRunner {
     active: Option<ActiveReceive>,
     slots: VecDeque<Slot>,
     receives: JoinSet<()>,
-    connects: JoinSet<(u64, Result<PendingPayload, PayloadError>)>,
+    connects: JoinSet<ConnectResult>,
     next_id: u64,
     #[cfg(test)]
     connects_completed: Arc<AtomicUsize>,
@@ -430,7 +434,7 @@ impl TransferRunner {
     }
 
     fn spawn_receive(&mut self, id: u64, intent: Transfer, pending: Option<PendingPayload>) {
-        self.active = Some(ActiveReceive { id });
+        self.active = Some(ActiveReceive);
         let files = Arc::clone(&self.files);
         let payloads = Arc::clone(&self.payloads);
         let events = self.events.clone();
@@ -441,23 +445,17 @@ impl TransferRunner {
     }
 
     fn receive_finished(&mut self, joined: Option<Result<(), JoinError>>) {
-        match joined {
-            Some(Err(error)) => {
-                tracing::warn!(
-                    device_id = %self.peer.device_id,
-                    %error,
-                    "receive task ended abnormally"
-                );
-            }
-            Some(Ok(())) | None => {}
+        if let Some(Err(error)) = joined {
+            tracing::warn!(
+                device_id = %self.peer.device_id,
+                %error,
+                "receive task ended abnormally"
+            );
         }
         self.active = None;
     }
 
-    async fn connect_finished(
-        &mut self,
-        joined: Option<Result<(u64, Result<PendingPayload, PayloadError>), JoinError>>,
-    ) {
+    async fn connect_finished(&mut self, joined: Option<ConnectJoin>) {
         let Some(Ok((id, result))) = joined else {
             return;
         };
@@ -514,7 +512,7 @@ impl TransferRunner {
 enum SessionStep {
     Input(Option<SessionInput>),
     Receive(Option<Result<(), JoinError>>),
-    Connect(Option<Result<(u64, Result<PendingPayload, PayloadError>), JoinError>>),
+    Connect(Option<ConnectJoin>),
 }
 
 async fn run(

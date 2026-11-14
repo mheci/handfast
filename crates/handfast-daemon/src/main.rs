@@ -17,9 +17,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use clap::Parser;
 use handfast_desktop::Desktop;
 use handfast_net::{
-    Discovery, Fingerprint, LinkEvent, LinkLimits, LinkListener, LinkManager, LinkManagerHandle,
-    LocalEndpoint, PayloadLimits, PayloadService, PendingLink, ShareEvent, TrustTable,
-    SHARE_EVENT_QUEUE,
+    Discovery, Fingerprint, LinkEvent, LinkHandle, LinkLimits, LinkListener, LinkManager,
+    LinkManagerHandle, LocalEndpoint, PayloadLimits, PayloadService, PeerCertificate, PendingLink,
+    ShareEvent, TrustTable, SHARE_EVENT_QUEUE,
 };
 use handfast_plugins::registry;
 use handfast_proto::{
@@ -314,6 +314,39 @@ struct Daemon {
 }
 
 impl Daemon {
+    /// Start a session with the transfer runner when the desktop has a Files
+    /// adapter, and without one otherwise.
+    fn start_session(
+        &self,
+        peer: Identity,
+        link: LinkHandle,
+        remote_addr: SocketAddr,
+        certificate: PeerCertificate,
+    ) -> DeviceSession {
+        if self.desktop.files.is_some() {
+            DeviceSession::start_with_transfers(
+                peer,
+                link,
+                Arc::clone(&self.registry),
+                self.desktop.clone(),
+                self.events.clone(),
+                TransferSetup {
+                    remote_addr,
+                    certificate,
+                    payloads: Arc::clone(&self.payloads),
+                },
+            )
+        } else {
+            DeviceSession::start(
+                peer,
+                link,
+                Arc::clone(&self.registry),
+                self.desktop.clone(),
+                self.events.clone(),
+            )
+        }
+    }
+
     async fn handle_link_event(&mut self, event: LinkEvent) {
         match event {
             LinkEvent::Connected {
@@ -345,18 +378,7 @@ impl Daemon {
                     if let Some(previous) = self.sessions.remove(&device_id) {
                         previous.handle().stop("replaced".to_string());
                     }
-                    let session = DeviceSession::start_with_transfers(
-                        peer,
-                        link,
-                        Arc::clone(&self.registry),
-                        self.desktop.clone(),
-                        self.events.clone(),
-                        TransferSetup {
-                            remote_addr,
-                            certificate,
-                            payloads: Arc::clone(&self.payloads),
-                        },
-                    );
+                    let session = self.start_session(peer, link, remote_addr, certificate);
                     tracing::info!(%device_id, %remote_addr, "paired link connected");
                     self.sessions.insert(device_id, session);
                 } else {
@@ -516,18 +538,11 @@ impl Daemon {
                 if let Some(previous) = self.sessions.remove(&device_id) {
                     previous.handle().stop("replaced".to_string());
                 }
-                let setup = TransferSetup {
-                    remote_addr: pending.remote_addr,
-                    certificate: pending.certificate,
-                    payloads: Arc::clone(&self.payloads),
-                };
-                let session = DeviceSession::start_with_transfers(
+                let session = self.start_session(
                     pending.peer,
                     pending.link,
-                    Arc::clone(&self.registry),
-                    self.desktop.clone(),
-                    self.events.clone(),
-                    setup,
+                    pending.remote_addr,
+                    pending.certificate,
                 );
                 for packet in pending.queued {
                     session.deliver(packet);
