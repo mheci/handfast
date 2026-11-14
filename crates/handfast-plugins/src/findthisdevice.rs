@@ -13,6 +13,8 @@ use crate::roster;
 
 const TITLE: &str = "Find this device";
 
+const MAX_MESSAGE_BYTES: usize = 4 * 1024;
+
 /// Notifies the desktop when a paired device asks to be found.
 #[derive(Debug, Default)]
 pub struct FindThisDevicePlugin;
@@ -28,9 +30,16 @@ impl FindThisDevicePlugin {
 fn message(packet: &Packet) -> Result<Option<String>, ()> {
     match packet.body.get("message") {
         None => Ok(None),
-        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(Value::String(text)) if valid_message(text) => Ok(Some(text.clone())),
         Some(_) => Err(()),
     }
+}
+
+fn valid_message(text: &str) -> bool {
+    text.len() <= MAX_MESSAGE_BYTES
+        && !text
+            .chars()
+            .any(|character| character.is_control() && character != '\n' && character != '\t')
 }
 
 #[async_trait]
@@ -156,6 +165,57 @@ mod tests {
         run(&mock.desktop(), &packet).await;
 
         assert_eq!(mock.notifications()[0].text, "Ring the office");
+    }
+
+    #[tokio::test]
+    async fn newline_and_tab_in_message_are_allowed() {
+        let mock = MockDesktop::new();
+        let packet = Packet::from_body(
+            types::FINDMYPHONE_REQUEST,
+            &json!({"message": "Ring\nthe\toffice"}),
+        )
+        .unwrap();
+        run(&mock.desktop(), &packet).await;
+
+        assert_eq!(mock.notifications()[0].text, "Ring\nthe\toffice");
+    }
+
+    #[tokio::test]
+    async fn oversized_message_is_a_warning() {
+        let mock = MockDesktop::new();
+        let text = "a".repeat(MAX_MESSAGE_BYTES + 1);
+        let packet =
+            Packet::from_body(types::FINDMYPHONE_REQUEST, &json!({"message": text})).unwrap();
+        let output = run(&mock.desktop(), &packet).await;
+
+        assert!(mock.notifications().is_empty());
+        assert!(matches!(
+            output.events.as_slice(),
+            [PluginEvent::Log {
+                level: LogLevel::Warn,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn control_character_in_message_is_a_warning() {
+        let mock = MockDesktop::new();
+        let packet = Packet::from_body(
+            types::FINDMYPHONE_REQUEST,
+            &json!({"message": "Ring\u{0}the office"}),
+        )
+        .unwrap();
+        let output = run(&mock.desktop(), &packet).await;
+
+        assert!(mock.notifications().is_empty());
+        assert!(matches!(
+            output.events.as_slice(),
+            [PluginEvent::Log {
+                level: LogLevel::Warn,
+                ..
+            }]
+        ));
     }
 
     #[tokio::test]

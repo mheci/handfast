@@ -20,6 +20,8 @@ const ACTIONS: &[(&str, MediaAction)] = &[
     ("Previous", MediaAction::Previous),
 ];
 
+const MAX_PLAYER_BYTES: usize = 256;
+
 struct Request<'a> {
     player: Option<&'a str>,
     action: Option<(&'static str, MediaAction)>,
@@ -31,6 +33,12 @@ fn parse(packet: &Packet) -> Result<Request<'_>, String> {
         None => None,
         Some(Value::String(name)) if name.is_empty() => {
             return Err("player is empty".to_string());
+        }
+        Some(Value::String(name)) if name.len() > MAX_PLAYER_BYTES => {
+            return Err(format!("player is longer than {MAX_PLAYER_BYTES} bytes"));
+        }
+        Some(Value::String(name)) if name.chars().any(char::is_control) => {
+            return Err("player contains control characters".to_string());
         }
         Some(Value::String(name)) => Some(name.as_str()),
         Some(_) => return Err("player is not a string".to_string()),
@@ -203,6 +211,7 @@ mod tests {
         players: Vec<String>,
         actions: Mutex<Vec<(String, MediaAction)>>,
         volumes: Mutex<Vec<(String, u8)>>,
+        listed: Mutex<usize>,
     }
 
     impl RecordingMedia {
@@ -211,6 +220,7 @@ mod tests {
                 players: players.iter().map(|player| (*player).to_string()).collect(),
                 actions: Mutex::new(Vec::new()),
                 volumes: Mutex::new(Vec::new()),
+                listed: Mutex::new(0),
             }
         }
 
@@ -221,11 +231,16 @@ mod tests {
         fn volumes(&self) -> Vec<(String, u8)> {
             self.volumes.lock().unwrap().clone()
         }
+
+        fn listed(&self) -> usize {
+            *self.listed.lock().unwrap()
+        }
     }
 
     #[async_trait]
     impl Media for RecordingMedia {
         async fn players(&self) -> DesktopResult<Vec<String>> {
+            *self.listed.lock().unwrap() += 1;
             Ok(self.players.clone())
         }
 
@@ -359,6 +374,52 @@ mod tests {
         .unwrap();
         assert_log(&output, LogLevel::Warn);
         assert!(mock.media_actions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_player_is_a_warning() {
+        let (media, desktop) = recording_desktop(&["Kitchen"]);
+        let player = "p".repeat(MAX_PLAYER_BYTES + 1);
+        let output = run_with(
+            &desktop,
+            &request(json!({"player": player, "action": "Play"})),
+        )
+        .await
+        .unwrap();
+
+        assert_log(&output, LogLevel::Warn);
+        assert!(media.actions().is_empty());
+        assert!(media.volumes().is_empty());
+        assert_eq!(media.listed(), 0);
+    }
+
+    #[tokio::test]
+    async fn control_character_in_player_is_a_warning() {
+        let (media, desktop) = recording_desktop(&["Kitchen"]);
+        let output = run_with(
+            &desktop,
+            &request(json!({"player": "Kit\u{0}chen", "action": "Play"})),
+        )
+        .await
+        .unwrap();
+
+        assert_log(&output, LogLevel::Warn);
+        assert!(media.actions().is_empty());
+        assert!(media.volumes().is_empty());
+        assert_eq!(media.listed(), 0);
+    }
+
+    #[tokio::test]
+    async fn unknown_action_does_not_call_media() {
+        let (media, desktop) = recording_desktop(&["Kitchen"]);
+        let output = run_with(&desktop, &request(json!({"action": "FastForward"})))
+            .await
+            .unwrap();
+
+        assert_log(&output, LogLevel::Warn);
+        assert!(media.actions().is_empty());
+        assert!(media.volumes().is_empty());
+        assert_eq!(media.listed(), 0);
     }
 
     #[tokio::test]
