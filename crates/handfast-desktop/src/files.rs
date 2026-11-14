@@ -466,8 +466,6 @@ impl Files for LocalFiles {
             match tokio::fs::remove_file(&path).await {
                 Ok(()) => removed += 1,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                // A locked or permission-denied temp file must not block
-                // startup; the next sweep retries it.
                 Err(_) => failed += 1,
             }
         }
