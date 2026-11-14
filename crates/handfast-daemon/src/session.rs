@@ -25,7 +25,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Inbound queue for one session. A full queue drops packets rather than
 /// blocking the daemon event loop.
@@ -184,6 +185,7 @@ impl DeviceSession {
         let handle = SessionHandle {
             tx,
             delivery_timeout: limits.delivery_timeout,
+            drops: Arc::new(AtomicU64::new(0)),
         };
         let task = tokio::spawn(run(peer, link, registry, desktop, events, rx, deps));
         Self { task, handle }
@@ -212,18 +214,38 @@ impl DeviceSession {
 pub struct SessionHandle {
     tx: mpsc::Sender<SessionInput>,
     delivery_timeout: Duration,
+    drops: Arc<AtomicU64>,
 }
 
 impl SessionHandle {
     /// Deliver one packet without waiting. A full queue drops the packet.
     pub fn deliver(&self, packet: Packet) {
-        match self.tx.try_send(SessionInput::Packet(packet)) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!("dropping a packet for a full session queue");
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::debug!("dropping a packet for a closed session");
+        if let Err(error) = self.tx.try_send(SessionInput::Packet(packet)) {
+            let full = matches!(&error, mpsc::error::TrySendError::Full(_));
+            // `try_send` hands the input back; only packets use this path.
+            if let SessionInput::Packet(packet) = error.into_inner() {
+                if full {
+                    let mut count = self.drops.load(Ordering::Relaxed);
+                    let dropped = loop {
+                        let next = count.saturating_add(1);
+                        match self.drops.compare_exchange_weak(
+                            count,
+                            next,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        ) {
+                            Ok(_) => break next,
+                            Err(current) => count = current,
+                        }
+                    };
+                    tracing::warn!(
+                        packet_type = %packet.ptype,
+                        dropped,
+                        "dropping a packet for a full session queue"
+                    );
+                } else {
+                    tracing::debug!("dropping a packet for a closed session");
+                }
             }
         }
     }
@@ -1822,6 +1844,7 @@ mod tests {
         let handle = SessionHandle {
             tx,
             delivery_timeout: SessionLimits::default().delivery_timeout,
+            drops: Arc::new(AtomicU64::new(0)),
         };
         for _ in 0..SESSION_QUEUE {
             handle.deliver(Packet::empty(types::PING).expect("a valid empty ping"));
@@ -1841,6 +1864,34 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(3),
             "returns within the two-second contract: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_session_queue_counts_the_drop_and_keeps_queued_packets() {
+        let (tx, mut rx) = mpsc::channel(SESSION_QUEUE);
+        let handle = SessionHandle {
+            tx,
+            delivery_timeout: SessionLimits::default().delivery_timeout,
+            drops: Arc::new(AtomicU64::new(0)),
+        };
+        for _ in 0..SESSION_QUEUE {
+            handle.deliver(Packet::empty(types::PING).expect("a valid empty ping"));
+        }
+        assert_eq!(handle.drops.load(Ordering::Relaxed), 0);
+
+        handle.deliver(Packet::empty(types::SHARE_REQUEST).expect("a valid share packet"));
+
+        assert_eq!(
+            handle.drops.load(Ordering::Relaxed),
+            1,
+            "the full queue counts the drop"
+        );
+        assert_eq!(rx.len(), SESSION_QUEUE, "the queued packets remain");
+        let queued = rx.try_recv().expect("a queued packet remains");
+        assert!(
+            matches!(queued, SessionInput::Packet(packet) if packet.ptype == types::PING),
+            "the queued packet is untouched"
         );
     }
 
@@ -2165,6 +2216,7 @@ mod tests {
         let handle = SessionHandle {
             tx,
             delivery_timeout: SessionLimits::default().delivery_timeout,
+            drops: Arc::new(AtomicU64::new(0)),
         };
         for _ in 0..SESSION_QUEUE {
             handle.deliver(Packet::empty(types::PING).expect("a valid empty ping"));
