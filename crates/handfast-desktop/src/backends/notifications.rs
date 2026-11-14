@@ -193,7 +193,8 @@ mod tests {
 
     fn notifier(outcome: FakeOutcome) -> (CommandNotifier, Arc<FakeRunner>) {
         let runner = FakeRunner::new(outcome);
-        (CommandNotifier::with_runner(Arc::clone(&runner)), runner)
+        let backend = Arc::clone(&runner) as Arc<dyn CommandRunner>;
+        (CommandNotifier::with_runner(backend), runner)
     }
 
     #[tokio::test]
