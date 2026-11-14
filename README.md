@@ -155,9 +155,9 @@ apps, and behavioral parity with the 31 plugins shipped by `kdeconnect-kde`.
 - The private key is zeroized when `TlsIdentity` drops.
 - `handfast-proto` has fuzz targets for frame decoding, the strict identity,
   the plaintext hello and the discovery announcement.
-- The Windows state file inherits the user profile ACL. An explicit protected
-  DACL is a P1 security follow-up with its API and test named in
-  [ARCHITECTURE.md](docs/ARCHITECTURE.md#windows-state-file-acl-follow-up).
+- The Windows state directory, `state.db`, the incoming root and
+  `.handfast-tmp` get a protected DACL for the current user. See
+  [ARCHITECTURE.md](docs/ARCHITECTURE.md#windows-state-file-and-incoming-file-acls).
 - The Windows release signs the executable and MSI when
   `WINDOWS_CERT_PFX_BASE64` and `WINDOWS_CERT_PASSWORD` are configured, then
   verifies both signatures. The 0.2.0 MSI is unsigned.

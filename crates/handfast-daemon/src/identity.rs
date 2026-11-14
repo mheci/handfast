@@ -70,12 +70,20 @@ pub fn secure_state_dir(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-/// The state directory inherits the user profile ACL on Windows.
+/// Replace the state directory's inherited ACL with a protected DACL for the
+/// current user on Windows.
 ///
-/// P1 security follow-up: replace inheritance with an explicit protected DACL.
-/// The API and its test are specified in
-/// `docs/ARCHITECTURE.md#windows-state-file-acl-follow-up`.
-#[cfg(not(unix))]
+/// # Errors
+///
+/// Fails when the DACL cannot be applied. A failure is fatal: the private key
+/// lives under this directory.
+#[cfg(windows)]
+pub fn secure_state_dir(path: &Path) -> std::io::Result<()> {
+    handfast_desktop::winacl::protect_current_user(path)
+}
+
+/// The state directory keeps its inherited ACL on other non-Unix targets.
+#[cfg(not(any(unix, windows)))]
 pub fn secure_state_dir(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
@@ -91,12 +99,63 @@ pub fn secure_state_file(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
-/// The state file inherits the user profile ACL on Windows.
+/// Replace the state file's inherited ACL with a protected DACL for the
+/// current user on Windows.
 ///
-/// P1 security follow-up: replace inheritance with an explicit protected DACL.
-/// The API and its test are specified in
-/// `docs/ARCHITECTURE.md#windows-state-file-acl-follow-up`.
-#[cfg(not(unix))]
+/// # Errors
+///
+/// Fails when the DACL cannot be applied. A failure is fatal: this file holds
+/// the TLS private key.
+#[cfg(windows)]
+pub fn secure_state_file(path: &Path) -> std::io::Result<()> {
+    handfast_desktop::winacl::protect_current_user(path)
+}
+
+/// The state file keeps its inherited ACL on other non-Unix targets.
+#[cfg(not(any(unix, windows)))]
 pub fn secure_state_file(_path: &Path) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_state_paths_are_private_to_the_current_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir(&data_dir).unwrap();
+
+        secure_state_dir(&data_dir).unwrap();
+        assert!(handfast_desktop::winacl::is_private_to_current_user(&data_dir).unwrap());
+
+        let state_path = data_dir.join("state.db");
+        std::fs::write(&state_path, b"state").unwrap();
+        secure_state_file(&state_path).unwrap();
+        assert!(handfast_desktop::winacl::is_private_to_current_user(&state_path).unwrap());
+    }
+
+    #[test]
+    fn windows_state_acl_application_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir(&data_dir).unwrap();
+        let state_path = data_dir.join("state.db");
+        std::fs::write(&state_path, b"state").unwrap();
+
+        for _ in 0..2 {
+            secure_state_dir(&data_dir).unwrap();
+            secure_state_file(&state_path).unwrap();
+        }
+        assert!(handfast_desktop::winacl::is_private_to_current_user(&data_dir).unwrap());
+        assert!(handfast_desktop::winacl::is_private_to_current_user(&state_path).unwrap());
+    }
+
+    #[test]
+    fn windows_state_acl_failure_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(secure_state_dir(&dir.path().join("missing")).is_err());
+        assert!(secure_state_file(&dir.path().join("missing.db")).is_err());
+    }
 }

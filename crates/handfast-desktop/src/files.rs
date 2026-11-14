@@ -277,18 +277,23 @@ pub struct LocalFiles {
 impl LocalFiles {
     /// Create the incoming root and its private temp directory.
     ///
-    /// An existing root keeps its permissions. A new root and the temp
-    /// directory are created with mode 0700 on Unix.
+    /// An existing root keeps its permissions on Unix. A new root and the temp
+    /// directory are created with mode 0700 on Unix. On Windows both
+    /// directories get a protected DACL for the current user, new or existing.
     ///
     /// # Errors
     /// Fails when the root or temp path exists as a file or symlink, when an
-    /// existing temp directory is group or world accessible on Unix, or when a
-    /// directory cannot be created.
+    /// existing temp directory is group or world accessible on Unix, when a
+    /// directory cannot be created, or when the Windows DACL cannot be set.
     pub fn new(root: impl AsRef<Path>, limits: FileLimits) -> Result<Self, FilesError> {
         let root = root.as_ref().to_path_buf();
         ensure_root(&root)?;
+        #[cfg(windows)]
+        crate::winacl::protect_current_user(&root)?;
         let temp_dir = root.join(TEMP_DIR_NAME);
         ensure_temp_dir(&temp_dir)?;
+        #[cfg(windows)]
+        crate::winacl::protect_current_user(&temp_dir)?;
         Ok(Self {
             root,
             temp_dir,
@@ -1001,6 +1006,27 @@ mod tests {
             .unwrap();
         assert_eq!(mode(&incoming.temp_path), 0o600);
         incoming.abort().await;
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_incoming_directories_are_private_to_the_current_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("incoming");
+        let files = LocalFiles::new(&root, limits()).unwrap();
+
+        assert!(crate::winacl::is_private_to_current_user(&root).unwrap());
+        assert!(crate::winacl::is_private_to_current_user(files.temp_dir()).unwrap());
+
+        // A temp file inherits the single user ACE from `.handfast-tmp`. The
+        // protected flag is per object and is not inherited, so the strict
+        // check needs the explicit call.
+        let temp = files.temp_dir().join("inherited.part");
+        std::fs::write(&temp, b"payload").unwrap();
+        assert!(crate::winacl::grants_only_current_user(&temp).unwrap());
+        assert!(!crate::winacl::is_private_to_current_user(&temp).unwrap());
+        crate::winacl::protect_current_user(&temp).unwrap();
+        assert!(crate::winacl::is_private_to_current_user(&temp).unwrap());
     }
 
     #[cfg(unix)]

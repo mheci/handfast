@@ -107,7 +107,11 @@ jobs:
       # job as the provider gate and run the net tests on the same runner.
       - run: cargo test -p handfast-net --all-features
       # The save policy is cross-platform; run the desktop tests here too.
+      # This includes the incoming-directory DACL read-back.
       - run: cargo test -p handfast-desktop --all-features
+      # The state-file DACL is Windows-specific; run the daemon unit tests
+      # that read it back.
+      - run: cargo test -p handfast-daemon --all-features --bin handfastd identity::tests
 
   testkit-self-test:
     name: testkit self-test
