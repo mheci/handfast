@@ -83,14 +83,15 @@ Active parallel wave:
 - Unit 7 manager share routing: branch `feat/manager-share`, owner `ses_e27e4050fffegnN3rrtSkKTw64`.
 - Windows ACLs: branch `feat/windows-acl`, owner `ses_e27e4050affdWp2UDXseLO5dKc`.
 - P1 hardening: branch `feat/p1-hardening`, owner `ses_e27e40504ffeEGVdAJ6VWtzgIo`.
-- Share docs and fuzz: PR [#200](https://github.com/mheci/handfast/pull/200), head `26f1935`, verifier FAIL on two checklist errors, owner fixing.
+- Share docs and fuzz: PR [#200](https://github.com/mheci/handfast/pull/200), head `bf09aed`, verifier re-checking the two checklist fixes.
+- Comment review: `ses_e27c447b9ffedl4KstEcpciHVo` scanning the wave for comment and workaround findings.
 - Connectivity report plugin: PR [#204](https://github.com/mheci/handfast/pull/204), head `211aa51`, verifier `ses_e27d45111ffeaLpfdFjD5w03It` running.
 - System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `b1a222f`, verifier `ses_e27caad5bffepXpjnnbo60z27U` running.
 - Pause music plugin: PR [#205](https://github.com/mheci/handfast/pull/205), head `eb37035`, verifier `ses_e27d18864ffe0CDqsAqI7I4uqT` running.
 - MPRIS control plugin: PR [#207](https://github.com/mheci/handfast/pull/207), head `28c7d23`, verifier `ses_e27c87c49ffdhF6CsfTpQD7ppm` running.
 - Notifications plugin: PR [#206](https://github.com/mheci/handfast/pull/206), head `e2869b6`, verifier `ses_e27c98da9ffeh98HsOLqHbnAJ8` running.
 - Find this device plugin: PR [#208](https://github.com/mheci/handfast/pull/208), head `50b9520`, verifier `ses_e27c87c49ffezJGRwHszwbzNLK` running.
-- Clipboard backend: PR [#203](https://github.com/mheci/handfast/pull/203), head `0d90c27`, verifier `ses_e27d220a7ffefUrWqpv2880HLB` running.
+- Clipboard backend: PR [#203](https://github.com/mheci/handfast/pull/203), head `0d90c27`, verifier FAIL on the write hang, owner fixing.
 - Notifications backend: PR [#202](https://github.com/mheci/handfast/pull/202), head `89e8986`, verifier `ses_e27d2bcdaffexfKTT4jPzAtdM7` running.
 - Unit 6 prep: done, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit6-share-plugin-brief.md`.
 - Unit 8 prep: done, runner brief in the session record.
