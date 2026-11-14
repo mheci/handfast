@@ -19,7 +19,7 @@ use std::ptr;
 
 use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE};
 use windows_sys::Win32::Security::Authorization::{
-    GetNamedSecurityInfoW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
+    ConvertSidToStringSidW, GetNamedSecurityInfoW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
     AclSizeInformation, AddAccessAllowedAceEx, EqualSid, GetAce, GetAclInformation, GetLengthSid,
@@ -87,6 +87,19 @@ pub fn is_private_to_current_user(path: &Path) -> io::Result<bool> {
     let user = current_user_sid()?;
     let facts = read_dacl(&name, &user)?;
     Ok(facts.protected && facts.user_only)
+}
+
+/// The current process token's user SID as a string.
+///
+/// Use this for a same-user boundary such as a named-pipe name or DACL.
+///
+/// # Errors
+///
+/// Fails when the process token cannot be opened or the SID cannot be
+/// converted.
+pub fn current_user_sid_string() -> io::Result<String> {
+    let user = current_user_sid()?;
+    sid_to_string(user.sid())
 }
 
 /// Whether `path`'s DACL grants full control to the current user and to no
@@ -281,6 +294,28 @@ fn token_user(token: HANDLE) -> io::Result<ProcessUser> {
 }
 
 #[allow(unsafe_code)]
+fn sid_to_string(sid: PSID) -> io::Result<String> {
+    let mut string: *mut u16 = ptr::null_mut();
+    // SAFETY: `sid` points into the live token buffer. `ConvertSidToStringSidW`
+    // allocates a null-terminated UTF-16 string, freed below.
+    if unsafe { ConvertSidToStringSidW(sid, &mut string) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut length = 0usize;
+    // SAFETY: `string` is a live null-terminated UTF-16 buffer.
+    unsafe {
+        while *string.add(length) != 0 {
+            length += 1;
+        }
+    }
+    // SAFETY: the loop above bounded the string length.
+    let value = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(string, length) });
+    // SAFETY: `ConvertSidToStringSidW` documents LocalFree as the release.
+    unsafe { LocalFree(string.cast()) };
+    Ok(value)
+}
+
+#[allow(unsafe_code)]
 fn user_acl(sid: PSID, directory: bool) -> io::Result<Vec<u32>> {
     // SAFETY: `sid` points into the live token buffer.
     let sid_len = unsafe { GetLengthSid(sid) } as usize;
@@ -316,6 +351,12 @@ fn wide(path: &Path) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_user_sid_string_is_a_sid() {
+        let sid = current_user_sid_string().unwrap();
+        assert!(sid.starts_with("S-1-"), "{sid}");
+    }
 
     #[test]
     fn protected_directory_is_private_to_the_current_user() {

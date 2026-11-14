@@ -18,10 +18,15 @@ handfast-plugins = { path = "../handfast-plugins", version = "0.2.0" }
 handfast-proto = { path = "../handfast-proto", version = "0.2.0" }
 handfast-runtime = { path = "../handfast-runtime", version = "0.2.0" }
 handfast-store = { path = "../handfast-store", version = "0.2.0" }
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
@@ -30,3 +35,6 @@ handfast-testkit = { path = "../handfast-testkit", version = "0.2.0" }
 redb.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[lints.rust]
+unsafe_code = "deny"

@@ -380,11 +380,14 @@ dependencies = [
  "handfast-store",
  "handfast-testkit",
  "redb",
+ "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
