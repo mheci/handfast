@@ -78,9 +78,8 @@ cycle-checking tool.
                 v                                   v
        +-------------------+               +-------------------+
        | handfast-plugins  |               | handfast-desktop  |
-       | 31 plugin modules |               | D-Bus, Wayland,   |
-       +-------------------+               | PipeWire, libei   |
-                                           +-------------------+
+       | 31 plugin modules |               | CLI tools, files  |
+       +-------------------+               +-------------------+
 ```
 
 One `handfastd` process owns:
@@ -121,10 +120,12 @@ A paired link runs one session task with a `DeviceHost` and calls
 `handfastd` composes the share path before it builds its identity. `LocalFiles`
 creates the incoming root and its private `.handfast-tmp` directory, and the
 startup sweep removes `.part` files older than 24 h from that directory only.
-The desktop is then rebuilt with `files`, and the plugin registry recomputes the
-capabilities, so the announced identity advertises `kdeconnect.share.request`.
-`--print-identity` returns before this step: it keeps the default desktop, does
-not create the incoming directory and opens no control socket.
+The root defaults to `$XDG_DOWNLOAD_DIR/Handfast`, else `~/Downloads/Handfast`,
+and `--incoming-dir` overrides it. The desktop is then rebuilt with `files`, and
+the plugin registry recomputes the capabilities, so the announced identity
+advertises `kdeconnect.share.request`. `--print-identity` returns before this
+step: it keeps the default desktop, does not create the incoming directory and
+opens no control socket.
 
 One `TlsIdentity` serves both the control links and the payload connections;
 `PayloadService` never generates a second certificate. `ShareLimits` is the one
@@ -183,20 +184,26 @@ announced to a peer and never receives packets.
 
 | Trait | Used by | Linux backend |
 | --- | --- | --- |
-| `Clipboard` | clipboard | `wl-clipboard-rs` (Wayland), `x11-clipboard` (X11) |
-| `Notifier` | notifications, sendnotifications, findthisdevice | `org.freedesktop.Notifications` over zbus |
-| `Media` | mpriscontrol, mprisremote, pausemusic | `org.mpris.MediaPlayer2` over zbus |
-| `Volume` | systemvolume, remotesystemvolume | PipeWire or `wpctl` |
-| `Input` | mousepad, presenter, digitizer, remotecontrol, remotekeyboard | portal `RemoteDesktop` + libei |
-| `Screensaver` | screensaver-inhibit | `org.freedesktop.login1` over zbus |
-| `Shell` | share URL, findthisdevice | xdg-open via `std::process::Command` |
+| `Clipboard` | clipboard, share text | `wl-clipboard` (`wl-paste`, `wl-copy`) on Wayland, `xclip` on X11 |
+| `Notifier` | notifications, sendnotifications, findthisdevice | `notify-send`, closed with `gdbus` |
+| `Media` | mpriscontrol, mprisremote, pausemusic | `playerctl` |
+| `Volume` | systemvolume, remotesystemvolume | `wpctl` |
+| `Input` | mousepad, presenter, digitizer, remotecontrol, remotekeyboard | none |
+| `Screensaver` | screensaver-inhibit | `systemd-inhibit` |
+| `Shell` | share URL | `xdg-open` |
+| `Files` | share | `LocalFiles` under the incoming root |
 
-Traits return `Result` and are `Send + Sync`. In P1 the daemon composes a
-`Desktop` from optional adapters. A plugin whose required adapter is missing is
-not advertised on that host; the registry already filters by `Desktop`.
+Traits return `Result` and are `Send + Sync`. The daemon composes a `Desktop`
+from optional adapters. A plugin whose required adapter is missing is not
+advertised on that host. The registry already filters by `Desktop`. `handfastd`
+installs the `Files` adapter today. The clipboard, notifications, MPRIS, volume,
+shell and screensaver adapters are constructible and tested, but the daemon does
+not install them yet.
 
-`MockDesktop` implements every trait with in-memory recording. Plugin contract
-tests use it; Linux backends get their own integration tests behind `cfg(target_os = "linux")`.
+`MockDesktop` implements every trait except `Files` with in-memory recording.
+`MockDesktop::with_files` installs a real `LocalFiles` under a temp directory.
+Plugin contract tests use it. Each backend that shells out takes a fake runner in
+its tests, so the suite does not need the tool installed.
 
 ## State
 
