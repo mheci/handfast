@@ -35,3 +35,6 @@ handfast-testkit = { path = "../handfast-testkit", version = "0.2.0" }
 redb.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[lints.rust]
+unsafe_code = "deny"

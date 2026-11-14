@@ -6,8 +6,10 @@
 //! `windows-sys` call lives in this module; the `unsafe_code` allow sits on the
 //! functions that call FFI.
 //!
-//! The DACL rejection itself stays a manual check until CI has a second local
-//! user. The Windows job builds this module.
+//! shortcut: the DACL rejects a second local user, but that check needs a
+//! second local user, so it stays manual. The Windows test
+//! `pipe_security_descriptor_is_one_current_user_ace` proves the descriptor
+//! shape. The Windows job builds this module.
 
 use std::ffi::c_void;
 use std::io;
@@ -19,40 +21,29 @@ use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
 use tokio::sync::{mpsc, oneshot};
-use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_PIPE_BUSY, HANDLE};
+use windows_sys::Win32::Foundation::{LocalFree, ERROR_PIPE_BUSY};
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
-use windows_sys::Win32::Security::{
-    GetTokenInformation, TokenUser, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
-};
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+
+use handfast_desktop::winacl::current_user_sid_string;
 
 use super::{serve, ControlError, ControlServerHandle, DaemonCommand, CONTROL_IO_TIMEOUT};
 
 /// Named-pipe path prefix. The rest of the name is the current-user SID.
 pub(super) const PIPE_PREFIX: &str = r"\\.\pipe\handfastd-";
 
-/// The control pipe name for the current user.
-pub(super) fn pipe_name() -> io::Result<String> {
-    match current_user_sid_string() {
-        Ok(sid) => Ok(format!("{PIPE_PREFIX}{sid}")),
-        Err(_) => std::env::var("USERNAME")
-            .map(|name| format!("{PIPE_PREFIX}{name}"))
-            .map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "no current-user SID or USERNAME is available",
-                )
-            }),
-    }
+/// The control pipe name for `sid`.
+pub(super) fn pipe_name(sid: &str) -> String {
+    format!("{PIPE_PREFIX}{sid}")
 }
 
 pub(super) async fn start(
     commands: mpsc::Sender<DaemonCommand>,
 ) -> Result<ControlServerHandle, ControlError> {
     let sid = current_user_sid_string()?;
-    let name = format!("{PIPE_PREFIX}{sid}");
+    let name = pipe_name(&sid);
     let security = PipeSecurity::new(&sid)?;
 
     let mut options = ServerOptions::new();
@@ -66,13 +57,17 @@ pub(super) async fn start(
             tokio::select! {
                 _ = &mut shutdown_rx => break,
                 connected = server.connect() => {
-                    if let Err(error) = connected {
-                        tracing::warn!(%error, "control pipe accept failed");
-                        break;
+                    match connected {
+                        Ok(()) => {
+                            let connected = server;
+                            let commands = commands.clone();
+                            tokio::spawn(async move { serve(connected, commands).await; });
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "control pipe accept failed");
+                            drop(server);
+                        }
                     }
-                    let connected = server;
-                    let commands = commands.clone();
-                    tokio::spawn(async move { serve(connected, commands).await; });
                     options.first_pipe_instance(false);
                     match create_server(&options, &name, &security) {
                         Ok(next) => server = next,
@@ -89,7 +84,8 @@ pub(super) async fn start(
 }
 
 pub(super) async fn connect() -> Result<NamedPipeClient, ControlError> {
-    let name = pipe_name()?;
+    let sid = current_user_sid_string()?;
+    let name = pipe_name(&sid);
     let deadline = tokio::time::Instant::now() + CONTROL_IO_TIMEOUT;
     loop {
         match ClientOptions::new().open(&name) {
@@ -111,12 +107,17 @@ pub(super) async fn connect() -> Result<NamedPipeClient, ControlError> {
 /// A protected security descriptor for the current-user SID.
 ///
 /// The descriptor is a `LocalAlloc` allocation from
-/// `ConvertStringSecurityDescriptorToSecurityDescriptorW`. It is stored as an
-/// address so the value stays `Send`; the allocation is owned and freed by
+/// `ConvertStringSecurityDescriptorToSecurityDescriptorW`, owned and freed by
 /// [`Drop`].
 struct PipeSecurity {
-    descriptor: usize,
+    descriptor: *mut c_void,
 }
+
+// SAFETY: the descriptor is an owned allocation that this value never shares.
+// It is only read while the allocation is alive, and the server task moves the
+// value between threads without concurrent access.
+#[allow(unsafe_code)]
+unsafe impl Send for PipeSecurity {}
 
 impl PipeSecurity {
     /// Build `D:P(A;;FA;;;<sid>)`: a protected DACL with one access-allowed ACE
@@ -141,15 +142,13 @@ impl PipeSecurity {
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self {
-            descriptor: descriptor as usize,
-        })
+        Ok(Self { descriptor })
     }
 
     fn attributes(&self) -> SECURITY_ATTRIBUTES {
         SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: self.descriptor as *mut c_void,
+            lpSecurityDescriptor: self.descriptor,
             bInheritHandle: 0,
         }
     }
@@ -158,11 +157,11 @@ impl PipeSecurity {
 impl Drop for PipeSecurity {
     #[allow(unsafe_code)]
     fn drop(&mut self) {
-        if self.descriptor != 0 {
+        if !self.descriptor.is_null() {
             // SAFETY: the descriptor came from
             // ConvertStringSecurityDescriptorToSecurityDescriptorW, whose
             // documented release is LocalFree.
-            unsafe { LocalFree(self.descriptor as *mut c_void) };
+            unsafe { LocalFree(self.descriptor) };
         }
     }
 }
@@ -184,83 +183,123 @@ fn create_server(
     }
 }
 
-#[allow(unsafe_code)]
-fn current_user_sid_string() -> io::Result<String> {
-    let mut token: HANDLE = ptr::null_mut();
-    // SAFETY: GetCurrentProcess returns a pseudo handle that is not closed;
-    // OpenProcessToken fills `token` on success.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let result = token_user_sid(token);
-    // SAFETY: `token` was opened above and is not used again.
-    unsafe { CloseHandle(token) };
-    let user = result?;
-    sid_to_string(user.sid())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// The process token's user SID, backed by the token information buffer the
-/// SID points into.
-struct ProcessUser {
-    buffer: Vec<u64>,
-}
+    use std::ffi::c_void;
+    use std::mem::size_of;
+    use std::ptr;
 
-impl ProcessUser {
-    #[allow(unsafe_code)]
-    fn sid(&self) -> PSID {
-        // SAFETY: GetTokenInformation(TokenUser) wrote a TOKEN_USER at the
-        // start of the buffer and its Sid points inside the same buffer, which
-        // `self` keeps alive.
-        let user = unsafe { &*self.buffer.as_ptr().cast::<TOKEN_USER>() };
-        user.User.Sid
-    }
-}
-
-#[allow(unsafe_code)]
-fn token_user_sid(token: HANDLE) -> io::Result<ProcessUser> {
-    let mut length = 0u32;
-    // SAFETY: a null buffer with length 0 is the documented size probe. It
-    // writes the required size even though it returns false.
-    unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut length) };
-    if length == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // u64 elements align the buffer for the TOKEN_USER pointer and the SID.
-    let mut buffer = vec![0u64; (length as usize).div_ceil(size_of::<u64>())];
-    // SAFETY: the buffer is at least `length` bytes and correctly aligned.
-    let ok = unsafe {
-        GetTokenInformation(
-            token,
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            length,
-            &mut length,
-        )
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, PSID,
+        SE_DACL_PROTECTED,
     };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(ProcessUser { buffer })
-}
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
-#[allow(unsafe_code)]
-fn sid_to_string(sid: PSID) -> io::Result<String> {
-    let mut string: *mut u16 = ptr::null_mut();
-    // SAFETY: `sid` points into the live token buffer. ConvertSidToStringSidW
-    // allocates a null-terminated UTF-16 string, freed below.
-    if unsafe { ConvertSidToStringSidW(sid, &mut string) } == 0 {
-        return Err(io::Error::last_os_error());
+    // ACE type 0 is ACCESS_ALLOWED_ACE_TYPE. windows-sys 0.61 keeps the named
+    // constant in Win32_System_SystemServices, a feature this module does not
+    // need for one ABI value.
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+    #[test]
+    fn pipe_security_descriptor_is_one_current_user_ace() {
+        let sid = handfast_desktop::winacl::current_user_sid_string().expect("a SID");
+        let security = PipeSecurity::new(&sid).expect("build the pipe security");
+        assert!(
+            has_single_user_ace(&security, &sid),
+            "the pipe DACL is one allow ACE for the current-user SID"
+        );
     }
-    let mut length = 0usize;
-    // SAFETY: `string` is a live null-terminated UTF-16 buffer.
-    unsafe {
-        while *string.add(length) != 0 {
-            length += 1;
+
+    #[allow(unsafe_code)]
+    fn has_single_user_ace(security: &PipeSecurity, sid: &str) -> bool {
+        let Some(expected) = LocalSid::new(sid) else {
+            return false;
+        };
+
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        // SAFETY: `security.descriptor` is a live security descriptor.
+        if unsafe { GetSecurityDescriptorControl(security.descriptor, &mut control, &mut revision) }
+            == 0
+        {
+            return false;
+        }
+        if control & SE_DACL_PROTECTED == 0 {
+            return false;
+        }
+
+        let mut present = 0;
+        let mut dacl: *mut ACL = ptr::null_mut();
+        let mut defaulted = 0;
+        // SAFETY: the descriptor is live and the out pointers are valid.
+        if unsafe {
+            GetSecurityDescriptorDacl(security.descriptor, &mut present, &mut dacl, &mut defaulted)
+        } == 0
+            || present == 0
+            || dacl.is_null()
+        {
+            return false;
+        }
+
+        let mut info = ACL_SIZE_INFORMATION::default();
+        // SAFETY: `dacl` points into the live descriptor and `info` has the size
+        // `AclSizeInformation` writes.
+        if unsafe {
+            GetAclInformation(
+                dacl,
+                (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        } == 0
+            || info.AceCount != 1
+        {
+            return false;
+        }
+
+        let mut ace: *mut c_void = ptr::null_mut();
+        // SAFETY: the ACL reports exactly one ACE at index 0.
+        if unsafe { GetAce(dacl, 0, &mut ace) } == 0 {
+            return false;
+        }
+        // SAFETY: a type 0 ACE is an `ACCESS_ALLOWED_ACE`.
+        let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let ace_sid = ptr::addr_of!(ace.SidStart) as PSID;
+        // SAFETY: both SIDs point into live allocations.
+        ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE
+            && ace.Mask == FILE_ALL_ACCESS
+            && unsafe { EqualSid(expected.0, ace_sid) } != 0
+    }
+
+    struct LocalSid(PSID);
+
+    impl LocalSid {
+        #[allow(unsafe_code)]
+        fn new(sid: &str) -> Option<Self> {
+            let mut wide: Vec<u16> = sid.encode_utf16().collect();
+            wide.push(0);
+            let mut value: PSID = ptr::null_mut();
+            // SAFETY: `wide` is a live null-terminated UTF-16 string and
+            // `value` receives a LocalAlloc SID owned by the returned value.
+            if unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut value) } == 0 {
+                return None;
+            }
+            Some(Self(value))
         }
     }
-    // SAFETY: the loop above bounded the string length.
-    let value = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(string, length) });
-    // SAFETY: ConvertSidToStringSidW documents LocalFree as the release.
-    unsafe { LocalFree(string.cast()) };
-    Ok(value)
+
+    impl Drop for LocalSid {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: `ConvertStringSidToSidW` documents LocalFree as the
+                // release.
+                unsafe { LocalFree(self.0) };
+            }
+        }
+    }
 }

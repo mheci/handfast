@@ -59,7 +59,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 #[derive(Debug, Parser)]
 #[command(name = "handfastd", version, about = "Handfast KDE Connect daemon")]
 struct Args {
-    /// State directory. Defaults to the XDG data directory.
+    /// State directory. Defaults to the platform data directory.
     #[arg(long)]
     data_dir: Option<PathBuf>,
 

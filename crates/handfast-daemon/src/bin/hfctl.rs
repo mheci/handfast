@@ -27,7 +27,7 @@ enum Command {
         #[arg(long, value_parser = parse_device_id)]
         device: DeviceId,
 
-        /// State directory. Defaults to the XDG data directory.
+        /// State directory. Defaults to the platform data directory.
         #[arg(long)]
         data_dir: Option<PathBuf>,
 

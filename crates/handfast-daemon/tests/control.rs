@@ -3,7 +3,7 @@
 //! `hfctl` round trips over the Unix control socket.
 //!
 //! Each test runs a `ControlServer` plus a scripted command loop, then spawns
-//! the real `hfctl` binary. The live-daemon file share lands with unit 11.
+//! the real `hfctl` binary.
 
 use std::path::Path;
 use std::process::Command;

@@ -303,38 +303,28 @@ async fn dispatch(
     }
 }
 
-/// Read one framed body. `limit` bounds each `read_exact` call; the client
-/// passes `None` for the reply because the daemon may be moving a large file.
+/// Read one framed body. `limit` bounds the whole frame read.
 async fn read_frame<S>(stream: &mut S, limit: Option<Duration>) -> Result<Vec<u8>, ControlError>
 where
     S: AsyncRead + Unpin,
 {
-    let mut header = [0u8; 4];
-    read_exact(stream, &mut header, limit).await?;
-    let length = frame_length(header)?;
-    let mut body = vec![0u8; length];
-    read_exact(stream, &mut body, limit).await?;
-    Ok(body)
-}
-
-async fn read_exact<S>(
-    stream: &mut S,
-    buffer: &mut [u8],
-    limit: Option<Duration>,
-) -> Result<(), ControlError>
-where
-    S: AsyncRead + Unpin,
-{
-    match limit {
-        Some(limit) => tokio::time::timeout(limit, stream.read_exact(buffer))
-            .await
-            .map_err(|_| ControlError::Timeout("read"))??,
-        None => stream.read_exact(buffer).await?,
+    let read = async {
+        let mut header = [0u8; 4];
+        stream.read_exact(&mut header).await?;
+        let length = frame_length(header)?;
+        let mut body = vec![0u8; length];
+        stream.read_exact(&mut body).await?;
+        Ok::<Vec<u8>, ControlError>(body)
     };
-    Ok(())
+    match limit {
+        Some(limit) => tokio::time::timeout(limit, read)
+            .await
+            .map_err(|_| ControlError::Timeout("read"))?,
+        None => read.await,
+    }
 }
 
-/// Write one framed body.
+/// Write one framed body. The whole frame write shares one deadline.
 async fn write_frame<S, T>(stream: &mut S, value: &T) -> Result<(), ControlError>
 where
     S: AsyncWrite + Unpin,
@@ -348,12 +338,13 @@ where
         )));
     }
     let header = (body.len() as u32).to_be_bytes();
-    tokio::time::timeout(CONTROL_IO_TIMEOUT, stream.write_all(&header))
-        .await
-        .map_err(|_| ControlError::Timeout("write"))??;
-    tokio::time::timeout(CONTROL_IO_TIMEOUT, stream.write_all(&body))
-        .await
-        .map_err(|_| ControlError::Timeout("write"))??;
+    tokio::time::timeout(CONTROL_IO_TIMEOUT, async {
+        stream.write_all(&header).await?;
+        stream.write_all(&body).await?;
+        Ok::<(), io::Error>(())
+    })
+    .await
+    .map_err(|_| ControlError::Timeout("write"))??;
     Ok(())
 }
 
@@ -430,19 +421,33 @@ async fn bind_unix(path: &Path) -> Result<UnixListener, ControlError> {
                         io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
                     ) =>
                 {
-                    let metadata = std::fs::symlink_metadata(path)?;
-                    if !metadata.file_type().is_socket() {
-                        return Err(ControlError::Endpoint(format!(
-                            "refusing to unlink a non-socket at {}",
-                            path.display()
-                        )));
-                    }
-                    std::fs::remove_file(path)?;
-                    Ok(UnixListener::bind(path)?)
+                    rebind_stale(path)
                 }
                 Err(probe) => Err(probe.into()),
             }
         }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Remove a stale socket and bind it again.
+///
+/// The old socket can disappear between the failed bind and this check, so a
+/// missing path is rebound instead of failing startup.
+#[cfg(unix)]
+fn rebind_stale(path: &Path) -> Result<UnixListener, ControlError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_socket() {
+                return Err(ControlError::Endpoint(format!(
+                    "refusing to unlink a non-socket at {}",
+                    path.display()
+                )));
+            }
+            std::fs::remove_file(path)?;
+            Ok(UnixListener::bind(path)?)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(UnixListener::bind(path)?),
         Err(error) => Err(error.into()),
     }
 }
@@ -564,7 +569,7 @@ mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
     #[cfg(unix)]
-    use tokio::net::UnixStream;
+    use tokio::net::{UnixListener, UnixStream};
     #[cfg(unix)]
     use tokio::sync::mpsc;
 
@@ -667,6 +672,40 @@ mod tests {
             std::fs::symlink_metadata(&path).is_err(),
             "graceful shutdown removes the socket"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stale_socket_removed_before_metadata_rebinds() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("handfastd.sock");
+        let stale = std::os::unix::net::UnixListener::bind(&path).expect("bind a stale socket");
+        drop(stale);
+
+        let bind_error = match UnixListener::bind(&path) {
+            Ok(_) => panic!("the stale socket must block the bind"),
+            Err(error) => error,
+        };
+        assert_eq!(bind_error.kind(), std::io::ErrorKind::AddrInUse);
+        let probe_error = match UnixStream::connect(&path).await {
+            Ok(_) => panic!("the stale socket must refuse the probe"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            probe_error.kind(),
+            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+        ));
+
+        std::fs::remove_file(&path).expect("remove the socket in the recovery window");
+        let listener = rebind_stale(&path).expect("rebind after the socket disappears");
+        assert!(std::fs::symlink_metadata(&path)
+            .expect("the socket exists")
+            .file_type()
+            .is_socket());
+        UnixStream::connect(&path)
+            .await
+            .expect("the rebound listener accepts");
+        drop(listener);
     }
 
     #[cfg(unix)]
@@ -791,11 +830,8 @@ mod tests {
         let server = start_at(path.clone(), commands)
             .await
             .expect("start the control server");
-        // The 2 s delay mirrors SessionHandle::share_file's delivery timeout,
-        // which is where the real full-queue error comes from.
         let script = tokio::spawn(async move {
             if let Some(DaemonCommand::Share { reply, .. }) = command_rx.recv().await {
-                tokio::time::sleep(Duration::from_millis(2100)).await;
                 let _ = reply.send(ControlResponse::Err {
                     message: "session: session share queue full".to_string(),
                 });
@@ -824,9 +860,7 @@ mod tests {
             .await
             .expect("start the control server");
         let script = tokio::spawn(async move {
-            if let Some(DaemonCommand::Share { .. }) = command_rx.recv().await {
-                // Dropping the reply sender models the daemon event loop ending.
-            }
+            let _ = command_rx.recv().await;
         });
 
         let response = tokio::time::timeout(
@@ -849,9 +883,12 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_pipe_name_is_per_user() {
-        let name = windows::pipe_name().expect("a pipe name");
-        assert!(name.starts_with(windows::PIPE_PREFIX), "{name}");
-        assert!(name.len() > windows::PIPE_PREFIX.len(), "{name}");
+    fn windows_pipe_name_uses_the_current_user_sid() {
+        let sid = handfast_desktop::winacl::current_user_sid_string().expect("a SID");
+        assert!(sid.starts_with("S-1-"), "{sid}");
+        assert_eq!(
+            windows::pipe_name(&sid),
+            format!("{}{sid}", windows::PIPE_PREFIX)
+        );
     }
 }
