@@ -119,8 +119,8 @@ let device_id = load_or_create_device_id(&store)?;
 let tls = match store.identity()? {
     Some(record) => TlsIdentity::from_parts(
         DeviceId::new(record.device_id)?,
-        record.cert_der,
-        record.key_der,
+        record.cert_der.clone(),
+        record.key_der.clone(),
     )?,
     None => {
         let tls = TlsIdentity::generate(device_id.clone())?;
