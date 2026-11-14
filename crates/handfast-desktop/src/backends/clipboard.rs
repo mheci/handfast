@@ -263,7 +263,8 @@ mod tests {
             reply,
             calls: Mutex::new(Vec::new()),
         });
-        let clipboard = CommandClipboard::new(flavor, Arc::clone(&runner));
+        let clipboard =
+            CommandClipboard::new(flavor, Arc::clone(&runner) as Arc<dyn CommandRunner>);
         (clipboard, runner)
     }
 
