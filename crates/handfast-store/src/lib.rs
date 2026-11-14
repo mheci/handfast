@@ -566,6 +566,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn identity_record_zeroizes_its_key_on_drop() {
         // Observing freed memory is unsafe, so this checks the function Drop
         // calls and the marker trait that guards the contract.
@@ -573,11 +574,23 @@ mod tests {
         assert_zeroize_on_drop::<IdentityRecord>();
 
         let mut record = identity_record();
+        let key_len = record.key_der.len();
         record.zeroize();
+        assert!(record.key_der.is_empty(), "zeroize clears the key Vec");
+        let zeroed = record.key_der.spare_capacity_mut();
         assert!(
-            record.key_der.iter().all(|byte| *byte == 0),
-            "zeroize clears the key bytes"
+            zeroed.len() >= key_len,
+            "the clear exposes the key allocation"
         );
+        for (index, byte) in zeroed[..key_len].iter().enumerate() {
+            // SAFETY: zeroize wrote zeros to the first key_len bytes before it
+            // cleared the Vec, and the Vec still owns the allocation.
+            assert_eq!(
+                unsafe { *byte.assume_init_ref() },
+                0,
+                "key byte {index} is zero"
+            );
+        }
     }
 
     #[test]
