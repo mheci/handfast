@@ -11,6 +11,8 @@ pub mod files;
 pub mod mock;
 pub mod model;
 pub mod traits;
+#[cfg(windows)]
+pub mod winacl;
 
 use std::sync::Arc;
 
