@@ -107,18 +107,8 @@ impl LinkListener {
             )));
         }
 
-        let mut last_error = None;
-        for port in start..=MAX_TCP_PORT {
-            let address = SocketAddr::from(([0, 0, 0, 0], port));
-            match bind_one(address) {
-                Ok(listener) => return Ok(Self { listener, tls }),
-                Err(error) => last_error = Some(error),
-            }
-        }
-
-        Err(NetError::Io(last_error.unwrap_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no free TCP port")
-        })))
+        let listener = bind_tcp_in_range(start, MAX_TCP_PORT).map_err(NetError::Io)?;
+        Ok(Self { listener, tls })
     }
 
     /// The bound address.
@@ -240,6 +230,25 @@ pub(crate) async fn accept_handshake(
         },
         permit,
     })
+}
+
+/// Bind the first free IPv4 port from `min` through `max`.
+///
+/// The link listener and the payload sender share this helper so both use the
+/// same `SO_REUSEADDR`, backlog and last-error handling.
+pub(crate) fn bind_tcp_in_range(min: u16, max: u16) -> std::io::Result<TcpListener> {
+    let mut last_error = None;
+    for port in min..=max {
+        let address = SocketAddr::from(([0, 0, 0, 0], port));
+        match bind_one(address) {
+            Ok(listener) => return Ok(listener),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no free TCP port")
+    }))
 }
 
 fn bind_one(address: SocketAddr) -> std::io::Result<TcpListener> {
@@ -447,19 +456,26 @@ async fn exchange_identity(
     Ok(identity)
 }
 
-fn peer_certificate(stream: &TlsStream<TcpStream>) -> Result<PeerCertificate> {
-    let certificates = stream.get_ref().1.peer_certificates().ok_or_else(|| {
-        NetError::Tls(TlsError::Certificate(
-            "peer presented no certificate".to_string(),
-        ))
-    })?;
+pub(crate) fn peer_certificate_der(
+    stream: &TlsStream<TcpStream>,
+) -> std::result::Result<Vec<u8>, TlsError> {
+    let certificates = stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .ok_or_else(|| TlsError::Certificate("peer presented no certificate".to_string()))?;
     if certificates.len() != 1 {
-        return Err(NetError::Tls(TlsError::Certificate(format!(
+        return Err(TlsError::Certificate(format!(
             "expected one peer certificate, got {}",
             certificates.len()
-        ))));
+        )));
     }
-    PeerCertificate::parse(certificates[0].as_ref()).map_err(NetError::Tls)
+    Ok(certificates[0].as_ref().to_vec())
+}
+
+fn peer_certificate(stream: &TlsStream<TcpStream>) -> Result<PeerCertificate> {
+    let der = peer_certificate_der(stream)?;
+    PeerCertificate::parse(&der).map_err(NetError::Tls)
 }
 
 fn configure_socket(stream: &TcpStream, limits: &LinkLimits) -> Result<()> {

@@ -53,6 +53,12 @@ pub struct PayloadSenderConfig {
     pub accept_timeout: Duration,
     /// TLS handshake and idle write timeout.
     pub idle_timeout: Duration,
+    /// Bind this exact loopback port instead of an ephemeral one. Tests use a
+    /// port in the payload range so the production receiver accepts it.
+    pub bind_port: Option<u16>,
+    /// Wait this long after the handshake before writing payload bytes. Tests
+    /// use it to make the production receiver's idle read timeout fire.
+    pub stall_before_write: Option<Duration>,
     /// Hold the second payload until the first `accept_and_send` returns.
     pub pause_second_until_first_completes: bool,
     /// Reject a peer certificate other than this DER certificate.
@@ -82,6 +88,8 @@ impl Default for PayloadSenderConfig {
             extra_bytes: 0,
             accept_timeout: DEFAULT_ACCEPT_TIMEOUT,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            bind_port: None,
+            stall_before_write: None,
             pause_second_until_first_completes: false,
             expected_peer_certificate: None,
         }
@@ -115,7 +123,7 @@ impl PayloadSender {
         )?;
         let acceptor = TlsAcceptor::from(Arc::new(tls.server_config()?));
         let cert_der = tls.cert_der().to_vec();
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", config.bind_port.unwrap_or(0)))?;
         let port = listener.local_addr()?.port();
         let bound_at = Instant::now();
         listener.set_nonblocking(true)?;
@@ -179,6 +187,9 @@ impl PayloadSender {
             self.config.expected_peer_certificate.as_deref(),
             &peer_certificate_der,
         )?;
+        if let Some(stall) = self.config.stall_before_write {
+            tokio::time::sleep(stall).await;
+        }
 
         let send_len = self.config.truncate_after.map_or(payload.len(), |limit| {
             payload
