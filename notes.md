@@ -86,7 +86,7 @@ Active parallel wave:
 - P1 hardening: merged in `b4d41ba`.- Share docs and fuzz: merged in `c36802a`.
 - Connectivity report plugin: merged in `b74f2d8`.
 - Notifications backend: merged in `840e7a1`.
-- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `e054893`, re-verifying the rebase.
+- System volume plugin: PR [#209](https://github.com/mheci/handfast/pull/209), head `e054893`, verifier PASS, owner merging.
 - Pause music plugin: merged in `b228c1c`.
 - MPRIS control plugin: merged in `54b85e9`.
 - Notifications close fix: merged in `c92dae7`.
