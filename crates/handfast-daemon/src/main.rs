@@ -45,14 +45,9 @@ use session::{DaemonEvent, DeviceSession, SessionLimits, TransferSetup};
 /// How often to announce this device over UDP discovery.
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How often discovery may rewrite a peer record. Announcements arrive every
-/// `ANNOUNCE_INTERVAL`, and each write is a redb commit, so a peer is written
-/// at most once per interval. Discovery is unauthenticated, so the store keeps
-/// the stored name and type and a name or type change cannot force a write.
+/// How often discovery may rewrite a peer record.
 const DISCOVERY_WRITE_INTERVAL: Duration = Duration::from_secs(60);
 
-/// The most peers the discovery write throttle remembers. A spoofed-device
-/// flood cannot grow it past this, and an evicted peer costs one extra write.
 const DISCOVERY_WRITE_PEERS: usize = 1024;
 
 /// The link event channel. Connection and pairing events use `send().await`, so
@@ -796,8 +791,7 @@ fn parse_tcp_port(value: &str) -> Result<u16, String> {
 }
 
 /// The last persisted discovery sighting per peer. Held in memory so the
-/// throttle costs no store reads, and bounded so a spoofed-device flood cannot
-/// grow it without limit.
+/// throttle costs no store reads.
 #[derive(Default)]
 struct DiscoveryWrites {
     peers: HashMap<DeviceId, DiscoverySighting>,

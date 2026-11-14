@@ -11,21 +11,16 @@ use crate::error::Result;
 /// KDE Connect's well-known discovery port.
 pub const DISCOVERY_PORT: u16 = 1716;
 
-/// Malformed datagrams one `recv` call may consume before it yields. A
-/// malformed flood keeps the socket readable, so without this bound `recv`
-/// would never return to the daemon's select and the announce branch would
-/// starve.
+/// Bounds how long one `recv` call can hold the task before yielding.
 const MALFORMED_DATAGRAM_BUDGET: usize = 32;
 
-/// Counts malformed datagrams between yields.
 #[derive(Default)]
 struct MalformedBudget {
     seen: usize,
 }
 
 impl MalformedBudget {
-    /// Record one malformed datagram and report whether to yield.
-    fn record(&mut self) -> bool {
+    fn record_and_should_yield(&mut self) -> bool {
         self.seen += 1;
         if self.seen >= MALFORMED_DATAGRAM_BUDGET {
             self.seen = 0;
@@ -136,7 +131,7 @@ impl Discovery {
                     true
                 }
             };
-            if ignored && budget.record() {
+            if ignored && budget.record_and_should_yield() {
                 tokio::task::yield_now().await;
             }
         }
@@ -234,10 +229,16 @@ mod tests {
     fn malformed_budget_yields_every_thirty_two_datagrams() {
         let mut budget = MalformedBudget::default();
         for _ in 0..MALFORMED_DATAGRAM_BUDGET - 1 {
-            assert!(!budget.record());
+            assert!(!budget.record_and_should_yield());
         }
-        assert!(budget.record(), "the thirty-second datagram yields");
-        assert!(!budget.record(), "the budget resets after a yield");
+        assert!(
+            budget.record_and_should_yield(),
+            "the thirty-second datagram yields"
+        );
+        assert!(
+            !budget.record_and_should_yield(),
+            "the budget resets after a yield"
+        );
     }
 
     #[tokio::test]
