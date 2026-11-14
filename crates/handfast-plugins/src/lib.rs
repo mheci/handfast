@@ -53,7 +53,6 @@ pub fn registry() -> Registry {
         Box::new(systemvolume::SystemVolumeFactory),
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
         Box::new(presenter::PresenterFactory),
-        Box::new(mousepad::MousepadFactory),
     ])
 }
 

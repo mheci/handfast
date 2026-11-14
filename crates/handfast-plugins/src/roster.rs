@@ -106,8 +106,8 @@ pub const MMTELEPHONY: PluginMeta = PluginMeta {
 pub const MOUSEPAD: PluginMeta = PluginMeta {
     name: "mousepad",
     title: "Receive remote input",
-    status: IMPLEMENTED,
-    incoming: &[types::MOUSEPAD_REQUEST, types::MOUSEPAD_KEYBOARDSTATE],
+    status: PLANNED,
+    incoming: &[types::MOUSEPAD_REQUEST],
     outgoing: &[types::MOUSEPAD_ECHO, types::MOUSEPAD_KEYBOARDSTATE],
     desktop: DesktopRequirement::Input,
 };
@@ -389,8 +389,8 @@ mod tests {
     #[test]
     fn implemented_plugins_have_an_incoming_contract() {
         for meta in ALL.iter().filter(|meta| meta.status == IMPLEMENTED) {
-            if meta.incoming.is_empty() && meta.outgoing.is_empty() {
-                // Connection-state plugins handle no packets.
+            if meta.desktop == DesktopRequirement::Screensaver {
+                // Screensaver inhibition is connection-driven and handles no packets.
                 continue;
             }
             assert!(

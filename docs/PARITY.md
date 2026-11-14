@@ -29,13 +29,13 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 13 | `notifications` | phone -> desktop | `kdeconnect.notification`, `.notification.action`, `.notification.reply`, `.notification.request` | freedesktop notifications DBus | P2 | no | no | no |
 | 14 | `pausemusic` | phone -> desktop | `kdeconnect.telephony`, `kdeconnect.mpris.request` | MPRIS DBus + telephony events | P2 | no | no | no |
 | 15 | `ping` | bidirectional | `kdeconnect.ping` | none | P0 | yes | n/a | no |
-| 16 | `presenter` | phone -> desktop | `kdeconnect.presenter` | libei absolute pointer + key injection | P3 | no | no | no |
+| 16 | `presenter` | phone -> desktop | `kdeconnect.presenter` | libei absolute pointer + key injection | P3 | yes | no | no |
 | 17 | `remotecommands` | phone -> desktop | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | no | no | no |
 | 18 | `remotecontrol` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
 | 19 | `remotekeyboard` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
 | 20 | `remotesystemvolume` | desktop -> phone | `kdeconnect.systemvolume`, `.systemvolume.request` | PipeWire or wpctl | P2 | no | no | no |
 | 21 | `runcommand` | bidirectional | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | no | no | no |
-| 22 | `screensaver-inhibit` | connection state | none (uses link state) | logind DBus | P2 | no | no | no |
+| 22 | `screensaver-inhibit` | connection state | none (uses link state) | logind DBus | P2 | yes | no | no |
 | 23 | `sendnotifications` | desktop -> phone | `kdeconnect.notification`, `.notification.request` | freedesktop notifications DBus | P2 | no | no | no |
 | 24 | `sftp` | phone -> desktop | `kdeconnect.sftp`, `.sftp.request` | embedded Rust SFTP server | P3 | no | no | no |
 | 25 | `share` | bidirectional | `kdeconnect.share.request`, `.share.request.update` | TCP payload channel + filesystem | P1 | no | no | no |
