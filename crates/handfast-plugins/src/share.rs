@@ -21,7 +21,6 @@ const MALFORMED_UPDATE: &str = "discarding malformed share update";
 const TEXT_NOT_COPIED: &str = "share text could not be copied to the clipboard";
 const URL_NOT_OPENED: &str = "share url could not be opened";
 const UNSAFE_URL: &str = "discarding share url with an unsafe scheme";
-/// Bounds memory over a long session.
 const RECENT_LIMIT: usize = 64;
 
 /// Applies inbound share requests and returns transfer intents.
