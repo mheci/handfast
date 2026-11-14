@@ -77,22 +77,22 @@ P1 security follow-ups:
 
 Active parallel wave:
 
-- Unit 4 net payload: PR [#199](https://github.com/mheci/handfast/pull/199), head `7ac24c8`, verifier `ses_e27f24bdfffet4ZklBjC4UAKx9` running.
-- Unit 5 runtime transfer: branch `feat/runtime-transfer`, owner `ses_e27e40510ffdK8qnFQuIssKJ0q`.
+- Unit 4 net payload: merged in `0606bef`.
+- Unit 5 runtime transfer: PR [#201](https://github.com/mheci/handfast/pull/201), head `560a97f`, verifier PASS, owner merging.
 - Unit 7 manager share routing: branch `feat/manager-share`, owner `ses_e27e4050fffegnN3rrtSkKTw64`.
 - Windows ACLs: branch `feat/windows-acl`, owner `ses_e27e4050affdWp2UDXseLO5dKc`.
 - P1 hardening: branch `feat/p1-hardening`, owner `ses_e27e40504ffeEGVdAJ6VWtzgIo`.
-- Share docs and fuzz: branch `feat/share-docs-fuzz`, owner `ses_e27e40503ffehn7fv17VldRYxB`.
-- Connectivity report plugin: branch `feat/plugin-connectivity`, owner `ses_e27e40502ffe0iZWyzWlkG6mEA`.
+- Share docs and fuzz: PR [#200](https://github.com/mheci/handfast/pull/200), head `26f1935`, verifier `ses_e27d8c801fferLvjE7AkGFuJXV` running.
+- Connectivity report plugin: PR [#204](https://github.com/mheci/handfast/pull/204), head `211aa51`, verifier `ses_e27d45111ffeaLpfdFjD5w03It` running.
 - System volume plugin: branch `feat/plugin-systemvolume`, owner `ses_e27e31068ffdQCW7312S3kPr3J`.
-- Pause music plugin: branch `feat/plugin-pausemusic`, owner `ses_e27e31067ffeUWKILi4vOf3jIq`.
+- Pause music plugin: PR [#205](https://github.com/mheci/handfast/pull/205), head `eb37035`, verifier `ses_e27d18864ffe0CDqsAqI7I4uqT` running.
 - MPRIS control plugin: branch `feat/plugin-mpriscontrol`, owner `ses_e27e31063ffd4dybx3GFkhXN3p`.
 - Notifications plugin: branch `feat/plugin-notifications`, owner `ses_e27e3105effdfG3TyfwuTu71Q6`.
 - Find this device plugin: branch `feat/plugin-findthisdevice`, owner `ses_e27e3105cffeCxU7KiIS1bGoiZ`.
-- Clipboard backend: branch `feat/clipboard-backend`, owner `ses_e27e3105bffePYwCCvbbx35nm9`.
-- Notifications backend: branch `feat/notifications-backend`, owner `ses_e27e3105bffdQJ1QLYs99YJJ5W`.
-- Unit 6 prep: read-only, `ses_e27e27cb4ffe3k2H4BtQLo3u1d`.
-- Unit 8 prep: read-only, `ses_e27e27cb3ffeiLdcyXnCGGfyVr`.
+- Clipboard backend: PR [#203](https://github.com/mheci/handfast/pull/203), head `0d90c27`, verifier `ses_e27d220a7ffefUrWqpv2880HLB` running.
+- Notifications backend: PR [#202](https://github.com/mheci/handfast/pull/202), head `89e8986`, verifier `ses_e27d2bcdaffexfKTT4jPzAtdM7` running.
+- Unit 6 prep: done, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit6-share-plugin-brief.md`.
+- Unit 8 prep: done, runner brief in the session record.
 
 Wave rules:
 
