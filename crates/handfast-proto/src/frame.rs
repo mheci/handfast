@@ -22,12 +22,14 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>> {
 /// Encode a packet into a complete frame, reusing `frame`.
 ///
 /// The buffer is cleared first. On success it holds exactly the bytes
-/// [`encode`] returns. On error it is empty.
+/// [`encode`] returns. On error it is empty. A frame rejected as too large
+/// also restores the buffer's capacity from before the call.
 ///
 /// # Errors
 ///
 /// Fails when the packet cannot be serialized or exceeds the frame limit.
 pub fn encode_into(packet: &Packet, frame: &mut Vec<u8>) -> Result<()> {
+    let capacity = frame.capacity();
     frame.clear();
     packet.validate()?;
     frame.extend_from_slice(&[0u8; 4]);
@@ -41,7 +43,8 @@ pub fn encode_into(packet: &Packet, frame: &mut Vec<u8>) -> Result<()> {
         return Err(ProtoError::EmptyFrame);
     }
     if size + 4 > MAX_FRAME_SIZE {
-        frame.clear();
+        // clear() keeps the capacity the oversized body grew, so drop it.
+        *frame = Vec::with_capacity(capacity);
         return Err(ProtoError::FrameTooLarge {
             size: size + 4,
             max: MAX_FRAME_SIZE,
@@ -169,6 +172,16 @@ mod tests {
     fn rejects_oversized_packet() {
         let packet = Packet::new(types::PING, json!({"blob": "x".repeat(MAX_FRAME_SIZE)})).unwrap();
         assert!(encode(&packet).is_err());
+    }
+
+    #[test]
+    fn oversized_packet_restores_frame_capacity() {
+        let mut frame = Vec::with_capacity(64);
+        let packet = Packet::new(types::PING, json!({"blob": "x".repeat(MAX_FRAME_SIZE)})).unwrap();
+        let error = encode_into(&packet, &mut frame).unwrap_err();
+        assert!(matches!(error, ProtoError::FrameTooLarge { .. }));
+        assert!(frame.is_empty());
+        assert_eq!(frame.capacity(), 64);
     }
 
     #[tokio::test]
