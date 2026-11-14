@@ -794,19 +794,6 @@ fn share_file_wire(filename: &str, size: u64, port: u16) -> WirePacket {
     }
 }
 
-fn empty_file_wire(filename: &str) -> WirePacket {
-    WirePacket {
-        id: 0,
-        ptype: types::SHARE_REQUEST.to_string(),
-        body: json!({ "filename": filename })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        payload_size: None,
-        payload_transfer_info: None,
-    }
-}
-
 fn share_text_wire(text: &str) -> WirePacket {
     WirePacket {
         id: 0,
@@ -1005,7 +992,7 @@ async fn wait_for_temp(incoming: &Path) -> PathBuf {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(entries) = std::fs::read_dir(&directory) {
-            for entry in entries.flatten() {
+            if let Some(entry) = entries.flatten().next() {
                 return entry.path();
             }
         }
@@ -1509,9 +1496,10 @@ async fn full_share_channel_closes_the_link() {
 
     let reason = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match events_rx.recv().await.expect("the manager is running") {
-                LinkEvent::Disconnected { reason, .. } => break reason,
-                _ => {}
+            if let LinkEvent::Disconnected { reason, .. } =
+                events_rx.recv().await.expect("the manager is running")
+            {
+                break reason;
             }
         }
     })

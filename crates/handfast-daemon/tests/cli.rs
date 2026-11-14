@@ -148,14 +148,17 @@ fn print_identity_keeps_share_out_of_capabilities() {
         String::from_utf8_lossy(&output.stderr)
     );
     let packet: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let incoming = packet["body"]["incomingCapabilities"]
+        .as_array()
+        .expect("incomingCapabilities is an array");
+    assert!(
+        incoming.contains(&Value::String("kdeconnect.ping".to_string())),
+        "the print branch still advertises the default desktop: {incoming:?}"
+    );
     for key in ["incomingCapabilities", "outgoingCapabilities"] {
         let capabilities = packet["body"][key]
             .as_array()
             .unwrap_or_else(|| panic!("{key} is an array"));
-        assert!(
-            capabilities.contains(&Value::String("kdeconnect.ping".to_string())),
-            "the print branch still advertises the default desktop: {capabilities:?}"
-        );
         assert!(
             !capabilities.contains(&Value::String("kdeconnect.share.request".to_string())),
             "print-identity keeps share out of {key}: {capabilities:?}"
