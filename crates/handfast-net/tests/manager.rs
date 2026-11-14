@@ -19,7 +19,7 @@ use handfast_testkit::WirePacket;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 const LOCAL_ID: &str = "00112233445566778899aabbccddeeff";
@@ -1139,6 +1139,82 @@ async fn close_closes_the_link_and_releases_the_unpaired_slot() {
     assert!(!expect_connected(&mut harness.events).await);
 
     drop(second);
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn close_aborts_a_pending_outbound_dial_and_frees_the_slot() {
+    let limits = LinkLimits {
+        max_unpaired_links: 1,
+        per_ip_interval: Duration::ZERO,
+        ..LinkLimits::default()
+    };
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        limits,
+        Duration::from_millis(100),
+    )
+    .await;
+    let peer_id = device_id(PEER_ID);
+
+    let silent = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the silent listener");
+    let silent_address = silent.local_addr().expect("read the silent address");
+    let (accepted, accepted_rx) = oneshot::channel();
+    let silent_task = tokio::spawn(async move {
+        let (mut stream, _) = silent
+            .accept()
+            .await
+            .expect("the manager dials the silent listener");
+        let _ = accepted.send(());
+        let mut buffer = [0u8; 1024];
+        while let Ok(read) = stream.read(&mut buffer).await {
+            if read == 0 {
+                break;
+            }
+        }
+    });
+
+    harness
+        .handle
+        .consider_peer(peer_id.clone(), silent_address);
+    tokio::time::timeout(Duration::from_secs(5), accepted_rx)
+        .await
+        .expect("the manager dials before the timeout")
+        .expect("the dial reaches the silent listener");
+
+    harness
+        .handle
+        .close(peer_id.clone())
+        .await
+        .expect("the close succeeds");
+    tokio::time::timeout(Duration::from_secs(2), silent_task)
+        .await
+        .expect("the pending dial ends when the manager closes the device")
+        .expect("the silent listener task joins");
+
+    let config = peer(PEER_ID);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the reconnect listener");
+    let address = listener.local_addr().expect("read the reconnect address");
+    let server = tokio::spawn(async move { accept(&listener, &config).await });
+    harness.handle.consider_peer(peer_id, address);
+
+    let _reconnected = tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("the device reconnects after the close")
+        .expect("the testkit task joins")
+        .expect("the testkit accepts the reconnect");
+    let paired = expect_connected(&mut harness.events).await;
+    assert!(
+        !paired,
+        "the device reconnects as an unpaired link after the close"
+    );
+
     harness.handle.shutdown();
     let _ = harness.task.await;
 }
