@@ -5,12 +5,12 @@ Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`
 Hardening queue, 2026-11-14:
 
 - The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
-- Main is at `21c6ffc`. The P1 share implementation and the first hardening wave are complete.
+- Main is at `2cc3c38`. The P1 share implementation and the first hardening wave are complete.
 - The manual P1 exit gate remains: a real Android phone and a real KDE Connect desktop client. Run `scripts/interop-share.sh` or `.ps1` and follow `docs/INTEROP.md`. CI cannot replace it.
 - Merged in the first wave: `#219` store zeroization, `#220` clipboard, `#221` notifications D-Bus, `#222` link frames, `#223` interop harness, `#225` redaction, `#227` payload progress, `#228` testkit and fuzz hardening, `#218` unit 11, `#224` MPRIS, `#229` input plugins, `#230` manager hardening, `#226` system backends.
-- Merged in the second wave: `#232` frame capacity, `#233` discovery throttle, `#235` payload final progress, `#234` store decode zeroization, `#231` session drop diagnostics, `#236` MPRIS no-track distinction, `#237` notification id serialization, `#240` screensaver refcount.
-- Open second wave: `#238` TLS zeroize at `6270ce1` re-verifying the comment-only delta; `#239` docs parity at `5497094` in a fix round for the MockDesktop sentence.
-- Interop harness is PR `#241` at `d30f64e`, verifying. Daemon backend wiring is PR `#242` at `9b61017` in a fix round to require `wl-copy` on Wayland.
+- Merged in the second wave: `#232` frame capacity, `#233` discovery throttle, `#235` payload final progress, `#234` store decode zeroization, `#231` session drop diagnostics, `#236` MPRIS no-track distinction, `#237` notification id serialization, `#240` screensaver refcount, `#241` interop harness fixes.
+- Open second wave: `#238` TLS zeroize at `6270ce1` re-verifying the comment-only delta; `#239` docs parity at `15e37f4` re-verifying the MockDesktop fix.
+- Daemon backend wiring is PR `#242` at `9b61017` in a fix round to require `wl-copy` on Wayland.
 - Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. Then the remaining P2-P4 plugins and backends.
 
 Current state:
