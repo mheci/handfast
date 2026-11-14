@@ -256,8 +256,8 @@ impl PayloadService {
     ///
     /// The pending-connect permit is released before the active-transfer
     /// permit is acquired. Progress is one update per 500 ms or 4 MiB, plus the
-    /// final byte count, and is best effort: a full channel drops the update,
-    /// not the transfer.
+    /// final byte count, which waits up to 100 ms for channel room. A full
+    /// channel drops a per-chunk update, not the transfer.
     ///
     /// # Errors
     ///
@@ -368,8 +368,8 @@ impl PreparedSend {
     /// retried until the deadline or the attempt limit. A source whose byte
     /// count does not match its declared size fails with
     /// [`PayloadError::SizeMismatch`]. Progress is one update per 500 ms or
-    /// 4 MiB, plus the final byte count, and is best effort: a full channel
-    /// drops the update, not the transfer.
+    /// 4 MiB, plus the final byte count, which waits up to 100 ms for channel
+    /// room. A full channel drops a per-chunk update, not the transfer.
     ///
     /// # Errors
     ///
@@ -489,6 +489,10 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 /// Byte step that also releases a progress update.
 const PROGRESS_STEP: u64 = 4 * 1024 * 1024;
 
+/// Upper bound on the final progress send, so a full channel delays the end of
+/// a transfer by at most this long.
+const PROGRESS_FINISH_TIMEOUT: Duration = Duration::from_millis(100);
+
 /// One progress update per `PROGRESS_INTERVAL` or `PROGRESS_STEP`, plus the
 /// exact final byte count.
 struct ProgressThrottle {
@@ -524,11 +528,12 @@ impl ProgressThrottle {
         }
     }
 
-    fn finish(&mut self, bytes: u64) {
-        if let Some(sender) = self.sender.as_ref() {
-            if bytes != self.sent {
-                let _ = sender.try_send(bytes);
-            }
+    async fn finish(&mut self, bytes: u64) {
+        let Some(sender) = self.sender.as_ref() else {
+            return;
+        };
+        if bytes != self.sent {
+            let _ = timeout(PROGRESS_FINISH_TIMEOUT, sender.send(bytes)).await;
         }
     }
 }
@@ -555,7 +560,7 @@ async fn write_source(
         written += read as u64;
         progress.update(written);
     }
-    progress.finish(written);
+    progress.finish(written).await;
     timeout(limits.io_timeout, stream.shutdown())
         .await
         .map_err(|_| PayloadError::Timeout("payload close"))??;
@@ -593,7 +598,7 @@ async fn read_payload(
         sink.write_all(&buffer[..read]).await?;
         progress.update(total);
     }
-    progress.finish(total);
+    progress.finish(total).await;
     sink.flush().await?;
     match offer.size {
         PayloadSize::Known(expected) if total < expected => Err(PayloadError::SizeMismatch {
@@ -630,5 +635,32 @@ mod tests {
         assert_eq!(limits.max_pending_connects, 8);
         assert_eq!(limits.port_min, 1739);
         assert_eq!(limits.port_max, 1764);
+    }
+
+    #[tokio::test]
+    async fn final_progress_waits_for_a_full_channel_to_drain() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender
+            .try_send(1)
+            .expect("the one-slot channel starts full");
+        let mut throttle = ProgressThrottle::new(Some(&sender));
+
+        let drain = async {
+            let first = receiver.recv().await;
+            let second = receiver.recv().await;
+            (first, second)
+        };
+        let (_, (first, second)) = timeout(Duration::from_secs(1), async {
+            tokio::join!(throttle.finish(1024), drain)
+        })
+        .await
+        .expect("the final progress send completes");
+
+        assert_eq!(first, Some(1), "the queued update drains first");
+        assert_eq!(
+            second,
+            Some(1024),
+            "the exact final byte count arrives after the drain"
+        );
     }
 }
