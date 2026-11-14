@@ -15,11 +15,8 @@ use crate::traits::Notifier;
 const PROGRAM: &str = "notify-send";
 const GDBUS: &str = "gdbus";
 
-/// Longest peer notification ID accepted for tracking.
 const MAX_PEER_ID_BYTES: usize = 256;
-/// Most peer notification IDs tracked before the map is cleared.
 const MAX_TRACKED_IDS: usize = 1024;
-/// Upper bound on the best-effort close of a replaced notification.
 const REPLACE_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Output captured from a finished command.
@@ -77,8 +74,7 @@ impl CommandRunner for TokioCommandRunner {
 pub struct CommandNotifier {
     runner: Arc<dyn CommandRunner>,
     /// Peer notification ID to the ID `notify-send` assigned to the displayed
-    /// notification. Cleared at [`MAX_TRACKED_IDS`] so an uncancelled peer
-    /// cannot grow it without bound.
+    /// notification.
     ids: Arc<Mutex<HashMap<String, u32>>>,
 }
 
