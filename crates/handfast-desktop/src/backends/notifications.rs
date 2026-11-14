@@ -214,6 +214,9 @@ impl Notifier for CommandNotifier {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
     use super::*;
 
     #[derive(Debug, Clone)]
@@ -241,6 +244,7 @@ mod tests {
         notify: Mutex<FakeOutcome>,
         gdbus: FakeOutcome,
         calls: Mutex<Vec<(String, Vec<String>)>>,
+        gdbus_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     }
 
     impl FakeRunner {
@@ -253,6 +257,7 @@ mod tests {
                 notify: Mutex::new(notify),
                 gdbus,
                 calls: Mutex::new(Vec::new()),
+                gdbus_gate: Mutex::new(None),
             })
         }
 
@@ -263,6 +268,20 @@ mod tests {
         fn calls(&self) -> Vec<(String, Vec<String>)> {
             self.calls.lock().unwrap().clone()
         }
+
+        fn gate_next_gdbus(&self, gate: tokio::sync::oneshot::Receiver<()>) {
+            *self.gdbus_gate.lock().unwrap() = Some(gate);
+        }
+
+        async fn wait_for_calls(&self, count: usize) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while self.calls().len() < count {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the fake runner did not reach the expected call");
+        }
     }
 
     #[async_trait]
@@ -272,6 +291,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((program.to_string(), args.to_vec()));
+            let gate = if program == GDBUS {
+                self.gdbus_gate.lock().unwrap().take()
+            } else {
+                None
+            };
+            if let Some(gate) = gate {
+                let _ = gate.await;
+            }
             let outcome = if program == GDBUS {
                 self.gdbus.clone()
             } else {
@@ -440,6 +467,49 @@ mod tests {
         assert_eq!(calls[2].1.last().map(String::as_str), Some("1"));
         assert_eq!(calls[3].0, "gdbus");
         assert_eq!(calls[3].1.last().map(String::as_str), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn close_racing_a_same_key_notify_keeps_the_new_id() {
+        let (notifier, runner) = notifier(FakeOutcome::printing("1"));
+        notifier.notify(&posted(Some("peer-1"))).await.unwrap();
+        runner.set_notify(FakeOutcome::printing("2"));
+
+        let (release, gate) = tokio::sync::oneshot::channel();
+        runner.gate_next_gdbus(gate);
+        let closing = tokio::spawn({
+            let notifier = notifier.clone();
+            async move { notifier.close("peer-1").await }
+        });
+        runner.wait_for_calls(2).await;
+
+        let replacing = tokio::spawn({
+            let notifier = notifier.clone();
+            async move { notifier.notify(&posted(Some("peer-1"))).await }
+        });
+        runner.wait_for_calls(3).await;
+        release.send(()).unwrap();
+        closing.await.unwrap().unwrap();
+        replacing.await.unwrap().unwrap();
+
+        notifier.close("peer-1").await.unwrap();
+
+        let closed: Vec<String> = runner
+            .calls()
+            .into_iter()
+            .filter(|(program, _)| program == GDBUS)
+            .map(|(_, args)| args.last().unwrap().clone())
+            .collect();
+        assert_eq!(
+            closed.first().map(String::as_str),
+            Some("1"),
+            "the racing close must close the old backend id"
+        );
+        assert_eq!(
+            closed.last().map(String::as_str),
+            Some("2"),
+            "the replacement must stay closable after the racing close"
+        );
     }
 
     #[tokio::test]
