@@ -79,21 +79,17 @@ pub fn ensure_owned_state_path(path: &Path) -> std::io::Result<()> {
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-
         if metadata.file_type().is_symlink() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("state path {} is a symlink", path.display()),
             ));
         }
-        let owner = metadata.uid();
-        let current = effective_uid();
-        if owner != current {
+        if !handfast_desktop::owner::is_owned_by_current_user(path)? {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 format!(
-                    "state path {} is owned by uid {owner}, expected {current}",
+                    "state path {} is not owned by the current user",
                     path.display()
                 ),
             ));
@@ -111,7 +107,7 @@ pub fn ensure_owned_state_path(path: &Path) -> std::io::Result<()> {
                 format!("state path {} is a reparse point", path.display()),
             ));
         }
-        if !handfast_desktop::winacl::is_owned_by_current_user(path)? {
+        if !handfast_desktop::owner::is_owned_by_current_user(path)? {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 format!(
@@ -126,13 +122,6 @@ pub fn ensure_owned_state_path(path: &Path) -> std::io::Result<()> {
     let _ = metadata;
 
     Ok(())
-}
-
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn effective_uid() -> u32 {
-    // SAFETY: `geteuid` has no preconditions, reads no memory, and cannot fail.
-    unsafe { libc::geteuid() }
 }
 
 /// Restrict the state directory to the owner on Unix.

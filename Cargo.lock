@@ -379,7 +379,6 @@ dependencies = [
  "handfast-runtime",
  "handfast-store",
  "handfast-testkit",
- "libc",
  "redb",
  "serde",
  "serde_json",
@@ -398,6 +397,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "fs4",
+ "libc",
  "serde",
  "tempfile",
  "thiserror",
