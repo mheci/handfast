@@ -76,7 +76,7 @@ pub const FINDMYPHONE: PluginMeta = PluginMeta {
 pub const FINDTHISDEVICE: PluginMeta = PluginMeta {
     name: "findthisdevice",
     title: "Find this device",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::FINDMYPHONE_REQUEST, types::FINDTHISDEVICE_PRIVATE],
     outgoing: &[],
     desktop: DesktopRequirement::Notifications,
