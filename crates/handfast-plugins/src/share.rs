@@ -4,6 +4,8 @@
 //! never opens a socket or a file: the session runs every transfer and the
 //! desktop adapters own the side effects.
 
+use std::collections::{HashSet, VecDeque};
+
 use async_trait::async_trait;
 use handfast_proto::share::ShareRequest;
 use handfast_proto::{types, Packet};
@@ -19,16 +21,44 @@ const MALFORMED_UPDATE: &str = "discarding malformed share update";
 const TEXT_NOT_COPIED: &str = "share text could not be copied to the clipboard";
 const URL_NOT_OPENED: &str = "share url could not be opened";
 const UNSAFE_URL: &str = "discarding share url with an unsafe scheme";
+/// Bounds memory over a long session.
+const RECENT_LIMIT: usize = 64;
 
 /// Applies inbound share requests and returns transfer intents.
 #[derive(Debug, Default)]
-pub struct SharePlugin;
+pub struct SharePlugin {
+    seen_order: VecDeque<(String, i64)>,
+    seen_set: HashSet<(String, i64)>,
+}
 
 impl SharePlugin {
     /// Create a share plugin.
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Only non-zero ids dedupe: `id` is deprecated and senders may leave it at 0.
+    fn is_duplicate(&mut self, packet: &Packet) -> bool {
+        if packet.id == 0
+            || !matches!(
+                packet.ptype.as_str(),
+                types::SHARE_REQUEST | types::SHARE_REQUEST_UPDATE
+            )
+        {
+            return false;
+        }
+        let key = (packet.ptype.clone(), packet.id);
+        if !self.seen_set.insert(key.clone()) {
+            return true;
+        }
+        self.seen_order.push_back(key);
+        if self.seen_order.len() > RECENT_LIMIT {
+            if let Some(expired) = self.seen_order.pop_front() {
+                self.seen_set.remove(&expired);
+            }
+        }
+        false
     }
 }
 
@@ -73,6 +103,9 @@ impl Plugin for SharePlugin {
         ctx: &mut PluginContext<'_>,
         packet: &Packet,
     ) -> Result<PluginOutput, PluginError> {
+        if self.is_duplicate(packet) {
+            return Ok(PluginOutput::new());
+        }
         let output = match packet.ptype.as_str() {
             types::SHARE_REQUEST => match ShareRequest::from_packet(packet) {
                 Ok(ShareRequest::File(file)) => match packet.payload_offer() {
@@ -162,15 +195,20 @@ mod tests {
     }
 
     async fn run(desktop: &Desktop, packet: &Packet) -> PluginOutput {
+        run_plugin(&mut SharePlugin::new(), desktop, packet).await
+    }
+
+    async fn run_plugin(
+        plugin: &mut SharePlugin,
+        desktop: &Desktop,
+        packet: &Packet,
+    ) -> PluginOutput {
         let device = device();
         let mut ctx = PluginContext {
             device: &device,
             desktop,
         };
-        SharePlugin::new()
-            .on_packet(&mut ctx, packet)
-            .await
-            .unwrap()
+        plugin.on_packet(&mut ctx, packet).await.unwrap()
     }
 
     fn file() -> ShareFile {
@@ -416,31 +454,147 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_packets_are_applied_again() {
+    async fn duplicate_packets_are_dropped() {
         let mock = MockDesktop::new();
         let desktop = mock.desktop();
+        let mut plugin = SharePlugin::new();
 
-        let text = text_request("again").unwrap();
-        let first = run(&desktop, &text).await;
-        let second = run(&desktop, &text).await;
-        assert_eq!(mock.clipboard().as_deref(), Some("again"));
-        assert_eq!(first.events.len(), 1);
-        assert_eq!(first.events, second.events);
+        let mut url = url_request("https://example.com").unwrap();
+        url.id = 1;
+        assert_eq!(
+            run_plugin(&mut plugin, &desktop, &url).await.events.len(),
+            1
+        );
+        assert_eq!(
+            run_plugin(&mut plugin, &desktop, &url).await,
+            PluginOutput::new()
+        );
+        assert_eq!(mock.shell_urls(), ["https://example.com"]);
 
-        let update = update_request(ShareBatch {
+        let mut file_packet = file_request(&file(), Some(1739)).unwrap();
+        file_packet.id = 2;
+        assert_eq!(
+            run_plugin(&mut plugin, &desktop, &file_packet)
+                .await
+                .transfers
+                .len(),
+            1
+        );
+        assert!(run_plugin(&mut plugin, &desktop, &file_packet)
+            .await
+            .transfers
+            .is_empty());
+
+        let mut text = text_request("again").unwrap();
+        text.id = 3;
+        assert_eq!(
+            run_plugin(&mut plugin, &desktop, &text).await.events.len(),
+            1
+        );
+        assert!(run_plugin(&mut plugin, &desktop, &text)
+            .await
+            .events
+            .is_empty());
+
+        let mut update = update_request(ShareBatch {
             number_of_files: 2,
             total_payload_size: 4096,
         })
         .unwrap();
-        let first = run(&desktop, &update).await;
-        let second = run(&desktop, &update).await;
-        assert_eq!(first.events.len(), 1);
-        assert_eq!(first.events, second.events);
+        update.id = 4;
+        assert_eq!(
+            run_plugin(&mut plugin, &desktop, &update)
+                .await
+                .events
+                .len(),
+            1
+        );
+        assert!(run_plugin(&mut plugin, &desktop, &update)
+            .await
+            .events
+            .is_empty());
+    }
 
-        let file_packet = file_request(&file(), Some(1739)).unwrap();
-        let first = run(&desktop, &file_packet).await;
-        let second = run(&desktop, &file_packet).await;
-        assert_eq!(first.transfers.len(), 1);
-        assert_eq!(first.transfers, second.transfers);
+    #[tokio::test]
+    async fn different_ids_and_types_are_applied() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let mut plugin = SharePlugin::new();
+
+        let mut first = url_request("https://example.com/a").unwrap();
+        first.id = 1;
+        let mut second = url_request("https://example.com/b").unwrap();
+        second.id = 2;
+        run_plugin(&mut plugin, &desktop, &first).await;
+        run_plugin(&mut plugin, &desktop, &second).await;
+        assert_eq!(
+            mock.shell_urls(),
+            ["https://example.com/a", "https://example.com/b"]
+        );
+
+        let mut update = update_request(ShareBatch {
+            number_of_files: 1,
+            total_payload_size: 10,
+        })
+        .unwrap();
+        update.id = 1;
+        assert_eq!(
+            run_plugin(&mut plugin, &desktop, &update)
+                .await
+                .events
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_id_packets_are_applied_again() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let mut plugin = SharePlugin::new();
+        let url = url_request("https://example.com").unwrap();
+        assert_eq!(url.id, 0);
+        assert_eq!(
+            run_plugin(&mut plugin, &desktop, &url).await.events.len(),
+            1
+        );
+        assert_eq!(
+            run_plugin(&mut plugin, &desktop, &url).await.events.len(),
+            1
+        );
+        assert_eq!(mock.shell_urls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn duplicate_ids_are_forgotten_after_the_bound() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let mut plugin = SharePlugin::new();
+        let mut url = url_request("https://example.com").unwrap();
+
+        url.id = 1;
+        run_plugin(&mut plugin, &desktop, &url).await;
+        assert!(run_plugin(&mut plugin, &desktop, &url)
+            .await
+            .events
+            .is_empty());
+
+        for id in 2..=RECENT_LIMIT as i64 {
+            url.id = id;
+            run_plugin(&mut plugin, &desktop, &url).await;
+        }
+        assert!(run_plugin(&mut plugin, &desktop, &url)
+            .await
+            .events
+            .is_empty());
+
+        url.id = RECENT_LIMIT as i64 + 1;
+        run_plugin(&mut plugin, &desktop, &url).await;
+        url.id = 1;
+        assert_eq!(
+            run_plugin(&mut plugin, &desktop, &url).await.events.len(),
+            1
+        );
+        assert_eq!(mock.shell_urls().len(), RECENT_LIMIT + 2);
     }
 }
