@@ -96,7 +96,7 @@ Active parallel wave:
 - Unit 8 prep: done, runner brief in the session record.
 - Unit 9 prep: done. The outbound transfer must run in a task or JoinSet, not inline in the session loop, so a 30 s accept deadline cannot stall packets, pings or pairing.
 - Unit 10 prep: read-only, `ses_e273499b7ffeukKuTiaHMk3mQu`.
-- Unit 11 prep: read-only, `ses_e273499b7ffdzW70lz1KGZLJpK`.
+- Unit 11 prep: done. Startup order, session wiring, limits, docs, test matrix and the manual gate are mapped.
 
 Comment review follow-ups:
 
