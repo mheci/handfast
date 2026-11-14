@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use handfast_net::{
     Fingerprint, LinkEvent, LinkLimits, LinkListener, LinkManager, LinkManagerHandle,
-    LocalEndpoint, NetError, TlsError, TlsIdentity, TrustTable,
+    LocalEndpoint, NetError, ShareEvent, TlsError, TlsIdentity, TrustTable, SHARE_EVENT_QUEUE,
 };
 use handfast_proto::{types, Capabilities, DeviceId, DeviceName, DeviceType, Identity};
 use handfast_testkit::peer::PeerConfig;
@@ -74,6 +74,32 @@ fn pair_request() -> WirePacket {
     }
 }
 
+fn share_text() -> WirePacket {
+    WirePacket {
+        id: 0,
+        ptype: types::SHARE_REQUEST.to_string(),
+        body: json!({ "text": "manager share test" })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        payload_size: None,
+        payload_transfer_info: None,
+    }
+}
+
+fn share_update() -> WirePacket {
+    WirePacket {
+        id: 0,
+        ptype: types::SHARE_REQUEST_UPDATE.to_string(),
+        body: json!({ "numberOfFiles": 2, "totalPayloadSize": 4096 })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        payload_size: None,
+        payload_transfer_info: None,
+    }
+}
+
 fn no_inbound_rate_limit() -> LinkLimits {
     LinkLimits {
         per_ip_interval: Duration::ZERO,
@@ -100,12 +126,23 @@ async fn refusing_listener() -> SocketAddr {
 struct Harness {
     handle: LinkManagerHandle,
     events: mpsc::Receiver<LinkEvent>,
+    share_events: mpsc::Receiver<ShareEvent>,
     task: JoinHandle<handfast_net::Result<()>>,
     local: Arc<LocalEndpoint>,
     address: SocketAddr,
 }
 
 async fn start(id: &str, trust: TrustTable, limits: LinkLimits, tick: Duration) -> Harness {
+    start_with_share_queue(id, trust, limits, tick, SHARE_EVENT_QUEUE).await
+}
+
+async fn start_with_share_queue(
+    id: &str,
+    trust: TrustTable,
+    limits: LinkLimits,
+    tick: Duration,
+    share_queue: usize,
+) -> Harness {
     let local = local_endpoint(id);
     let listener = LinkListener::bind_in_range(1716, Arc::clone(local.tls()))
         .await
@@ -118,11 +155,20 @@ async fn start(id: &str, trust: TrustTable, limits: LinkLimits, tick: Duration) 
             .port(),
     ));
     let (events, events_rx) = mpsc::channel(256);
-    let (handle, task) =
-        LinkManager::start_with_tick(listener, Arc::clone(&local), trust, limits, events, tick);
+    let (share_events, share_events_rx) = mpsc::channel(share_queue);
+    let (handle, task) = LinkManager::start_with_tick(
+        listener,
+        Arc::clone(&local),
+        trust,
+        limits,
+        events,
+        share_events,
+        tick,
+    );
     Harness {
         handle,
         events: events_rx,
+        share_events: share_events_rx,
         task,
         local,
         address,
@@ -828,6 +874,235 @@ async fn set_trust_opens_the_gate_and_none_closes_the_link() {
         .await
         .expect("clearing trust succeeds");
     let (_, _reason) = expect_disconnected(&mut harness.events).await;
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn share_packets_use_the_reliable_channel() {
+    let config = peer(PEER_ID);
+    let pin = Fingerprint::of_certificate(config.cert_der());
+    let mut trust = TrustTable::default();
+    trust.set(device_id(PEER_ID), pin);
+    let mut harness = start(
+        LOCAL_ID,
+        trust,
+        LinkLimits::default(),
+        Duration::from_millis(100),
+    )
+    .await;
+    let mut testkit = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the paired link is admitted");
+    assert!(expect_connected(&mut harness.events).await);
+
+    testkit
+        .send(&share_text())
+        .await
+        .expect("send the share request");
+    testkit
+        .send(&share_update())
+        .await
+        .expect("send the share update");
+
+    let text = tokio::time::timeout(Duration::from_secs(5), harness.share_events.recv())
+        .await
+        .expect("the share request arrives before the timeout")
+        .expect("the share channel is open");
+    assert_eq!(text.device_id, device_id(PEER_ID));
+    assert_eq!(text.packet.ptype, types::SHARE_REQUEST);
+    assert_eq!(
+        text.packet
+            .body
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("manager share test"),
+        "the share packet arrives intact"
+    );
+
+    let update = tokio::time::timeout(Duration::from_secs(5), harness.share_events.recv())
+        .await
+        .expect("the share update arrives before the timeout")
+        .expect("the share channel is open");
+    assert_eq!(update.device_id, device_id(PEER_ID));
+    assert_eq!(update.packet.ptype, types::SHARE_REQUEST_UPDATE);
+    assert_eq!(
+        update
+            .packet
+            .body
+            .get("numberOfFiles")
+            .and_then(|value| value.as_u64()),
+        Some(2),
+        "the share update packet arrives intact"
+    );
+
+    let leaked = tokio::time::timeout(Duration::from_millis(300), harness.events.recv()).await;
+    assert!(
+        leaked.is_err(),
+        "share packets never reach the lossy packet channel"
+    );
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn a_full_share_queue_closes_the_link() {
+    let config = peer(PEER_ID);
+    let pin = Fingerprint::of_certificate(config.cert_der());
+    let mut trust = TrustTable::default();
+    trust.set(device_id(PEER_ID), pin);
+    let mut harness = start_with_share_queue(
+        LOCAL_ID,
+        trust,
+        LinkLimits::default(),
+        Duration::from_millis(100),
+        1,
+    )
+    .await;
+    let mut testkit = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the paired link is admitted");
+    assert!(expect_connected(&mut harness.events).await);
+
+    testkit
+        .send(&share_text())
+        .await
+        .expect("fill the share queue");
+    testkit
+        .send(&share_text())
+        .await
+        .expect("overflow the share queue");
+
+    let (disconnected, reason) = expect_disconnected(&mut harness.events).await;
+    assert_eq!(disconnected, device_id(PEER_ID));
+    assert_eq!(reason, "share event queue full");
+
+    let closed = tokio::time::timeout(Duration::from_secs(2), testkit.recv())
+        .await
+        .expect("the peer sees the close");
+    assert!(matches!(closed, Ok(None) | Err(_)), "the link closes");
+
+    let queued = tokio::time::timeout(Duration::from_secs(2), harness.share_events.recv())
+        .await
+        .expect("the queued share event survives")
+        .expect("the share channel is open");
+    assert_eq!(queued.packet.ptype, types::SHARE_REQUEST);
+
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn connected_carries_the_dialed_remote_address() {
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        no_inbound_rate_limit(),
+        Duration::from_millis(100),
+    )
+    .await;
+    let config = peer(PEER_ID);
+    let peer_id = device_id(PEER_ID);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the testkit listener");
+    let address = listener.local_addr().expect("read the testkit address");
+    let server = tokio::spawn(async move { accept(&listener, &config).await });
+    harness.handle.consider_peer(peer_id, address);
+
+    let _peer = tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("the manager dials before the timeout")
+        .expect("the testkit task joins")
+        .expect("the testkit accepts the dial");
+    match next_event(&mut harness.events).await {
+        LinkEvent::Connected { remote_addr, .. } => assert_eq!(
+            remote_addr, address,
+            "Connected carries the dialed peer address"
+        ),
+        other => panic!("expected Connected, got {other:?}"),
+    }
+
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn connected_carries_the_inbound_peer_address() {
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        LinkLimits::default(),
+        Duration::from_millis(100),
+    )
+    .await;
+    let config = peer(PEER_ID);
+    let _testkit = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the unpaired link is admitted");
+    match next_event(&mut harness.events).await {
+        LinkEvent::Connected { remote_addr, .. } => {
+            assert_eq!(
+                remote_addr.ip(),
+                harness.address.ip(),
+                "the peer address is on the control link's interface"
+            );
+            assert_ne!(
+                remote_addr.port(),
+                harness.address.port(),
+                "Connected carries the peer's source port, not the listener port"
+            );
+        }
+        other => panic!("expected Connected, got {other:?}"),
+    }
+
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+}
+
+#[tokio::test]
+async fn close_closes_the_link_and_releases_the_unpaired_slot() {
+    let limits = LinkLimits {
+        max_unpaired_links: 1,
+        per_ip_interval: Duration::ZERO,
+        ..LinkLimits::default()
+    };
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        limits,
+        Duration::from_millis(100),
+    )
+    .await;
+    let config = peer(PEER_ID);
+    let peer_id = device_id(PEER_ID);
+    let mut first = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the first unpaired link is admitted");
+    assert!(!expect_connected(&mut harness.events).await);
+
+    harness
+        .handle
+        .close(peer_id.clone())
+        .await
+        .expect("the close succeeds");
+    let (disconnected, reason) = expect_disconnected(&mut harness.events).await;
+    assert_eq!(disconnected, peer_id);
+    assert_eq!(reason, "closed by manager");
+    let closed = tokio::time::timeout(Duration::from_secs(2), first.recv())
+        .await
+        .expect("the peer sees the close");
+    assert!(
+        matches!(closed, Ok(None) | Err(_)),
+        "close closes the socket"
+    );
+
+    let second = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the unpaired slot is free after the close");
+    assert!(!expect_connected(&mut harness.events).await);
+
+    drop(second);
     harness.handle.shutdown();
     let _ = harness.task.await;
 }

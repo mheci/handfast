@@ -27,6 +27,7 @@ pub use identity::{
 pub use link::{connect, Link, LinkLimits, LinkListener, LinkReader, LinkWriter, LinkedPeer};
 pub use manager::{
     is_unpaired_allowed, LinkEvent, LinkHandle, LinkManager, LinkManagerHandle, PendingLink,
+    ShareEvent, SHARE_EVENT_QUEUE,
 };
 pub use pairing::{PairingAction, PairingSession, PairingState, PAIRING_TIMEOUT_SECS};
 pub use payload::{
