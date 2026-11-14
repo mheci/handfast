@@ -43,7 +43,9 @@ pub struct PayloadSenderConfig {
     pub version: TlsVersion,
     /// Certificate family the sender presents.
     pub certificate: CertificateKind,
-    /// Present a different ECDSA certificate with a `wrong-` CN.
+    /// Present a different certificate of the selected family. ECDSA gets a
+    /// fresh certificate with a `wrong-` CN; RSA gets the second checked-in
+    /// fixture.
     pub wrong_certificate: bool,
     /// Write only this many payload bytes. `None` writes the whole payload.
     pub truncate_after: Option<u64>,
@@ -256,7 +258,9 @@ pub struct PayloadReceiverConfig {
     pub version: TlsVersion,
     /// Certificate family the receiver presents.
     pub certificate: CertificateKind,
-    /// Present a different ECDSA certificate with a `wrong-` CN.
+    /// Present a different certificate of the selected family. ECDSA gets a
+    /// fresh certificate with a `wrong-` CN; RSA gets the second checked-in
+    /// fixture.
     pub wrong_certificate: bool,
     /// Present a client certificate. `false` models a client with none.
     pub present_client_certificate: bool,
@@ -264,7 +268,9 @@ pub struct PayloadReceiverConfig {
     pub raw_tcp: bool,
     /// Per-read and TLS handshake timeout.
     pub read_timeout: Duration,
-    /// Wait this long after the handshake before reading payload bytes.
+    /// Wait this long after the handshake before reading payload bytes. The
+    /// wait counts against the first read deadline, so the read timeout covers
+    /// the stall.
     pub stall_before_read: Option<Duration>,
     /// Reject a peer certificate other than this DER certificate.
     pub expected_peer_certificate: Option<Vec<u8>>,
@@ -382,11 +388,17 @@ impl PayloadReceiver {
                 self.config.expected_peer_certificate.as_deref(),
                 &peer_certificate_der,
             )?;
-            if let Some(stall) = self.config.stall_before_read {
-                tokio::time::sleep(stall).await;
-            }
-            let (bytes, eof) =
-                read_to_sink(&mut stream, max_size, self.config.read_timeout, sink).await?;
+            let first_read_timeout =
+                stall_within_timeout(self.config.stall_before_read, self.config.read_timeout)
+                    .await?;
+            let (bytes, eof) = read_to_sink(
+                &mut stream,
+                max_size,
+                first_read_timeout,
+                self.config.read_timeout,
+                sink,
+            )
+            .await?;
             Ok(PayloadReceiveReport {
                 bytes,
                 negotiated,
@@ -395,11 +407,17 @@ impl PayloadReceiver {
             })
         } else {
             let mut tcp = connect(address).await?;
-            if let Some(stall) = self.config.stall_before_read {
-                tokio::time::sleep(stall).await;
-            }
-            let (bytes, eof) =
-                read_to_sink(&mut tcp, max_size, self.config.read_timeout, sink).await?;
+            let first_read_timeout =
+                stall_within_timeout(self.config.stall_before_read, self.config.read_timeout)
+                    .await?;
+            let (bytes, eof) = read_to_sink(
+                &mut tcp,
+                max_size,
+                first_read_timeout,
+                self.config.read_timeout,
+                sink,
+            )
+            .await?;
             Ok(PayloadReceiveReport {
                 bytes,
                 negotiated: "raw".to_string(),
@@ -576,12 +594,16 @@ fn tls_config(
     certificate: CertificateKind,
     wrong_certificate: bool,
 ) -> Result<TlsPeerConfig> {
-    // A wrong certificate is a fresh ECDSA certificate with a `wrong-` CN, so it
-    // differs from both the ECDSA identity certificate and the RSA fixture.
+    // A wrong ECDSA certificate is fresh with a `wrong-` CN, so it differs from
+    // the identity certificate. A wrong RSA certificate is the second fixture.
     if wrong_certificate {
-        let device_id = &identity.device_id;
-        let common_name = format!("wrong-{device_id}");
-        return TlsPeerConfig::ecdsa_with_common_name(identity.clone(), version, &common_name);
+        return match certificate {
+            CertificateKind::Ecdsa => {
+                let common_name = format!("wrong-{}", identity.device_id);
+                TlsPeerConfig::ecdsa_with_common_name(identity.clone(), version, &common_name)
+            }
+            CertificateKind::Rsa => Ok(TlsPeerConfig::rsa_wrong(version)),
+        };
     }
     match certificate {
         CertificateKind::Ecdsa => TlsPeerConfig::ecdsa(identity.clone(), version),
@@ -630,9 +652,25 @@ async fn write_extra<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Sleep before the first read and return the time left for that read. The
+/// stall counts against the receiver's read timeout, so the timeout is live
+/// while the receiver waits.
+async fn stall_within_timeout(stall: Option<Duration>, read_timeout: Duration) -> Result<Duration> {
+    let Some(stall) = stall else {
+        return Ok(read_timeout);
+    };
+    tokio::time::sleep(stall.min(read_timeout)).await;
+    let remaining = read_timeout.saturating_sub(stall);
+    if remaining.is_zero() {
+        return Err(TestkitError::Timeout);
+    }
+    Ok(remaining)
+}
+
 async fn read_to_sink<R, W>(
     reader: &mut R,
     max_size: u64,
+    first_read_timeout: Duration,
     read_timeout: Duration,
     sink: &mut W,
 ) -> Result<(u64, bool)>
@@ -642,10 +680,12 @@ where
 {
     let mut buffer = vec![0u8; BUFFER_SIZE];
     let mut total = 0u64;
+    let mut limit = first_read_timeout;
     loop {
-        let read = timeout(read_timeout, reader.read(&mut buffer))
+        let read = timeout(limit, reader.read(&mut buffer))
             .await
             .map_err(|_| TestkitError::Timeout)??;
+        limit = read_timeout;
         if read == 0 {
             sink.flush().await?;
             return Ok((total, true));

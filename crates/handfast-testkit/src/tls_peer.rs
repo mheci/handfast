@@ -29,9 +29,14 @@ use crate::peer::PeerConfig;
 /// Device ID of the checked-in RSA fixture.
 pub const RSA_DEVICE_ID: &str = "rsa0rsa0rsa0rsa0rsa0rsa0rsa0rsa0";
 
+/// Device ID of the second checked-in RSA fixture, used as a wrong certificate.
+pub const RSA_WRONG_DEVICE_ID: &str = "rsa1rsa1rsa1rsa1rsa1rsa1rsa1rsa1";
+
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const RSA_CERT_DER: &[u8] = include_bytes!("../tests/fixtures/rsa-cert.der");
 const RSA_KEY_DER: &[u8] = include_bytes!("../tests/fixtures/rsa-key.der");
+const RSA_WRONG_CERT_DER: &[u8] = include_bytes!("../tests/fixtures/rsa-wrong-cert.der");
+const RSA_WRONG_KEY_DER: &[u8] = include_bytes!("../tests/fixtures/rsa-wrong-key.der");
 
 /// TLS protocol versions a test peer offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -98,6 +103,13 @@ impl TestCredentials {
             key_der: RSA_KEY_DER.to_vec(),
         }
     }
+
+    fn rsa_wrong() -> Self {
+        Self {
+            cert_der: RSA_WRONG_CERT_DER.to_vec(),
+            key_der: RSA_WRONG_KEY_DER.to_vec(),
+        }
+    }
 }
 
 /// One test peer's identity, TLS versions and certificate.
@@ -157,6 +169,24 @@ impl TlsPeerConfig {
             identity,
             version,
             credentials: TestCredentials::rsa(),
+            encrypted_device_id: None,
+            encrypted_protocol_version: None,
+        }
+    }
+
+    /// Build a peer that presents the second RSA fixture, whose CN differs from
+    /// [`RSA_DEVICE_ID`]. Tests use it as a wrong certificate.
+    #[must_use]
+    pub(crate) fn rsa_wrong(version: TlsVersion) -> Self {
+        let identity = PeerConfig {
+            device_id: RSA_WRONG_DEVICE_ID.to_string(),
+            device_name: "Handfast wrong RSA test peer".to_string(),
+            ..PeerConfig::client()
+        };
+        Self {
+            identity,
+            version,
+            credentials: TestCredentials::rsa_wrong(),
             encrypted_device_id: None,
             encrypted_protocol_version: None,
         }

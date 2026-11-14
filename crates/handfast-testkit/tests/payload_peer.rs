@@ -213,6 +213,73 @@ async fn a_wrong_receiver_certificate_fails_the_sender_pin() {
 }
 
 #[tokio::test]
+async fn a_wrong_rsa_sender_certificate_fails_the_receiver_pin() {
+    let correct = PayloadSender::new(PayloadSenderConfig {
+        certificate: CertificateKind::Rsa,
+        ..PayloadSenderConfig::default()
+    })
+    .unwrap();
+    let correct_cert = correct.cert_der().to_vec();
+    drop(correct);
+    let wrong = PayloadSender::new(PayloadSenderConfig {
+        certificate: CertificateKind::Rsa,
+        wrong_certificate: true,
+        ..PayloadSenderConfig::default()
+    })
+    .unwrap();
+    assert_ne!(wrong.cert_der(), correct_cert.as_slice());
+    let receiver = PayloadReceiver::new(PayloadReceiverConfig {
+        expected_peer_certificate: Some(correct_cert),
+        ..PayloadReceiverConfig::default()
+    })
+    .unwrap();
+    let payload = b"wrong rsa certificate".to_vec();
+    let mut buffer = Vec::new();
+    let (_send, receive) = tokio::join!(
+        wrong.accept_and_send(&payload),
+        receiver.receive(address(&wrong), payload.len() as u64, &mut buffer),
+    );
+    assert!(
+        matches!(receive, Err(TestkitError::PeerCertificate)),
+        "got {receive:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_wrong_rsa_receiver_certificate_fails_the_sender_pin() {
+    let correct = PayloadReceiver::new(PayloadReceiverConfig {
+        certificate: CertificateKind::Rsa,
+        ..PayloadReceiverConfig::default()
+    })
+    .unwrap();
+    let correct_cert = correct.cert_der().unwrap().to_vec();
+    drop(correct);
+    let wrong = PayloadReceiver::new(PayloadReceiverConfig {
+        certificate: CertificateKind::Rsa,
+        wrong_certificate: true,
+        ..PayloadReceiverConfig::default()
+    })
+    .unwrap();
+    assert_ne!(wrong.cert_der().unwrap(), correct_cert.as_slice());
+    let sender = PayloadSender::new(PayloadSenderConfig {
+        certificate: CertificateKind::Rsa,
+        expected_peer_certificate: Some(correct_cert),
+        ..PayloadSenderConfig::default()
+    })
+    .unwrap();
+    let payload = b"wrong rsa certificate".to_vec();
+    let mut buffer = Vec::new();
+    let (send, _receive) = tokio::join!(
+        sender.accept_and_send(&payload),
+        wrong.receive(address(&sender), payload.len() as u64, &mut buffer),
+    );
+    assert!(
+        matches!(send, Err(TestkitError::PeerCertificate)),
+        "got {send:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_receiver_without_a_client_certificate_is_rejected() {
     let sender = PayloadSender::new(PayloadSenderConfig {
         idle_timeout: Duration::from_secs(2),
@@ -277,8 +344,16 @@ async fn accept_timeout_fires_when_no_receiver_connects() {
     .unwrap();
     let started = Instant::now();
     let error = sender.accept_and_send(b"nobody").await.unwrap_err();
+    let elapsed = started.elapsed();
     assert!(matches!(error, TestkitError::Timeout), "got {error:?}");
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "the accept timeout fired before it waited: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the accept timeout fired late: {elapsed:?}"
+    );
 }
 
 #[tokio::test]
@@ -432,6 +507,10 @@ async fn the_eight_second_peer_timeout_fires_before_the_ten_second_receiver_time
         "the peer timeout fired after the receiver deadline: {send_elapsed:?}"
     );
     assert!(
+        receive_elapsed >= Duration::from_secs(9),
+        "the receiver did not wait through the pre-read stall: {receive_elapsed:?}"
+    );
+    assert!(
         receive_elapsed < Duration::from_secs(10),
         "the receiver's timeout fired before the peer closed: {receive_elapsed:?}"
     );
@@ -442,6 +521,42 @@ async fn the_eight_second_peer_timeout_fires_before_the_ten_second_receiver_time
             "the receiver's 10 s timeout fired first: {error:?}"
         ),
     }
+}
+
+#[tokio::test]
+async fn the_receiver_read_timeout_covers_the_pre_read_stall() {
+    let sender = PayloadSender::new(PayloadSenderConfig {
+        stall_before_write: Some(Duration::from_secs(5)),
+        idle_timeout: Duration::from_secs(5),
+        ..PayloadSenderConfig::default()
+    })
+    .unwrap();
+    let address = address(&sender);
+    let sender_task = tokio::spawn(async move { sender.accept_and_send(b"stalled").await });
+    let receiver = PayloadReceiver::new(PayloadReceiverConfig {
+        stall_before_read: Some(Duration::from_millis(2000)),
+        read_timeout: Duration::from_millis(1000),
+        ..PayloadReceiverConfig::default()
+    })
+    .unwrap();
+    let mut buffer = Vec::new();
+    let started = Instant::now();
+    let receive = receiver.receive(address, 7, &mut buffer).await;
+    let elapsed = started.elapsed();
+    sender_task.abort();
+
+    assert!(
+        matches!(receive, Err(TestkitError::Timeout)),
+        "got {receive:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(900),
+        "the read timeout fired before it waited: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(1900),
+        "the read timeout did not cover the stall: {elapsed:?}"
+    );
 }
 
 #[tokio::test]
