@@ -112,6 +112,7 @@ impl Drop for IncomingFile {
     fn drop(&mut self) {
         drop(self.file.take());
         // A committed file already removed the temp, so NotFound is expected.
+        // shortcut: a blocking remove in Drop can stall an async worker; queue it for the sweep if that path gets hot.
         let _ = std::fs::remove_file(&self.temp_path);
     }
 }
@@ -154,7 +155,8 @@ pub trait Files: Send + Sync {
     /// Open a regular file for an outbound transfer.
     ///
     /// # Errors
-    /// Fails for a directory, a special file or an unreadable file.
+    /// Fails for a directory, a special file, an unreadable file or a file
+    /// larger than the configured cap.
     async fn open_outgoing(&self, path: &Path) -> Result<OutgoingFile, FilesError>;
 
     /// Remove stale temp files older than `max_age`.
@@ -196,6 +198,8 @@ impl Default for FileLimits {
 pub struct SweepReport {
     /// Number of temp files removed.
     pub removed: usize,
+    /// Number of temp files the sweep could not remove.
+    pub failed: usize,
 }
 
 /// Errors returned by the files adapter.
@@ -205,10 +209,10 @@ pub enum FilesError {
     #[error("file io: {0}")]
     Io(#[from] io::Error),
 
-    /// The declared file is larger than the configured cap.
+    /// The file is larger than the configured cap.
     #[error("file size {size} exceeds the {limit} byte limit")]
     TooLarge {
-        /// Declared size.
+        /// File size.
         size: u64,
         /// Configured cap.
         limit: u64,
@@ -345,8 +349,13 @@ impl LocalFiles {
         )))
     }
 
-    fn reserve_space(&self, size: Option<u64>) -> Result<(), FilesError> {
-        let available = fs4::available_space(&self.temp_dir)?;
+    async fn reserve_space(&self, size: Option<u64>) -> Result<(), FilesError> {
+        // fs4 has no async API; the statvfs/GetDiskFreeSpace call runs off the
+        // runtime thread.
+        let temp_dir = self.temp_dir.clone();
+        let available = tokio::task::spawn_blocking(move || fs4::available_space(&temp_dir))
+            .await
+            .map_err(io::Error::other)??;
         let needed = match size {
             Some(declared) => declared
                 .checked_add(self.limits.max_extra)
@@ -380,7 +389,7 @@ impl Files for LocalFiles {
                 });
             }
         }
-        self.reserve_space(request.size)?;
+        self.reserve_space(request.size).await?;
 
         let name = sanitize_filename(request.filename.as_deref().unwrap_or_default(), self.limits);
         let (temp_path, file) = self.create_temp().await?;
@@ -396,7 +405,7 @@ impl Files for LocalFiles {
     }
 
     async fn open_outgoing(&self, path: &Path) -> Result<OutgoingFile, FilesError> {
-        let metadata = std::fs::metadata(path)?;
+        let metadata = tokio::fs::metadata(path).await?;
         if !metadata.is_file() {
             return Err(FilesError::NotRegularFile(path.to_path_buf()));
         }
@@ -407,13 +416,20 @@ impl Files for LocalFiles {
         if !metadata.is_file() {
             return Err(FilesError::NotRegularFile(path.to_path_buf()));
         }
+        let size = metadata.len();
+        if size > self.limits.max_file_size {
+            return Err(FilesError::TooLarge {
+                size,
+                limit: self.limits.max_file_size,
+            });
+        }
         let filename = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| FALLBACK_NAME.to_string());
         Ok(OutgoingFile {
             filename,
-            size: metadata.len(),
+            size,
             created_ms: system_time_ms(metadata.created()),
             modified_ms: system_time_ms(metadata.modified()),
             reader: file,
@@ -424,6 +440,7 @@ impl Files for LocalFiles {
         let mut entries = tokio::fs::read_dir(&self.temp_dir).await?;
         let now = SystemTime::now();
         let mut removed = 0;
+        let mut failed = 0;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             // Only `.part` files are Handfast temp files; the private
@@ -449,10 +466,18 @@ impl Files for LocalFiles {
             match tokio::fs::remove_file(&path).await {
                 Ok(()) => removed += 1,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(FilesError::Io(error)),
+                // A locked or permission-denied temp file must not block
+                // startup; the next sweep retries it.
+                Err(_) => failed += 1,
             }
         }
-        Ok(SweepReport { removed })
+        if failed > 0 {
+            eprintln!(
+                "warning: could not remove {failed} stale temp file(s) in {}",
+                self.temp_dir.display()
+            );
+        }
+        Ok(SweepReport { removed, failed })
     }
 }
 
@@ -701,7 +726,7 @@ enum CommitError {
 
 async fn try_commit(temp: &Path, destination: &Path, force_copy: bool) -> Result<(), CommitError> {
     if !force_copy {
-        match std::fs::hard_link(temp, destination) {
+        match tokio::fs::hard_link(temp, destination).await {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 return Err(CommitError::Exists);
@@ -761,10 +786,10 @@ async fn copy_commit(temp: &Path, destination: &Path) -> Result<(), CommitError>
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
-    let mut target = options
-        .open(destination)
-        .await
-        .map_err(|error| map_create_error(error, destination))?;
+    let mut target = match options.open(destination).await {
+        Ok(target) => target,
+        Err(error) => return Err(map_create_error(error, destination).await),
+    };
     if let Err(error) = tokio::io::copy(&mut source, &mut target).await {
         drop(target);
         let _ = tokio::fs::remove_file(destination).await;
@@ -778,12 +803,16 @@ async fn copy_commit(temp: &Path, destination: &Path) -> Result<(), CommitError>
     Ok(())
 }
 
-fn map_create_error(error: io::Error, destination: &Path) -> CommitError {
+async fn map_create_error(error: io::Error, destination: &Path) -> CommitError {
     match error.kind() {
         io::ErrorKind::AlreadyExists | io::ErrorKind::IsADirectory => CommitError::Exists,
         io::ErrorKind::InvalidFilename => CommitError::NameTooLong,
-        io::ErrorKind::PermissionDenied if std::fs::symlink_metadata(destination).is_ok() => {
-            CommitError::Exists
+        io::ErrorKind::PermissionDenied => {
+            if tokio::fs::symlink_metadata(destination).await.is_ok() {
+                CommitError::Exists
+            } else {
+                CommitError::Io(error)
+            }
         }
         _ => CommitError::Io(error),
     }
@@ -1320,6 +1349,64 @@ mod tests {
             .is_symlink());
     }
 
+    #[tokio::test]
+    async fn sweep_continues_past_an_unremovable_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = LocalFiles::new(dir.path().join("incoming"), limits()).unwrap();
+
+        let removable = files.temp_dir().join("removable.part");
+        std::fs::write(&removable, b"old").unwrap();
+        age_file(&removable, Duration::from_secs(2 * 3600));
+
+        let blocked = files.temp_dir().join("blocked.part");
+        std::fs::write(&blocked, b"old").unwrap();
+        age_file(&blocked, Duration::from_secs(2 * 3600));
+
+        // Windows denies DeleteFile while another handle holds the file
+        // without FILE_SHARE_DELETE. Unix denies unlink for every entry when
+        // the parent directory is not writable, so the counts differ.
+        #[cfg(windows)]
+        let held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .open(&blocked)
+                .unwrap()
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(files.temp_dir(), std::fs::Permissions::from_mode(0o500))
+                .unwrap();
+        }
+
+        let report = files.sweep_stale(Duration::from_secs(3600)).await.unwrap();
+
+        #[cfg(windows)]
+        drop(held);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(files.temp_dir(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+
+        assert!(blocked.exists());
+        #[cfg(windows)]
+        {
+            assert_eq!(report.removed, 1);
+            assert_eq!(report.failed, 1);
+            assert!(!removable.exists());
+        }
+        #[cfg(unix)]
+        {
+            assert_eq!(report.removed, 0);
+            assert_eq!(report.failed, 2);
+            assert!(removable.exists());
+        }
+    }
+
     #[test]
     fn temp_path_file_fails_startup() {
         let dir = tempfile::tempdir().unwrap();
@@ -1399,6 +1486,21 @@ mod tests {
 
         let error = files.open_outgoing(&path).await.err().unwrap();
         assert!(matches!(error, FilesError::NotRegularFile(_)));
+    }
+
+    #[tokio::test]
+    async fn outgoing_oversized_file_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.bin");
+        std::fs::write(&path, b"12345").unwrap();
+        let limits = FileLimits {
+            max_file_size: 4,
+            ..limits()
+        };
+        let files = LocalFiles::new(dir.path().join("incoming"), limits).unwrap();
+
+        let error = files.open_outgoing(&path).await.err().unwrap();
+        assert!(matches!(error, FilesError::TooLarge { size: 5, limit: 4 }));
     }
 
     #[cfg(unix)]
