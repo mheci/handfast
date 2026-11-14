@@ -83,7 +83,7 @@ Active parallel wave:
 - Unit 7 manager share routing: merged in `4dc1aa7`.
 - Unit 8 inbound session runner: branch `feat/inbound-runner`, owner `ses_e27624f69ffePp39O7upPyN1eB`, brief at `C:\Users\mah\AppData\Local\Temp\opencode\unit8-inbound-runner-brief.md`.
 - Windows ACLs: merged in `4f4a7cf`. The P1 Windows state and incoming ACL blocker is cleared.
-- P1 hardening: PR [#211](https://github.com/mheci/handfast/pull/211), head `f4b3a1f`, final re-verify after the doc fix.
+- P1 hardening: PR [#211](https://github.com/mheci/handfast/pull/211), head `f4b3a1f`, verifier PASS, owner merging.
 - Share docs and fuzz: merged in `c36802a`.
 - Connectivity report plugin: merged in `b74f2d8`.
 - Notifications backend: merged in `840e7a1`.
