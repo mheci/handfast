@@ -45,10 +45,15 @@ use session::{DaemonEvent, DeviceSession, SessionLimits, TransferSetup};
 /// How often to announce this device over UDP discovery.
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How often discovery may rewrite a peer record whose name and type did not
-/// change. Announcements arrive every `ANNOUNCE_INTERVAL`, and each write is a
-/// redb commit, so unchanged peers are written at most once per interval.
+/// How often discovery may rewrite a peer record. Announcements arrive every
+/// `ANNOUNCE_INTERVAL`, and each write is a redb commit, so a peer is written
+/// at most once per interval. Discovery is unauthenticated, so the store keeps
+/// the stored name and type and a name or type change cannot force a write.
 const DISCOVERY_WRITE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The most peers the discovery write throttle remembers. A spoofed-device
+/// flood cannot grow it past this, and an evicted peer costs one extra write.
+const DISCOVERY_WRITE_PEERS: usize = 1024;
 
 /// The link event channel. Connection and pairing events use `send().await`, so
 /// the daemon must drain this queue without stalling on a prompt or a session.
@@ -262,12 +267,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         SocketAddr::new(address.ip(), announcement.tcp_port),
                     );
                     let now = Instant::now();
-                    if !writes.should_write(
-                        &announcement.device_id,
-                        announcement.device_name.as_str(),
-                        announcement.device_type.as_str(),
-                        now,
-                    ) {
+                    if !writes.should_write(&announcement.device_id, now) {
                         continue;
                     }
                     let id = announcement.device_id.as_str().to_string();
@@ -282,12 +282,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     {
                         tracing::warn!(%error, "failed to persist discovered device");
                     } else {
-                        writes.record_written(
-                            &announcement.device_id,
-                            announcement.device_name.as_str(),
-                            announcement.device_type.as_str(),
-                            now,
-                        );
+                        writes.record_written(&announcement.device_id, now);
                     }
                 }
                 changed = discovery_stop_rx.changed() => {
@@ -801,48 +796,37 @@ fn parse_tcp_port(value: &str) -> Result<u16, String> {
 }
 
 /// The last persisted discovery sighting per peer. Held in memory so the
-/// throttle costs no store reads.
+/// throttle costs no store reads, and bounded so a spoofed-device flood cannot
+/// grow it without limit.
 #[derive(Default)]
 struct DiscoveryWrites {
     peers: HashMap<DeviceId, DiscoverySighting>,
 }
 
 struct DiscoverySighting {
-    name: String,
-    device_type: String,
     written_at: Instant,
 }
 
 impl DiscoveryWrites {
-    fn should_write(
-        &self,
-        device_id: &DeviceId,
-        name: &str,
-        device_type: &str,
-        now: Instant,
-    ) -> bool {
+    fn should_write(&self, device_id: &DeviceId, now: Instant) -> bool {
         self.peers.get(device_id).is_none_or(|sighting| {
-            sighting.name != name
-                || sighting.device_type != device_type
-                || now.saturating_duration_since(sighting.written_at) >= DISCOVERY_WRITE_INTERVAL
+            now.saturating_duration_since(sighting.written_at) >= DISCOVERY_WRITE_INTERVAL
         })
     }
 
-    fn record_written(
-        &mut self,
-        device_id: &DeviceId,
-        name: &str,
-        device_type: &str,
-        now: Instant,
-    ) {
-        self.peers.insert(
-            device_id.clone(),
-            DiscoverySighting {
-                name: name.to_string(),
-                device_type: device_type.to_string(),
-                written_at: now,
-            },
-        );
+    fn record_written(&mut self, device_id: &DeviceId, now: Instant) {
+        if !self.peers.contains_key(device_id) && self.peers.len() >= DISCOVERY_WRITE_PEERS {
+            let oldest = self
+                .peers
+                .iter()
+                .min_by_key(|(_, sighting)| sighting.written_at)
+                .map(|(id, _)| id.clone());
+            if let Some(oldest) = oldest {
+                self.peers.remove(&oldest);
+            }
+        }
+        self.peers
+            .insert(device_id.clone(), DiscoverySighting { written_at: now });
     }
 }
 
@@ -1006,44 +990,71 @@ mod tests {
     }
 
     #[test]
-    fn discovery_writes_are_throttled_until_the_interval_or_a_change() {
+    fn discovery_writes_are_throttled_by_device_id_until_the_interval() {
         let peer = DeviceId::new("0123456789abcdef0123456789abcdef").unwrap();
         let start = Instant::now();
         let mut writes = DiscoveryWrites::default();
 
+        assert!(writes.should_write(&peer, start), "a new peer is written");
+        writes.record_written(&peer, start);
         assert!(
-            writes.should_write(&peer, "phone", "phone", start),
-            "a new peer is written"
-        );
-        writes.record_written(&peer, "phone", "phone", start);
-        assert!(
-            !writes.should_write(&peer, "phone", "phone", start + Duration::from_secs(59)),
-            "an identical sighting inside the interval is skipped"
+            !writes.should_write(&peer, start + Duration::from_secs(59)),
+            "a sighting inside the interval is skipped"
         );
         assert!(
-            writes.should_write(&peer, "phone", "phone", start + DISCOVERY_WRITE_INTERVAL),
+            writes.should_write(&peer, start + DISCOVERY_WRITE_INTERVAL),
             "an expired sighting is written"
         );
 
-        writes.record_written(&peer, "phone", "phone", start + Duration::from_secs(10));
+        writes.record_written(&peer, start + Duration::from_secs(10));
         assert!(
-            writes.should_write(&peer, "tablet", "phone", start + Duration::from_secs(11)),
-            "a changed name is written"
-        );
-        assert!(
-            writes.should_write(&peer, "phone", "tablet", start + Duration::from_secs(11)),
-            "a changed type is written"
-        );
-
-        writes.record_written(&peer, "phone", "phone", start + Duration::from_secs(20));
-        assert!(
-            !writes.should_write(&peer, "phone", "phone", start + Duration::from_secs(21)),
-            "a change that was just written is throttled again"
+            !writes.should_write(&peer, start + Duration::from_secs(11)),
+            "a write restarts the interval"
         );
         let other = DeviceId::new("fedcba9876543210fedcba9876543210").unwrap();
         assert!(
-            writes.should_write(&other, "phone", "phone", start + Duration::from_secs(21)),
+            writes.should_write(&other, start + Duration::from_secs(11)),
             "another peer has its own entry"
+        );
+    }
+
+    #[test]
+    fn discovery_write_cache_evicts_the_oldest_peer() {
+        let start = Instant::now();
+        let mut writes = DiscoveryWrites::default();
+        let ids: Vec<DeviceId> = (0..DISCOVERY_WRITE_PEERS)
+            .map(|index| DeviceId::new(format!("{index:032x}")).unwrap())
+            .collect();
+        for (index, id) in ids.iter().enumerate() {
+            writes.record_written(id, start + Duration::from_millis(index as u64));
+        }
+        assert_eq!(writes.peers.len(), DISCOVERY_WRITE_PEERS);
+
+        let newest = DeviceId::new(format!("{:032x}", DISCOVERY_WRITE_PEERS)).unwrap();
+        writes.record_written(&newest, start + Duration::from_secs(1));
+
+        assert_eq!(
+            writes.peers.len(),
+            DISCOVERY_WRITE_PEERS,
+            "the cache stays capped"
+        );
+        assert!(
+            writes.should_write(&ids[0], start + Duration::from_secs(1)),
+            "the oldest entry is evicted"
+        );
+        assert!(
+            !writes.should_write(&ids[1], start + Duration::from_secs(1)),
+            "the next oldest entry is kept"
+        );
+        assert!(
+            !writes.should_write(&newest, start + Duration::from_secs(1)),
+            "the new entry is kept"
+        );
+
+        writes.record_written(&ids[1], start + Duration::from_secs(2));
+        assert!(
+            writes.peers.contains_key(&ids[2]),
+            "rewriting an existing peer evicts no one"
         );
     }
 }
