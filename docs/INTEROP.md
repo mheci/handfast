@@ -64,8 +64,8 @@ The fingerprint is public. The private key never appears in a log.
 | Step | Expected Handfast behavior | Expected peer behavior |
 | --- | --- | --- |
 | Discovery | Logs `discovered device` and persists a `devices_v1` record with the announced name and type. | The peer lists the Handfast device within one announce interval. |
-| Android link | Accepts or dials, completes the plaintext hello and TLS. The debug log shows `TLS handshake complete version=TLSv1_2`. | The official Android app caps TLS at 1.2 through `SSLContext("TLSv1.2")`. |
-| Desktop link | The same handshake with `version=TLSv1_3` when the desktop client offers 1.3. | KDE Connect desktop shows the device as reachable. |
+| Android link | Accepts or dials, completes the plaintext hello and TLS. The debug log shows `TLS handshake complete version=Some(TLSv1_2)`. | The official Android app caps TLS at 1.2 through `SSLContext("TLSv1.2")`. |
+| Desktop link | The same handshake with `version=Some(TLSv1_3)` when the desktop client offers 1.3. | KDE Connect desktop shows the device as reachable. |
 | Certificate CN | Parses one peer certificate, requires exactly one CN and requires CN equal to the peer device ID. | The peer validates the Handfast certificate against its stored or first-seen pin. |
 | Pairing request | Prints `Pairing request from <name> (<device ID>)` and the 64-character fingerprint, then waits up to 30 s for `y`. | The peer shows its own pairing request or waits for Handfast. |
 | Accept | On `y`, writes the pin, sends `kdeconnect.pair` with `pair: true`, creates the session and runs `on_connect`. The log shows `pairing pin written` and `pairing accepted`. | The peer marks Handfast as paired. A ping from either side arrives. |
@@ -89,7 +89,7 @@ The fingerprint is public. The private key never appears in a log.
 7. Type `y` and press Enter.
 8. Confirm the phone shows Handfast as paired and a ping from the phone reaches
    the Handfast log as `plugin events` with `Ping`.
-9. Confirm the Handfast debug log shows `version=TLSv1_2` for this link.
+9. Confirm the Handfast debug log shows `version=Some(TLSv1_2)` for this link.
 10. Stop and restart `handfastd` with the same `--data-dir`. Confirm the
     fingerprint is unchanged and the phone reconnects without a new prompt.
 11. Send a ping from Handfast by using a paired peer action if the peer UI
@@ -105,7 +105,7 @@ The fingerprint is public. The private key never appears in a log.
 5. Confirm the Handfast prompt shows the desktop name, device ID and
    fingerprint, and that the desktop certificate CN equals its device ID.
 6. Accept on Handfast. Confirm the desktop shows Handfast as paired and that
-   `version=TLSv1_3` appears when the desktop offers TLS 1.3.
+   `version=Some(TLSv1_3)` appears when the desktop offers TLS 1.3.
 7. Restart Handfast and confirm the desktop reconnects with the same
    fingerprint and no new prompt.
 8. If the desktop presents an RSA certificate, confirm the handshake still
