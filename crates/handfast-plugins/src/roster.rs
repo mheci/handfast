@@ -308,9 +308,9 @@ pub const SMS: PluginMeta = PluginMeta {
 pub const SYSTEMVOLUME: PluginMeta = PluginMeta {
     name: "systemvolume",
     title: "Receive volume controls",
-    status: PLANNED,
-    incoming: &[types::SYSTEMVOLUME_REQUEST],
-    outgoing: &[types::SYSTEMVOLUME],
+    status: IMPLEMENTED,
+    incoming: &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST],
+    outgoing: &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST],
     desktop: DesktopRequirement::Volume,
 };
 

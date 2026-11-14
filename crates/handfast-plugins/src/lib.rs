@@ -16,6 +16,7 @@ pub mod pausemusic;
 pub mod ping;
 pub mod roster;
 pub mod share;
+pub mod systemvolume;
 
 use handfast_runtime::{PluginMeta, Registry};
 
@@ -28,6 +29,7 @@ pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
 pub use share::{ShareFactory, SharePlugin};
+pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
 
 /// Build the registry of implemented plugins.
 #[must_use]
@@ -42,6 +44,7 @@ pub fn registry() -> Registry {
         Box::new(mpriscontrol::MprisControlFactory),
         Box::new(notifications::NotificationsFactory),
         Box::new(findthisdevice::FindThisDeviceFactory),
+        Box::new(systemvolume::SystemVolumeFactory),
     ])
 }
 
