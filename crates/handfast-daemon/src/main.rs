@@ -17,11 +17,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use clap::Parser;
 use handfast_daemon::control::{ControlResponse, ControlServer, DaemonCommand};
 use handfast_daemon::default_data_dir;
-use handfast_desktop::Desktop;
+use handfast_desktop::{default_incoming_dir, Desktop, Files, LocalFiles};
 use handfast_net::{
     Discovery, Fingerprint, LinkEvent, LinkHandle, LinkLimits, LinkListener, LinkManager,
-    LinkManagerHandle, LocalEndpoint, PayloadLimits, PayloadService, PeerCertificate, PendingLink,
-    ShareEvent, TrustTable, SHARE_EVENT_QUEUE,
+    LinkManagerHandle, LocalEndpoint, PayloadService, PeerCertificate, PendingLink, ShareEvent,
+    TrustTable,
 };
 use handfast_plugins::registry;
 use handfast_proto::{
@@ -34,11 +34,13 @@ use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
 mod identity;
+mod limits;
 mod pairing;
 mod redact;
 mod session;
 
-use session::{DaemonEvent, DeviceSession, TransferSetup};
+use limits::{ShareLimits, STALE_TEMP_AGE};
+use session::{DaemonEvent, DeviceSession, SessionLimits, TransferSetup};
 
 /// How often to announce this device over UDP discovery.
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
@@ -62,6 +64,11 @@ struct Args {
     /// State directory. Defaults to the platform data directory.
     #[arg(long)]
     data_dir: Option<PathBuf>,
+
+    /// Incoming directory for received files. Defaults to the platform
+    /// Downloads path.
+    #[arg(long)]
+    incoming_dir: Option<PathBuf>,
 
     /// TCP control port, in the KDE Connect range 1716-1764.
     #[arg(long, default_value = "1716", value_parser = parse_tcp_port)]
@@ -139,10 +146,6 @@ async fn run() -> Result<(), Box<dyn Error>> {
     // The listener is bound before discovery announces, so the announced port
     // is always one this process owns.
     let tls = Arc::new(identity::load_or_generate_tls_identity(&store, &device_id)?);
-    let payloads = Arc::new(PayloadService::new(
-        Arc::clone(&tls),
-        PayloadLimits::default(),
-    ));
     tracing::info!(
         fingerprint = %tls.fingerprint().to_hex(),
         "TLS identity loaded"
@@ -156,6 +159,27 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .into());
     }
     tracing::info!(tcp_port, "TCP listener bound");
+
+    // The share path is composed before the identity is built, so the running
+    // daemon advertises share. The print branch above keeps the default desktop
+    // and creates nothing on disk.
+    let limits = ShareLimits::default();
+    let incoming_dir = args.incoming_dir.unwrap_or_else(default_incoming_dir);
+    let files = Arc::new(LocalFiles::new(&incoming_dir, limits.files())?);
+    let swept = files.sweep_stale(STALE_TEMP_AGE).await?;
+    tracing::info!(
+        removed = swept.removed,
+        dir = %incoming_dir.display(),
+        "incoming directory ready"
+    );
+    let desktop = Desktop {
+        files: Some(Arc::clone(&files) as Arc<dyn Files>),
+        ..Desktop::default()
+    };
+    let capabilities = registry.capabilities(&desktop)?;
+
+    // One TLS identity serves the control links and the payload connections.
+    let payloads = Arc::new(PayloadService::new(Arc::clone(&tls), limits.payloads()));
 
     let identity = Identity::new(
         device_id,
@@ -171,7 +195,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         trust.set(DeviceId::new(id)?, Fingerprint::from_bytes(pin));
     }
     let (link_tx, mut link_rx) = mpsc::channel(LINK_EVENT_QUEUE);
-    let (share_tx, mut share_rx) = mpsc::channel(SHARE_EVENT_QUEUE);
+    let (share_tx, mut share_rx) = mpsc::channel(limits.share_event_queue);
     let (links, manager_task) = LinkManager::start(
         listener,
         local,
@@ -253,6 +277,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         desktop,
         links,
         payloads,
+        limits,
         events: daemon_tx,
         sessions: HashMap::new(),
         pending: HashMap::new(),
@@ -311,10 +336,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
     // Dropping the receivers before shutdown keeps a full event queue from
     // stalling the manager while it closes links. The control server stops
     // accepting before sessions stop, so no command starts mid-shutdown.
-    drop(link_rx);
     drop(share_rx);
-    drop(daemon_rx);
     drop(command_rx);
+    drop(link_rx);
+    drop(daemon_rx);
     control.shutdown().await;
     daemon
         .shutdown(discovery_stop, discovery_task, manager_task)
@@ -328,6 +353,7 @@ struct Daemon {
     desktop: Desktop,
     links: LinkManagerHandle,
     payloads: Arc<PayloadService>,
+    limits: ShareLimits,
     events: mpsc::Sender<DaemonEvent>,
     sessions: HashMap<DeviceId, DeviceSession>,
     pending: HashMap<DeviceId, PendingLink>,
@@ -347,6 +373,10 @@ impl Daemon {
         remote_addr: SocketAddr,
         certificate: PeerCertificate,
     ) -> DeviceSession {
+        let session_limits = SessionLimits {
+            delivery_timeout: self.limits.share_delivery_timeout,
+            max_queued_receives: self.limits.max_queued_receives,
+        };
         if self.desktop.files.is_some() {
             DeviceSession::start_with_transfers(
                 peer,
@@ -358,6 +388,7 @@ impl Daemon {
                     remote_addr,
                     certificate,
                     payloads: Arc::clone(&self.payloads),
+                    limits: session_limits,
                 },
             )
         } else {
@@ -367,6 +398,7 @@ impl Daemon {
                 Arc::clone(&self.registry),
                 self.desktop.clone(),
                 self.events.clone(),
+                session_limits,
             )
         }
     }

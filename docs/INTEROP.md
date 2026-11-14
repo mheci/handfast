@@ -161,17 +161,10 @@ Until this run passes, P1 is not done even when every CI check is green.
 
 ## Share and file transfer
 
-This is the P1 share exit gate. Run it after the share units in
-`docs/design/p1-share-file.md` land. CI proves the parser, the save policy and
-the independent testkit payload peer. It cannot prove that the official clients
+This is the P1 share exit gate. CI proves the parser, the save policy and the
+independent testkit payload peer. It cannot prove that the official clients
 accept Handfast's share packets and payload TLS. The run is manual and is not
 replaced by CI.
-
-Dependency note. Not every share unit has merged. The inbound checks need the
-daemon to compose the share path and its `--incoming-dir` flag. The outbound
-checks also need the `hfctl` control client. Record a step as blocked while its
-binary or flag is absent. A blocked step is not a pass. Delete this note once the
-daemon composes the share path and `hfctl` has merged.
 
 ### Prerequisites
 
@@ -237,10 +230,6 @@ sweeps only that directory.
    and no file is partial.
 
 ### Handfast to a real client
-
-Blocked until units 10 and 11 land. These steps need the `hfctl` binary and its
-`share` command from unit 10, and the daemon composition from unit 11, both in
-`docs/design/p1-share-file.md`.
 
 1. Start `handfastd` with the same `--data-dir`.
 2. Run `hfctl share --device <peer-id> /path/to/file`.

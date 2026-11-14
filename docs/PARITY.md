@@ -38,7 +38,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 22 | `screensaver-inhibit` | connection state | none (uses link state) | logind DBus | P2 | no | no | no |
 | 23 | `sendnotifications` | desktop -> phone | `kdeconnect.notification`, `.notification.request` | freedesktop notifications DBus | P2 | no | no | no |
 | 24 | `sftp` | phone -> desktop | `kdeconnect.sftp`, `.sftp.request` | embedded Rust SFTP server | P3 | no | no | no |
-| 25 | `share` | bidirectional | `kdeconnect.share.request`, `.share.request.update` | TCP payload channel + filesystem | P1 | no | no | no |
+| 25 | `share` | bidirectional | `kdeconnect.share.request`, `.share.request.update` | TCP payload channel + filesystem | P1 | yes | no | no |
 | 26 | `shareinputdevices` | desktop -> remote | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input capture + forwarding | P4 | no | no | no |
 | 27 | `shareinputdevicesremote` | remote -> desktop | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input injection | P4 | no | no | no |
 | 28 | `sms` | bidirectional | `kdeconnect.sms.messages`, `.sms.request`, `.sms.request_conversation`, `.sms.request_conversations`, `.sms.request_attachment`, `.sms.attachment_file` | phone-owned data, desktop UI | P2 | no | no | no |

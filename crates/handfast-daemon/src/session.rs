@@ -31,12 +31,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// blocking the daemon event loop.
 const SESSION_QUEUE: usize = 64;
 
-/// How long a share packet waits for room in the session queue.
-const SHARE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// How many eager receives one peer may queue behind the active transfer.
-const MAX_QUEUED_RECEIVES: usize = 8;
-
 /// Progress updates buffered between the payload service and the event sender.
 const PROGRESS_QUEUE: usize = 8;
 
@@ -72,6 +66,24 @@ pub enum DaemonEvent {
     },
 }
 
+/// Queue bounds for one session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionLimits {
+    /// How long a share packet waits for room in the session queue.
+    pub delivery_timeout: Duration,
+    /// How many eager receives one peer may queue behind the active transfer.
+    pub max_queued_receives: usize,
+}
+
+impl Default for SessionLimits {
+    fn default() -> Self {
+        Self {
+            delivery_timeout: Duration::from_secs(2),
+            max_queued_receives: 8,
+        }
+    }
+}
+
 /// Payload inputs for one session with a transfer runner.
 pub struct TransferSetup {
     /// Authenticated control link address. The payload dials this IP.
@@ -80,6 +92,8 @@ pub struct TransferSetup {
     pub certificate: PeerCertificate,
     /// Shared payload byte mover.
     pub payloads: Arc<PayloadService>,
+    /// Session queue bounds.
+    pub limits: SessionLimits,
 }
 
 /// A running session and its handle.
@@ -96,8 +110,9 @@ impl DeviceSession {
         registry: Arc<Registry>,
         desktop: Desktop,
         events: mpsc::Sender<DaemonEvent>,
+        limits: SessionLimits,
     ) -> Self {
-        Self::start_inner(peer, link, registry, desktop, events, None)
+        Self::start_inner(peer, link, registry, desktop, events, limits, None)
     }
 
     /// Start a session with the share transfer runner.
@@ -121,10 +136,11 @@ impl DeviceSession {
             },
             files,
             payloads: setup.payloads,
+            max_queued_receives: setup.limits.max_queued_receives,
             #[cfg(test)]
             connects: Arc::new(AtomicUsize::new(0)),
         });
-        Self::start_inner(peer, link, registry, desktop, events, deps)
+        Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps)
     }
 
     /// Start a session and return the connect-completion probe. Test only.
@@ -146,10 +162,11 @@ impl DeviceSession {
             },
             files,
             payloads: setup.payloads,
+            max_queued_receives: setup.limits.max_queued_receives,
             connects: Arc::clone(&connects),
         });
         (
-            Self::start_inner(peer, link, registry, desktop, events, deps),
+            Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps),
             connects,
         )
     }
@@ -160,12 +177,13 @@ impl DeviceSession {
         registry: Arc<Registry>,
         desktop: Desktop,
         events: mpsc::Sender<DaemonEvent>,
+        limits: SessionLimits,
         deps: Option<TransferDeps>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(SESSION_QUEUE);
         let handle = SessionHandle {
             tx,
-            delivery_timeout: SHARE_DELIVERY_TIMEOUT,
+            delivery_timeout: limits.delivery_timeout,
         };
         let task = tokio::spawn(run(peer, link, registry, desktop, events, rx, deps));
         Self { task, handle }
@@ -393,6 +411,7 @@ struct TransferDeps {
     peer: PayloadPeer,
     files: Arc<dyn Files>,
     payloads: Arc<PayloadService>,
+    max_queued_receives: usize,
     #[cfg(test)]
     connects: Arc<AtomicUsize>,
 }
@@ -443,6 +462,7 @@ struct TransferRunner {
     connects: JoinSet<ConnectResult>,
     sends: JoinSet<()>,
     next_id: u64,
+    max_queued_receives: usize,
     #[cfg(test)]
     connects_completed: Arc<AtomicUsize>,
 }
@@ -455,6 +475,7 @@ impl TransferRunner {
             peer,
             files,
             payloads,
+            max_queued_receives,
             ..
         } = deps;
         Self {
@@ -468,6 +489,7 @@ impl TransferRunner {
             connects: JoinSet::new(),
             sends: JoinSet::new(),
             next_id: 1,
+            max_queued_receives,
             #[cfg(test)]
             connects_completed,
         }
@@ -480,10 +502,10 @@ impl TransferRunner {
     }
 
     async fn enqueue(&mut self, transfer: Transfer) {
-        if self.slots.len() >= MAX_QUEUED_RECEIVES {
+        if self.slots.len() >= self.max_queued_receives {
             tracing::warn!(
                 device_id = %self.peer.device_id,
-                max = MAX_QUEUED_RECEIVES,
+                max = self.max_queued_receives,
                 "receive queue full"
             );
             emit(
@@ -491,7 +513,7 @@ impl TransferRunner {
                 &self.peer.device_id,
                 PluginEvent::ShareFailed {
                     transfer_id: 0,
-                    reason: format!("receive queue full (max {MAX_QUEUED_RECEIVES})"),
+                    reason: format!("receive queue full (max {})", self.max_queued_receives),
                 },
             )
             .await;
@@ -1255,6 +1277,7 @@ mod tests {
                 remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
                 certificate: PeerCertificate::parse(certificate).expect("parse the certificate"),
                 payloads,
+                limits: SessionLimits::default(),
             },
         );
         (session, events_rx, link_rx)
@@ -1283,6 +1306,7 @@ mod tests {
                 remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
                 certificate: PeerCertificate::parse(certificate).expect("parse the certificate"),
                 payloads,
+                limits: SessionLimits::default(),
             },
         );
         (session, events_rx, link_rx, probe)
@@ -1415,7 +1439,14 @@ mod tests {
         let (link_tx, mut link_rx) = mpsc::channel(8);
         let link = LinkHandle::from_channel(device_id.clone(), link_tx);
         let (events_tx, mut events_rx) = mpsc::channel(8);
-        let session = DeviceSession::start(peer, link, registry, Desktop::default(), events_tx);
+        let session = DeviceSession::start(
+            peer,
+            link,
+            registry,
+            Desktop::default(),
+            events_tx,
+            SessionLimits::default(),
+        );
 
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -1759,7 +1790,7 @@ mod tests {
             .await
             .expect("queue the active file");
         wait_for_temp(&desktop).await;
-        for index in 0..MAX_QUEUED_RECEIVES {
+        for index in 0..SessionLimits::default().max_queued_receives {
             session
                 .handle()
                 .deliver_share(file_packet(&format!("queued-{index}.bin"), 1, queued_port))
@@ -1790,7 +1821,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(SESSION_QUEUE);
         let handle = SessionHandle {
             tx,
-            delivery_timeout: SHARE_DELIVERY_TIMEOUT,
+            delivery_timeout: SessionLimits::default().delivery_timeout,
         };
         for _ in 0..SESSION_QUEUE {
             handle.deliver(Packet::empty(types::PING).expect("a valid empty ping"));
@@ -2133,7 +2164,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(SESSION_QUEUE);
         let handle = SessionHandle {
             tx,
-            delivery_timeout: SHARE_DELIVERY_TIMEOUT,
+            delivery_timeout: SessionLimits::default().delivery_timeout,
         };
         for _ in 0..SESSION_QUEUE {
             handle.deliver(Packet::empty(types::PING).expect("a valid empty ping"));
@@ -2170,6 +2201,7 @@ mod tests {
             Arc::new(registry()),
             Desktop::default(),
             events,
+            SessionLimits::default(),
         );
 
         let error = session
