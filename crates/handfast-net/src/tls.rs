@@ -22,10 +22,14 @@ use rustls::{
 use crate::error::TlsError;
 use crate::identity::TlsIdentity;
 
-// shortcut: the parsed EcdsaKeyPair rustls keeps for the config lifetime is
-// not zeroized on drop in ring 0.17; the PKCS#8 copy passed to rustls is
-// zeroized by its ring key provider after parsing. Upgrade when rustls or ring
-// zeroizes a loaded signing key, or when the configs are rebuilt per handshake.
+// shortcut: the parsed EcdsaKeyPair rustls keeps for a config is not
+// zeroized on drop in ring 0.17; the PKCS#8 copy passed to rustls is
+// zeroized by its ring key provider after parsing. The per-handshake config
+// rebuild bounds that copy's exposure. rcgen 0.14 KeyPair::generate and
+// KeyPair::try_from also keep a serialized DER and a parsed ring key
+// unzeroized under the crypto and ring features. Upgrade when ring or rcgen
+// zeroizes a parsed key; rcgen's zeroize feature clears only the serialized
+// DER.
 
 /// TLS 1.3 first so a peer that offers both negotiates 1.3. TLS 1.2 stays for
 /// the official Android client, whose `SSLContext` caps it at 1.2.
