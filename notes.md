@@ -69,11 +69,12 @@ TLS implementation sequence:
 
 P1 security follow-ups:
 
-- Windows state-file ACLs remain the P1 release blocker; the exact API and test are in `docs/ARCHITECTURE.md`.
-- Windows incoming-file ACLs for `~/Downloads/Handfast` and its temp directory.
-- The store record's private-key copy is not zeroized; the long-lived `TlsIdentity` copy is.
-- Add unpair and accept-rollback regression tests and a positive control in the self-announce test.
-- Fix the small doc nits: 1714 versus 1716, the interop log format, and stale zeroization notes.
+- `TlsIdentity::from_parts` drops its key argument unzeroized on validation error paths, and `tls.rs` makes transient key copies for the rustls configs. The store buffer is fixed; these remain.
+- A serde decode error can drop a partial key Vec inside `serde_json`. A custom deserializer would be needed.
+- The Windows pipe and state DACLs are shape-tested. The second-local-user rejection remains manual.
+- `LocalFiles::new` resets an existing root's DACL. Documented, but visible to a user who shares that folder.
+- The workspace `unsafe_code = deny` is still inert in crates that do not opt in. The daemon and desktop now have local policies.
+- The real Android and desktop interop run is still manual.
 
 Active parallel wave:
 
@@ -110,13 +111,29 @@ Comment review follow-ups:
 - The MPRIS per-player failure path and the systemvolume volume-only mute behavior are untested or differ from upstream. Park for the backend units.
 - The notifications plugin roster narrowing and the Windows ACL comment fixes are in flight.
 
+Hardening wave:
+
+- Manager close and drop diagnostics: `ses_e262a03d8ffdXraWAF7T9rQDp3`.
+- Payload progress and chunk overhead: `ses_e262a03d6ffe2SJn27uyVSGBwf`.
+- Link frame write buffers: `ses_e262a03d2ffd2oqU3bRmLfNO2u`.
+- Store transient key zeroization: PR [#219](https://github.com/mheci/handfast/pull/219), head `8454326`, verifier `ses_e2618ebf3ffeECnbhtbf01GMZ3` running.
+- Redaction single-pass: `ses_e262a03cbffe57J21XkW1RETO2`.
+- Clipboard empty selection and builders: `ses_e262a03c9ffeNE4BLUw9pB7yXF`.
+- Notifications D-Bus close: `ses_e26278ce9ffd7SnSgBuGIlvuc3`.
+- System backends: `ses_e26278ce8ffeSU7pvCOorbBpmp`.
+- MPRIS backend: `ses_e26278ce3ffeQzKfayH5KhTTZp`.
+- Input plugin batch: `ses_e26278cdeffejYcgyAmJV3QruY`.
+- Testkit and fuzz hardening: `ses_e26278cddffeoDwT06aje15277`.
+- Interop harness: `ses_e26278cdcffe1aqsAUjONFO0LU`.
+
 Wave rules:
 
-- Each PR still gets one owner and one independent verifier at the current head.
-- The plugin and backend PRs will conflict on `lib.rs`, `roster.rs`, `backends/mod.rs`, `Cargo.toml` and `Cargo.lock`. Owners rebase and keep all implemented modules.
-- The coordinator merges the critical path first: unit 4, then 5 and 7, then 6, then 8. Independent plugin and backend PRs merge in any order after a pass.
-- Unit 6 starts as soon as unit 5 merges. Unit 8 starts as soon as units 4, 5, 6 and 7 merge.
-- Verifiers fan out as PRs appear, which keeps 16 or more agents active without two owners on the same files.
+- One owner per PR, one independent verifier at the current head.
+- Unit 11 has priority. It touches `main.rs`, the daemon tests and the docs; the hardening owners avoid those files.
+- Desktop backend PRs conflict on `backends/mod.rs`, `lib.rs` and `Cargo.toml`. Owners rebase and keep every module.
+- The input plugin batch is the only plugin owner, so roster conflicts are limited.
+- Merge order: unit 11, then net, store and daemon fixes, then desktop backends, then plugins, testkit and scripts.
+- Every owner pushes early and lets CI find compile errors because the host cannot link.
 
 Share design decisions:
 
