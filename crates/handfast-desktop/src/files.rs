@@ -6,6 +6,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -29,6 +31,27 @@ pub struct IncomingRequest {
     pub open: bool,
 }
 
+#[derive(Debug)]
+struct Reservation {
+    counter: Arc<AtomicU64>,
+    bytes: u64,
+}
+
+impl Reservation {
+    fn release(&mut self) {
+        let bytes = std::mem::take(&mut self.bytes);
+        if bytes > 0 {
+            self.counter.fetch_sub(bytes, Ordering::AcqRel);
+        }
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 /// An open temp file that becomes the final file on [`commit`](IncomingFile::commit).
 pub struct IncomingFile {
     root: PathBuf,
@@ -36,6 +59,7 @@ pub struct IncomingFile {
     name: String,
     limits: FileLimits,
     file: Option<tokio::fs::File>,
+    reservation: Reservation,
     #[cfg(test)]
     strategy: CommitStrategy,
 }
@@ -82,6 +106,7 @@ impl IncomingFile {
                 Ok(()) => {
                     remove_temp(&self.temp_path).await;
                     sync_root(&self.root).await;
+                    self.reservation.release();
                     return Ok(destination);
                 }
                 Err(CommitError::Exists) => {
@@ -105,6 +130,7 @@ impl IncomingFile {
     pub async fn abort(mut self) {
         drop(self.file.take());
         remove_temp(&self.temp_path).await;
+        self.reservation.release();
     }
 }
 
@@ -114,6 +140,7 @@ impl Drop for IncomingFile {
         // A committed file already removed the temp, so NotFound is expected.
         // shortcut: a blocking remove in Drop can stall an async worker; queue it for the sweep if that path gets hot.
         let _ = std::fs::remove_file(&self.temp_path);
+        self.reservation.release();
     }
 }
 
@@ -274,6 +301,8 @@ pub struct LocalFiles {
     root: PathBuf,
     temp_dir: PathBuf,
     limits: FileLimits,
+    reserved: Arc<AtomicU64>,
+    space_gate: tokio::sync::Mutex<()>,
     #[cfg(test)]
     strategy: CommitStrategy,
 }
@@ -302,6 +331,8 @@ impl LocalFiles {
             root,
             temp_dir,
             limits,
+            reserved: Arc::new(AtomicU64::new(0)),
+            space_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             strategy: CommitStrategy::HardLink,
         })
@@ -349,33 +380,55 @@ impl LocalFiles {
         )))
     }
 
-    async fn reserve_space(&self, size: Option<u64>) -> Result<(), FilesError> {
+    async fn reserve_space(&self, size: Option<u64>) -> Result<Reservation, FilesError> {
+        // Serialize the free-space check and the counter update, so two
+        // concurrent opens cannot both pass against the same free space.
+        let _gate = self.space_gate.lock().await;
         // fs4 has no async API; the statvfs/GetDiskFreeSpace call runs off the
         // runtime thread.
         let temp_dir = self.temp_dir.clone();
         let available = tokio::task::spawn_blocking(move || fs4::available_space(&temp_dir))
             .await
             .map_err(io::Error::other)??;
-        let needed = match size {
-            Some(declared) => declared
-                .checked_add(self.limits.max_extra)
-                .and_then(|value| value.checked_add(self.limits.min_free_space)),
-            None => self
-                .limits
-                .max_file_size
-                .checked_add(self.limits.min_free_space),
-        };
-        let Some(needed) = needed else {
-            return Err(FilesError::NoSpace {
-                needed: u64::MAX,
-                available,
-            });
-        };
-        if available < needed {
-            return Err(FilesError::NoSpace { needed, available });
-        }
-        Ok(())
+        let reserved = self.reserved.load(Ordering::Acquire);
+        let bytes = claimable_bytes(size, self.limits, reserved, available)?;
+        self.reserved.fetch_add(bytes, Ordering::AcqRel);
+        Ok(Reservation {
+            counter: Arc::clone(&self.reserved),
+            bytes,
+        })
     }
+}
+
+fn claimable_bytes(
+    size: Option<u64>,
+    limits: FileLimits,
+    reserved: u64,
+    available: u64,
+) -> Result<u64, FilesError> {
+    let bytes = match size {
+        Some(declared) => declared.checked_add(limits.max_extra),
+        None => Some(limits.max_file_size),
+    };
+    let Some(bytes) = bytes else {
+        return Err(FilesError::NoSpace {
+            needed: u64::MAX,
+            available,
+        });
+    };
+    let Some(needed) = bytes
+        .checked_add(limits.min_free_space)
+        .and_then(|total| total.checked_add(reserved))
+    else {
+        return Err(FilesError::NoSpace {
+            needed: u64::MAX,
+            available,
+        });
+    };
+    if available < needed {
+        return Err(FilesError::NoSpace { needed, available });
+    }
+    Ok(bytes)
 }
 
 #[async_trait]
@@ -389,7 +442,7 @@ impl Files for LocalFiles {
                 });
             }
         }
-        self.reserve_space(request.size).await?;
+        let reservation = self.reserve_space(request.size).await?;
 
         let name = sanitize_filename(request.filename.as_deref().unwrap_or_default(), self.limits);
         let (temp_path, file) = self.create_temp().await?;
@@ -399,6 +452,7 @@ impl Files for LocalFiles {
             name,
             limits: self.limits,
             file: Some(file),
+            reservation,
             #[cfg(test)]
             strategy: self.strategy,
         })
@@ -864,6 +918,10 @@ mod tests {
         LocalFiles::with_strategy(dir.path().join("incoming"), limits(), strategy).unwrap()
     }
 
+    fn reserved(files: &LocalFiles) -> u64 {
+        files.reserved.load(Ordering::Acquire)
+    }
+
     async fn commit_bytes(
         files: &LocalFiles,
         name: &str,
@@ -1212,6 +1270,93 @@ mod tests {
 
         assert!(!temp_path.exists());
         assert!(!files.root().join("partial.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn reservations_return_to_zero_after_commit_and_abort() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = files(&dir, CommitStrategy::HardLink);
+        let extra = limits().max_extra;
+
+        let mut incoming = files
+            .open_incoming(IncomingRequest {
+                filename: Some("commit.bin".to_string()),
+                size: Some(5),
+                open: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(reserved(&files), 5 + extra);
+        incoming.writer().write_all(b"hello").await.unwrap();
+        incoming.commit().await.unwrap();
+        assert_eq!(reserved(&files), 0);
+
+        let mut incoming = files
+            .open_incoming(IncomingRequest {
+                filename: Some("abort.bin".to_string()),
+                size: Some(7),
+                open: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(reserved(&files), 7 + extra);
+        incoming.writer().write_all(b"partial").await.unwrap();
+        incoming.abort().await;
+        assert_eq!(reserved(&files), 0);
+
+        let incoming = files
+            .open_incoming(IncomingRequest {
+                filename: Some("drop.bin".to_string()),
+                size: Some(3),
+                open: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(reserved(&files), 3 + extra);
+        drop(incoming);
+        assert_eq!(reserved(&files), 0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_open_releases_its_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = files(&dir, CommitStrategy::HardLink);
+        std::fs::remove_dir(files.temp_dir()).unwrap();
+        std::fs::write(files.temp_dir(), b"blocked").unwrap();
+
+        let error = files
+            .open_incoming(IncomingRequest {
+                filename: Some("blocked.bin".to_string()),
+                size: Some(1),
+                open: false,
+            })
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(error, FilesError::Io(_)));
+        assert_eq!(reserved(&files), 0);
+    }
+
+    #[test]
+    fn a_second_reservation_that_only_fits_alone_is_rejected() {
+        let limits = FileLimits {
+            max_extra: 0,
+            min_free_space: 0,
+            ..limits()
+        };
+        let first = claimable_bytes(Some(60), limits, 0, 100).unwrap();
+        assert_eq!(first, 60);
+
+        let error = claimable_bytes(Some(60), limits, first, 100).unwrap_err();
+        assert!(matches!(
+            error,
+            FilesError::NoSpace {
+                needed: 120,
+                available: 100
+            }
+        ));
+
+        assert_eq!(claimable_bytes(Some(60), limits, 0, 100).unwrap(), 60);
     }
 
     #[tokio::test]
