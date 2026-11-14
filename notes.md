@@ -81,7 +81,7 @@ Active parallel wave:
 - Unit 5 runtime transfer: merged in `578e156`.
 - Unit 6 share plugin: PR [#212](https://github.com/mheci/handfast/pull/212), head `9a9f824`, verifier PASS, owner merging.
 - Unit 7 manager share routing: PR [#213](https://github.com/mheci/handfast/pull/213), head `9b6c479`, verifier running.
-- Windows ACLs: PR [#210](https://github.com/mheci/handfast/pull/210), head `6b0090e`, checks running after the README and comment fix.
+- Windows ACLs: PR [#210](https://github.com/mheci/handfast/pull/210), head `f5dcd5f`, re-verifying after the README and ACE-flag fixes.
 - P1 hardening: PR [#211](https://github.com/mheci/handfast/pull/211), head `c88cc33`, verifier FAIL on a vacuous zeroize test, owner fixing.
 - Share docs and fuzz: merged in `c36802a`.
 - Connectivity report plugin: merged in `b74f2d8`.
