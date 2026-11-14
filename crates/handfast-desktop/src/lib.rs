@@ -5,6 +5,7 @@
 
 #![deny(missing_docs)]
 
+pub mod backends;
 pub mod error;
 pub mod files;
 pub mod mock;
@@ -20,7 +21,8 @@ pub use files::{
 };
 pub use mock::MockDesktop;
 pub use model::{
-    KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerEvent, VolumeState,
+    KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerEvent, Urgency,
+    VolumeState,
 };
 pub use traits::{Clipboard, Input, Media, Notifier, Screensaver, Shell, Volume};
 
@@ -75,6 +77,13 @@ impl std::fmt::Debug for Desktop {
 }
 
 impl Desktop {
+    /// Install a notification adapter.
+    #[must_use]
+    pub fn with_notifier(mut self, notifier: Arc<dyn Notifier>) -> Self {
+        self.notifier = Some(notifier);
+        self
+    }
+
     /// Report which adapters are present.
     #[must_use]
     pub fn capabilities(&self) -> DesktopCapabilities {

@@ -2,6 +2,19 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Notification urgency, as understood by desktop notification daemons.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Urgency {
+    /// Low urgency.
+    Low,
+    /// Normal urgency.
+    #[default]
+    Normal,
+    /// Critical urgency.
+    Critical,
+}
+
 /// A desktop notification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
@@ -15,6 +28,9 @@ pub struct Notification {
     pub id: Option<String>,
     /// Reply ID for repliable notifications.
     pub reply_id: Option<String>,
+    /// Notification urgency.
+    #[serde(default)]
+    pub urgency: Urgency,
 }
 
 impl Notification {
@@ -31,6 +47,7 @@ impl Notification {
             text: text.into(),
             id: None,
             reply_id: None,
+            urgency: Urgency::Normal,
         }
     }
 }
