@@ -4,18 +4,19 @@
 //! peer table and the active links. Discovery sightings and trust updates are
 //! commands. Handshake tasks report back, link tasks forward frames, and the
 //! manager alone decides which frames pass the gate. Connection and pairing
-//! events are sent with backpressure; packet events use `try_send`. Share
-//! requests travel on a dedicated reliable channel; a full or closed share
-//! channel closes the link instead of dropping the request.
+//! events are sent with backpressure; packet events use `try_send`. A dropped
+//! packet is counted and logged with its device and type. Share requests travel
+//! on a dedicated reliable channel; a full or closed share channel closes the
+//! link instead of dropping the request.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use handfast_proto::{types, DeviceId, Identity, Packet, PairingRequest};
 use tokio::sync::{mpsc, oneshot, watch, Semaphore};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 use tracing::{debug, info, warn};
 
 use crate::error::{NetError, Result, TlsError};
@@ -227,8 +228,10 @@ impl LinkManagerHandle {
     /// pairing.
     ///
     /// Used when a share packet cannot be delivered to the session. The link
-    /// task emits [`LinkEvent::Disconnected`] with the close reason. Closing a
-    /// device with no installed link is a no-op.
+    /// task emits [`LinkEvent::Disconnected`] with the close reason. An
+    /// outbound dial still in handshake is aborted and its admission permit
+    /// released. Closing a device with no installed link and no pending dial is
+    /// a no-op.
     ///
     /// # Errors
     ///
@@ -300,9 +303,11 @@ impl LinkManager {
             messages,
             peers: HashMap::new(),
             active: HashMap::new(),
-            pending_outbound: HashSet::new(),
+            pending_outbound: HashMap::new(),
             generation: 0,
+            dial_generation: 0,
             pending_slots,
+            dropped_packets: 0,
         };
         let task = tokio::spawn(async move {
             state
@@ -332,10 +337,11 @@ enum ManagerCommand {
 enum ManagerMessage {
     HandshakeFinished {
         expected: Option<DeviceId>,
+        dial: Option<u64>,
         result: Box<Result<Link>>,
     },
     Inbound {
-        device_id: DeviceId,
+        device_id: Arc<DeviceId>,
         generation: u64,
         packet: Packet,
     },
@@ -382,6 +388,11 @@ struct PeerState {
     next_attempt: Instant,
 }
 
+struct PendingDial {
+    token: u64,
+    abort: AbortHandle,
+}
+
 struct ManagerState {
     tls: Arc<TlsIdentity>,
     local: Arc<LocalEndpoint>,
@@ -393,9 +404,11 @@ struct ManagerState {
     messages: mpsc::Sender<ManagerMessage>,
     peers: HashMap<DeviceId, PeerState>,
     active: HashMap<DeviceId, ActiveLink>,
-    pending_outbound: HashSet<DeviceId>,
+    pending_outbound: HashMap<DeviceId, PendingDial>,
     generation: u64,
+    dial_generation: u64,
     pending_slots: Arc<Semaphore>,
+    dropped_packets: u64,
 }
 
 impl ManagerState {
@@ -438,8 +451,8 @@ impl ManagerState {
                 }
                 message = messages.recv() => {
                     match message {
-                        Some(ManagerMessage::HandshakeFinished { expected, result }) => {
-                            self.handshake_finished(expected, *result, &mut link_tasks)
+                        Some(ManagerMessage::HandshakeFinished { expected, dial, result }) => {
+                            self.handshake_finished(expected, dial, *result, &mut link_tasks)
                                 .await;
                         }
                         Some(ManagerMessage::Inbound { device_id, generation, packet }) => {
@@ -484,6 +497,7 @@ impl ManagerState {
             let _ = messages
                 .send(ManagerMessage::HandshakeFinished {
                     expected: None,
+                    dial: None,
                     result: Box::new(result),
                 })
                 .await;
@@ -497,7 +511,7 @@ impl ManagerState {
         if !self.remember_peer(id.clone(), addr) {
             return;
         }
-        if self.active.contains_key(&id) || self.pending_outbound.contains(&id) {
+        if self.active.contains_key(&id) || self.pending_outbound.contains_key(&id) {
             return;
         }
         let now = Instant::now();
@@ -516,20 +530,24 @@ impl ManagerState {
                 return;
             }
         };
-        self.pending_outbound.insert(id.clone());
         let local = Arc::clone(&self.local);
         let limits = self.limits.clone();
         let messages = self.messages.clone();
-        let target = id;
-        handshakes.spawn(async move {
+        let target = id.clone();
+        let token = self.dial_generation;
+        self.dial_generation = self.dial_generation.wrapping_add(1);
+        let abort = handshakes.spawn(async move {
             let result = connect(addr, local.as_ref(), &target, trust, &limits, permit).await;
             let _ = messages
                 .send(ManagerMessage::HandshakeFinished {
                     expected: Some(target),
+                    dial: Some(token),
                     result: Box::new(result),
                 })
                 .await;
         });
+        self.pending_outbound
+            .insert(id, PendingDial { token, abort });
     }
 
     fn remember_peer(&mut self, id: DeviceId, addr: SocketAddr) -> bool {
@@ -571,11 +589,25 @@ impl ManagerState {
     async fn handshake_finished(
         &mut self,
         expected: Option<DeviceId>,
+        dial: Option<u64>,
         result: Result<Link>,
         link_tasks: &mut JoinSet<()>,
     ) {
-        if let Some(id) = &expected {
-            self.pending_outbound.remove(id);
+        let closed_while_dialing = match (&expected, dial) {
+            (Some(id), Some(token)) => {
+                let current = self.pending_outbound.get(id).map(|pending| pending.token);
+                if current == Some(token) {
+                    self.pending_outbound.remove(id);
+                    false
+                } else {
+                    true
+                }
+            }
+            _ => false,
+        };
+        if closed_while_dialing {
+            // `close` aborted this dial; a link that finished the race is dropped.
+            return;
         }
         match result {
             Ok(link) => {
@@ -610,9 +642,9 @@ impl ManagerState {
         let remote_addr = peer.remote_addr;
         let identity = peer.identity;
         let certificate = peer.certificate;
-        let device_id = identity.device_id.clone();
+        let device_id = Arc::new(identity.device_id.clone());
 
-        if let Some(existing) = self.active.get(&device_id) {
+        if let Some(existing) = self.active.get(device_id.as_ref()) {
             if existing.certificate.der() != certificate.der() {
                 warn!(
                     %device_id,
@@ -624,8 +656,10 @@ impl ManagerState {
         }
 
         let fingerprint = certificate.fingerprint();
-        let paired =
-            matches!(self.trust.trust(&device_id), PeerTrust::Pinned(pin) if pin == fingerprint);
+        let paired = matches!(
+            self.trust.trust(device_id.as_ref()),
+            PeerTrust::Pinned(pin) if pin == fingerprint
+        );
         let permit = if paired {
             if permit.is_unpaired() {
                 drop(permit);
@@ -640,7 +674,7 @@ impl ManagerState {
             // unpaired now and must consume an unpaired slot.
             match self
                 .policy
-                .reserve_outgoing(&device_id, PeerTrust::Unpaired)
+                .reserve_outgoing(device_id.as_ref(), PeerTrust::Unpaired)
             {
                 Ok(permit) => Some(permit),
                 Err(error) => {
@@ -655,10 +689,10 @@ impl ManagerState {
             }
         };
 
-        if let Some(existing) = self.active.remove(&device_id) {
+        if let Some(existing) = self.active.remove(device_id.as_ref()) {
             existing.close("replaced");
             self.emit(LinkEvent::Disconnected {
-                device_id: device_id.clone(),
+                device_id: (*device_id).clone(),
                 reason: "replaced".to_string(),
             })
             .await;
@@ -670,11 +704,11 @@ impl ManagerState {
         let (outbound, outbound_rx) = mpsc::channel(LINK_OUTBOUND_QUEUE);
         let (control, control_rx) = watch::channel(LinkControl::Open);
         let handle = LinkHandle {
-            device_id: device_id.clone(),
+            device_id: (*device_id).clone(),
             tx: outbound,
         };
         self.active.insert(
-            device_id.clone(),
+            (*device_id).clone(),
             ActiveLink {
                 generation,
                 peer: identity.clone(),
@@ -697,7 +731,7 @@ impl ManagerState {
 
         let messages = self.messages.clone();
         link_tasks.spawn(run_link(
-            device_id,
+            Arc::clone(&device_id),
             generation,
             reader,
             writer,
@@ -707,7 +741,7 @@ impl ManagerState {
         ));
     }
 
-    async fn inbound(&mut self, device_id: DeviceId, generation: u64, packet: Packet) {
+    async fn inbound(&mut self, device_id: Arc<DeviceId>, generation: u64, packet: Packet) {
         enum GateAction {
             Pair(PairingRequest),
             Close(&'static str),
@@ -717,7 +751,7 @@ impl ManagerState {
         }
 
         let action = {
-            let Some(active) = self.active.get_mut(&device_id) else {
+            let Some(active) = self.active.get_mut(device_id.as_ref()) else {
                 return;
             };
             if active.generation != generation {
@@ -744,10 +778,10 @@ impl ManagerState {
 
         match action {
             GateAction::Pair(request) => {
-                let Some(active) = self.active.get(&device_id) else {
+                let Some(active) = self.active.get(device_id.as_ref()) else {
                     return;
                 };
-                let paired = matches!(self.trust.trust(&device_id), PeerTrust::Pinned(_));
+                let paired = matches!(self.trust.trust(device_id.as_ref()), PeerTrust::Pinned(_));
                 let event = LinkEvent::PairingRequest {
                     peer: active.peer.clone(),
                     request,
@@ -759,28 +793,42 @@ impl ManagerState {
             }
             GateAction::Close(reason) => {
                 warn!(%device_id, reason, "closing the link");
-                self.close_active(&device_id, reason);
+                self.close_active(device_id.as_ref(), reason);
             }
             GateAction::Deliver => {
-                let event = LinkEvent::Packet { device_id, packet };
+                let event = LinkEvent::Packet {
+                    device_id: (*device_id).clone(),
+                    packet,
+                };
                 if let Err(error) = self.events.try_send(event) {
-                    warn!(%error, "dropping a packet for a full event channel");
+                    let full = matches!(&error, mpsc::error::TrySendError::Full(_));
+                    // `try_send` hands the event back; only packet events use this path.
+                    if let LinkEvent::Packet { device_id, packet } = error.into_inner() {
+                        self.dropped_packets = self.dropped_packets.saturating_add(1);
+                        warn!(
+                            %device_id,
+                            ptype = %packet.ptype,
+                            dropped = self.dropped_packets,
+                            full,
+                            "dropping a packet from the lossy event channel"
+                        );
+                    }
                 }
             }
             GateAction::Share => {
                 let event = ShareEvent {
-                    device_id: device_id.clone(),
+                    device_id: (*device_id).clone(),
                     packet,
                 };
                 match self.share_events.try_send(event) {
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         warn!(%device_id, "closing the link: share event queue full");
-                        self.close_active(&device_id, "share event queue full");
+                        self.close_active(device_id.as_ref(), "share event queue full");
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         warn!(%device_id, "closing the link: share event receiver dropped");
-                        self.close_active(&device_id, "share event receiver dropped");
+                        self.close_active(device_id.as_ref(), "share event receiver dropped");
                     }
                 }
             }
@@ -838,7 +886,10 @@ impl ManagerState {
         Ok(())
     }
 
-    fn close(&self, id: DeviceId) -> Result<()> {
+    fn close(&mut self, id: DeviceId) -> Result<()> {
+        if let Some(dial) = self.pending_outbound.remove(&id) {
+            dial.abort.abort();
+        }
         self.close_active(&id, "closed by manager");
         Ok(())
     }
@@ -897,7 +948,7 @@ impl ManagerState {
 }
 
 async fn run_link(
-    device_id: DeviceId,
+    device_id: Arc<DeviceId>,
     generation: u64,
     mut reader: LinkReader,
     mut writer: LinkWriter,
@@ -912,7 +963,7 @@ async fn run_link(
                 match packet {
                     Ok(Some(packet)) => {
                         let message = ManagerMessage::Inbound {
-                            device_id: device_id.clone(),
+                            device_id: Arc::clone(&device_id),
                             generation,
                             packet,
                         };
@@ -949,7 +1000,7 @@ async fn run_link(
     writer.close().await;
     let _ = messages
         .send(ManagerMessage::LinkClosed {
-            device_id,
+            device_id: (*device_id).clone(),
             generation,
             reason,
         })
@@ -997,6 +1048,78 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_full_event_channel_counts_a_dropped_packet() {
+        let device_id = DeviceId::new("00112233445566778899aabbccddeeff").unwrap();
+        let tls = Arc::new(TlsIdentity::generate(device_id.clone()).unwrap());
+        let certificate = PeerCertificate::parse(tls.cert_der()).unwrap();
+        let identity = Identity::new(
+            device_id.clone(),
+            DeviceName::new("manager drop test"),
+            DeviceType::Desktop,
+            Capabilities::default(),
+            Some(1716),
+        );
+        let local = Arc::new(LocalEndpoint::new(Arc::clone(&tls), identity.clone()).unwrap());
+        let limits = LinkLimits::default();
+        let (events, mut events_rx) = mpsc::channel(1);
+        let (share_events, _share_events_rx) = mpsc::channel(1);
+        let (messages, _messages_rx) = mpsc::channel(1);
+        let (outbound, _outbound_rx) = mpsc::channel(1);
+        let (control, _control_rx) = watch::channel(LinkControl::Open);
+        let mut state = ManagerState {
+            tls,
+            local,
+            trust: TrustTable::default(),
+            limits: limits.clone(),
+            policy: LinkPolicy::new(limits),
+            events,
+            share_events,
+            messages,
+            peers: HashMap::new(),
+            active: HashMap::new(),
+            pending_outbound: HashMap::new(),
+            generation: 0,
+            dial_generation: 0,
+            pending_slots: Arc::new(Semaphore::new(1)),
+            dropped_packets: 0,
+        };
+        state.active.insert(
+            device_id.clone(),
+            ActiveLink {
+                generation: 0,
+                peer: identity,
+                certificate,
+                link: LinkHandle {
+                    device_id: device_id.clone(),
+                    tx: outbound,
+                },
+                control,
+                paired: true,
+                last_activity: Instant::now(),
+                permit: None,
+            },
+        );
+
+        let packet = Packet::new(types::PING, serde_json::json!({ "message": "drop" }))
+            .expect("build the test packet");
+        state
+            .events
+            .try_send(LinkEvent::Packet {
+                device_id: device_id.clone(),
+                packet: packet.clone(),
+            })
+            .expect("the first packet fills the one-slot channel");
+
+        state.inbound(Arc::new(device_id), 0, packet).await;
+
+        assert_eq!(state.dropped_packets, 1, "the dropped packet is counted");
+        assert!(
+            matches!(events_rx.try_recv(), Ok(LinkEvent::Packet { .. })),
+            "the queued packet is still the first one"
+        );
+    }
+
     #[test]
     fn peer_ttl_expires_an_idle_entry() {
         let device_id = DeviceId::new("00112233445566778899aabbccddeeff").unwrap();
@@ -1033,9 +1156,11 @@ mod tests {
             messages,
             peers: HashMap::new(),
             active: HashMap::new(),
-            pending_outbound: HashSet::new(),
+            pending_outbound: HashMap::new(),
             generation: 0,
+            dial_generation: 0,
             pending_slots: Arc::new(Semaphore::new(1)),
+            dropped_packets: 0,
         };
         state.peers.insert(
             device_id,
