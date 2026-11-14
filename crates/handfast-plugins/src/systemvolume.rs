@@ -114,6 +114,9 @@ impl Plugin for SystemVolumePlugin {
             );
         }
         let Some((volume, muted)) = parse(packet) else {
+            if packet.body.get("sinkList").is_some_and(Value::is_array) {
+                return Ok(PluginOutput::new());
+            }
             return Ok(warn(
                 "discarding system volume packet without volume or muted",
             ));
@@ -283,6 +286,30 @@ mod tests {
             .unwrap()]
         );
         assert!(output.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sink_list_reply_is_ignored() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let packet = Packet::from_body(
+            types::SYSTEMVOLUME,
+            &json!({
+                "sinkList": [{
+                    "name": "default",
+                    "description": "System volume",
+                    "volume": 63,
+                    "muted": true,
+                    "maxVolume": 100,
+                    "enabled": true,
+                }]
+            }),
+        )
+        .unwrap();
+        let output = run(&desktop, packet).await;
+        assert!(output.events.is_empty());
+        assert!(output.packets.is_empty());
+        assert_eq!(mock.volume(), VolumeState::default());
     }
 
     #[tokio::test]
