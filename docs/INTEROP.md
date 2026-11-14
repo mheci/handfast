@@ -167,11 +167,11 @@ the independent testkit payload peer. It cannot prove that the official clients
 accept Handfast's share packets and payload TLS. The run is manual and is not
 replaced by CI.
 
-The inbound checks are blocked until the daemon composition and its
-`--incoming-dir` flag land (unit 11). The outbound checks are blocked until the
-`hfctl` control client and its `share` command land (unit 10). Record a step as
-blocked while its binary or flag is absent. A blocked step is not a pass, and the
-gate does not pass until every blocked step has run.
+Dependency note. Not every share unit has merged. The inbound checks need the
+daemon to compose the share path and its `--incoming-dir` flag. The outbound
+checks also need the `hfctl` control client. Record a step as blocked while its
+binary or flag is absent. A blocked step is not a pass. Delete this note once the
+daemon composes the share path and `hfctl` has merged.
 
 ### Prerequisites
 
@@ -196,19 +196,22 @@ RUST_LOG=debug ./target/release/handfastd \
   --incoming-dir /tmp/handfast-share-incoming
 ```
 
-The incoming directory defaults to `~/Downloads/Handfast` on Unix and
-`%USERPROFILE%\Downloads\Handfast` on Windows. The daemon creates
-`<incoming-dir>/.handfast-tmp` for partial files and sweeps only that directory.
+The incoming directory defaults to `$XDG_DOWNLOAD_DIR/Handfast`, falling back to
+`~/Downloads/Handfast`, on Unix, and to `%USERPROFILE%\Downloads\Handfast` on
+Windows. The daemon creates `<incoming-dir>/.handfast-tmp` for partial files and
+sweeps only that directory.
 
 ### Android to Handfast
 
 1. Share a photo to Handfast. Confirm the log shows `share.request`, the
    filename, the declared size and the payload port. Confirm the file appears in
    the incoming directory with the original name and no `.part` file remains.
-2. Share text. Confirm the text is on the desktop clipboard and a `ShareText`
-   event is logged. Confirm the log line does not contain the text body.
-3. Share an `https` URL. Confirm the browser opens it and a `ShareUrl` event is
-   logged. Confirm the log line does not contain the URL body.
+2. Share text. When the daemon composes a clipboard adapter, confirm the text is
+   on the desktop clipboard. Without one, confirm the warning and the `ShareText`
+   event. Confirm the log line does not contain the text body.
+3. Share an `https` URL. When the daemon composes a shell adapter, confirm the
+   browser opens it. Without one, confirm the warning and the `ShareUrl` event.
+   Confirm the log line does not contain the URL body.
 4. Share a `file://` URL if the app allows it. Confirm Handfast drops it with a
    log line and opens nothing.
 5. Share an empty file. Confirm a zero-byte file appears and no payload
@@ -227,7 +230,7 @@ The incoming directory defaults to `~/Downloads/Handfast` on Unix and
 1. Share a file from the KDE Connect desktop client. Confirm the same behavior
    as the Android photo step.
 2. Share text and an `https` URL. Confirm the same behavior as the Android text
-   and URL steps.
+   and URL steps, including the adapter fallback.
 3. Confirm the payload TLS version is TLS 1.3 when the desktop offers it.
 4. Send a large first file and a second file queued behind it. Confirm the
    second payload connection is established early, both files arrive in order,
@@ -235,8 +238,9 @@ The incoming directory defaults to `~/Downloads/Handfast` on Unix and
 
 ### Handfast to a real client
 
-Blocked until unit 10 lands. These steps need the `hfctl` binary and its
-`share` command from `docs/design/p1-share-file.md`.
+Blocked until units 10 and 11 land. These steps need the `hfctl` binary and its
+`share` command from unit 10, and the daemon composition from unit 11, both in
+`docs/design/p1-share-file.md`.
 
 1. Start `handfastd` with the same `--data-dir`.
 2. Run `hfctl share --device <peer-id> /path/to/file`.
@@ -283,8 +287,10 @@ Do not attach `state.db`. It contains the private key.
 
 The P1 share gate passes when:
 
-- Android and the desktop complete file, text, empty-file and URL inbound
-  shares.
+- Android and the desktop complete file and empty-file inbound shares.
+- Text and URL inbound shares reach the clipboard and the browser when those
+  adapters are present, and log the warning plus `ShareText` or `ShareUrl` when
+  an adapter is absent.
 - A large file completes with no partial file.
 - A cancelled or truncated transfer leaves no file.
 - An unpaired peer cannot share.
