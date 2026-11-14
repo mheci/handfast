@@ -2,21 +2,26 @@
 //!
 //! The session owns the [`DeviceHost`], dispatches inbound packets, forwards
 //! plugin output to the link and plugin events to the daemon, runs the inbound
-//! transfer runner, and runs `on_disconnect` before it exits. The daemon event
-//! loop owns the session map; the manager never sees a `DeviceHost`.
+//! and outbound transfer runner, and runs `on_disconnect` before it exits. The
+//! daemon event loop owns the session map; the manager never sees a
+//! `DeviceHost`.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use handfast_desktop::{Desktop, Files, IncomingRequest};
+use handfast_desktop::{Desktop, Files, FilesError, IncomingRequest, OutgoingFile};
 use handfast_net::{
-    LinkHandle, PayloadError, PayloadPeer, PayloadService, PeerCertificate, PendingPayload,
+    LinkHandle, NetError, PayloadError, PayloadPeer, PayloadService, PayloadSource,
+    PeerCertificate, PendingPayload, TransferOutcome,
 };
-use handfast_proto::{DeviceId, Identity, Packet, PayloadSize};
+use handfast_proto::{
+    file_request, DeviceId, Identity, Packet, PayloadSize, ProtoError, ShareFile,
+};
 use handfast_runtime::{Device, DeviceHost, Dispatch, PluginEvent, Registry, Transfer};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 
 #[cfg(test)]
@@ -67,7 +72,7 @@ pub enum DaemonEvent {
     },
 }
 
-/// Payload inputs for one session with an inbound transfer runner.
+/// Payload inputs for one session with a transfer runner.
 pub struct TransferSetup {
     /// Authenticated control link address. The payload dials this IP.
     pub remote_addr: SocketAddr,
@@ -95,10 +100,11 @@ impl DeviceSession {
         Self::start_inner(peer, link, registry, desktop, events, None)
     }
 
-    /// Start a session with the inbound share transfer runner.
+    /// Start a session with the share transfer runner.
     ///
     /// The runner exists only when the desktop has a Files adapter. Without one
-    /// the share plugin is disabled, so no transfer intent can arrive.
+    /// the share plugin is disabled, so no transfer intent can arrive and an
+    /// outbound share is unavailable.
     pub fn start_with_transfers(
         peer: Identity,
         link: LinkHandle,
@@ -227,6 +233,36 @@ impl SessionHandle {
         }
     }
 
+    /// Queue one outbound file and wait for the payload to finish.
+    ///
+    /// Waits up to the session delivery timeout for room in the session queue,
+    /// then waits for the session to run the transfer. A zero-byte file sends a
+    /// metadata-only packet and opens no payload listener.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`TransferError::Session`] when the queue stays full for the
+    /// delivery timeout or the session stopped before it replied. Otherwise
+    /// returns the file, packet or payload failure.
+    // The control channel (unit 10) is the first production caller.
+    #[allow(dead_code)]
+    pub async fn share_file(&self, path: PathBuf) -> Result<TransferOutcome, TransferError> {
+        let (reply, reply_rx) = oneshot::channel();
+        match tokio::time::timeout(
+            self.delivery_timeout,
+            self.tx.send(SessionInput::ShareFile { path, reply }),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(SessionError::Closed.into()),
+            Err(_) => return Err(SessionError::Full.into()),
+        }
+        reply_rx
+            .await
+            .map_err(|_| TransferError::Session(SessionError::Closed))?
+    }
+
     /// Stop the session. `on_disconnect` runs before the task exits.
     pub fn stop(&self, reason: String) {
         match self.tx.try_send(SessionInput::Disconnected(reason)) {
@@ -264,12 +300,93 @@ impl std::fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
+/// Why an outbound share failed.
+#[derive(Debug)]
+pub enum TransferError {
+    /// The source file could not be opened.
+    Files(FilesError),
+    /// The payload listener or stream failed.
+    Payload(PayloadError),
+    /// The share packet could not be built.
+    Proto(ProtoError),
+    /// The share packet could not be sent on the control link.
+    Net(NetError),
+    /// The session queue rejected the request or the session stopped.
+    Session(SessionError),
+    /// The session has no files adapter.
+    Unavailable(&'static str),
+}
+
+impl std::fmt::Display for TransferError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Files(error) => write!(formatter, "files: {error}"),
+            Self::Payload(error) => write!(formatter, "payload: {error}"),
+            Self::Proto(error) => write!(formatter, "protocol: {error}"),
+            Self::Net(error) => write!(formatter, "link: {error}"),
+            Self::Session(error) => write!(formatter, "session: {error}"),
+            Self::Unavailable(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for TransferError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Files(error) => Some(error),
+            Self::Payload(error) => Some(error),
+            Self::Proto(error) => Some(error),
+            Self::Net(error) => Some(error),
+            Self::Session(error) => Some(error),
+            Self::Unavailable(_) => None,
+        }
+    }
+}
+
+impl From<FilesError> for TransferError {
+    fn from(error: FilesError) -> Self {
+        Self::Files(error)
+    }
+}
+
+impl From<PayloadError> for TransferError {
+    fn from(error: PayloadError) -> Self {
+        Self::Payload(error)
+    }
+}
+
+impl From<ProtoError> for TransferError {
+    fn from(error: ProtoError) -> Self {
+        Self::Proto(error)
+    }
+}
+
+impl From<NetError> for TransferError {
+    fn from(error: NetError) -> Self {
+        Self::Net(error)
+    }
+}
+
+impl From<SessionError> for TransferError {
+    fn from(error: SessionError) -> Self {
+        Self::Session(error)
+    }
+}
+
 /// Input to a session task.
 pub enum SessionInput {
     /// One inbound packet on the best-effort path.
     Packet(Packet),
     /// One share packet on the reliable path.
     Share(Packet),
+    /// One outbound file share. The session replies exactly once.
+    #[allow(dead_code)]
+    ShareFile {
+        /// Local source file.
+        path: PathBuf,
+        /// Transfer result.
+        reply: oneshot::Sender<Result<TransferOutcome, TransferError>>,
+    },
     /// The link closed or the daemon is shutting down.
     Disconnected(String),
 }
@@ -327,6 +444,7 @@ struct TransferRunner {
     slots: VecDeque<Slot>,
     receives: JoinSet<()>,
     connects: JoinSet<ConnectResult>,
+    sends: JoinSet<()>,
     next_id: u64,
     #[cfg(test)]
     connects_completed: Arc<AtomicUsize>,
@@ -351,6 +469,7 @@ impl TransferRunner {
             slots: VecDeque::new(),
             receives: JoinSet::new(),
             connects: JoinSet::new(),
+            sends: JoinSet::new(),
             next_id: 1,
             #[cfg(test)]
             connects_completed,
@@ -492,6 +611,35 @@ impl TransferRunner {
         }
     }
 
+    /// Spawn one outbound share. The reply resolves when the transfer ends.
+    fn share_file(
+        &mut self,
+        path: PathBuf,
+        link: &LinkHandle,
+        reply: oneshot::Sender<Result<TransferOutcome, TransferError>>,
+    ) {
+        let files = Arc::clone(&self.files);
+        let payloads = Arc::clone(&self.payloads);
+        let peer = self.peer.clone();
+        let link = LinkHandle::clone(link);
+        self.sends.spawn(async move {
+            let result = outbound_share(files, payloads, peer, path, link).await;
+            if reply.send(result).is_err() {
+                tracing::debug!("outbound share reply dropped");
+            }
+        });
+    }
+
+    fn send_finished(&mut self, joined: Option<Result<(), JoinError>>) {
+        if let Some(Err(error)) = joined {
+            tracing::warn!(
+                device_id = %self.peer.device_id,
+                %error,
+                "share task ended abnormally"
+            );
+        }
+    }
+
     /// Stop every transfer, close held sockets and remove temp files.
     async fn shutdown(mut self, reason: &str) {
         tracing::debug!(
@@ -503,6 +651,8 @@ impl TransferRunner {
         while self.receives.join_next().await.is_some() {}
         self.connects.abort_all();
         while self.connects.join_next().await.is_some() {}
+        self.sends.abort_all();
+        while self.sends.join_next().await.is_some() {}
         self.slots.clear();
         self.active = None;
     }
@@ -513,6 +663,7 @@ enum SessionStep {
     Input(Option<SessionInput>),
     Receive(Option<Result<(), JoinError>>),
     Connect(Option<ConnectJoin>),
+    Send(Option<Result<(), JoinError>>),
 }
 
 async fn run(
@@ -546,9 +697,13 @@ async fn run(
             runner.start_front();
         }
 
-        let (receives_open, connects_open) = match runner.as_ref() {
-            Some(runner) => (!runner.receives.is_empty(), !runner.connects.is_empty()),
-            None => (false, false),
+        let (receives_open, connects_open, sends_open) = match runner.as_ref() {
+            Some(runner) => (
+                !runner.receives.is_empty(),
+                !runner.connects.is_empty(),
+                !runner.sends.is_empty(),
+            ),
+            None => (false, false, false),
         };
         let step = match runner.as_mut() {
             Some(runner) => {
@@ -559,6 +714,9 @@ async fn run(
                     }
                     joined = runner.connects.join_next(), if connects_open => {
                         SessionStep::Connect(joined)
+                    }
+                    joined = runner.sends.join_next(), if sends_open => {
+                        SessionStep::Send(joined)
                     }
                 }
             }
@@ -582,6 +740,11 @@ async fn run(
             SessionStep::Connect(joined) => {
                 if let Some(runner) = runner.as_mut() {
                     runner.connect_finished(joined).await;
+                }
+            }
+            SessionStep::Send(joined) => {
+                if let Some(runner) = runner.as_mut() {
+                    runner.send_finished(joined);
                 }
             }
         }
@@ -609,6 +772,17 @@ async fn handle_input(
             let transfers = send_dispatch(link, events, device_id, dispatch).await;
             if let Some(runner) = runner.as_mut() {
                 runner.enqueue_all(transfers).await;
+            }
+            None
+        }
+        SessionInput::ShareFile { path, reply } => {
+            match runner.as_mut() {
+                Some(runner) => runner.share_file(path, link, reply),
+                None => {
+                    let _ = reply.send(Err(TransferError::Unavailable(
+                        "session has no files adapter",
+                    )));
+                }
             }
             None
         }
@@ -660,6 +834,66 @@ fn emit_progress(events: &mpsc::Sender<DaemonEvent>, device_id: &DeviceId, event
     if events.try_send(message).is_err() {
         tracing::debug!(%device_id, "dropping a transfer progress event for a full queue");
     }
+}
+
+/// Run one outbound share to completion and return its outcome.
+async fn outbound_share(
+    files: Arc<dyn Files>,
+    payloads: Arc<PayloadService>,
+    peer: PayloadPeer,
+    path: PathBuf,
+    link: LinkHandle,
+) -> Result<TransferOutcome, TransferError> {
+    let outgoing = files.open_outgoing(&path).await?;
+    let OutgoingFile {
+        filename,
+        size,
+        created_ms,
+        modified_ms,
+        reader,
+    } = outgoing;
+    let file = ShareFile {
+        filename: Some(filename),
+        size: PayloadSize::Known(size),
+        created_ms,
+        modified_ms,
+        open: false,
+        batch: None,
+    };
+    tracing::debug!(device_id = %peer.device_id, size, "outbound share starting");
+
+    if size == 0 {
+        let packet = file_request(&file, None)?;
+        link.send(packet).await?;
+        return Ok(TransferOutcome {
+            bytes: 0,
+            extra_bytes: 0,
+        });
+    }
+
+    let prepared = payloads
+        .prepare_send(
+            peer.clone(),
+            PayloadSource {
+                size: Some(size),
+                reader: Box::new(reader),
+            },
+        )
+        .await?;
+    let packet = file_request(&file, Some(prepared.port()))?;
+    if let Err(error) = link.send(packet).await {
+        // Dropping the prepared send closes the listener and releases the
+        // active permit, so a failed packet send leaves no port open.
+        drop(prepared);
+        return Err(TransferError::Net(error));
+    }
+    let outcome = prepared.start(None).await?;
+    tracing::debug!(
+        device_id = %peer.device_id,
+        bytes = outcome.bytes,
+        "outbound share finished"
+    );
+    Ok(outcome)
 }
 
 async fn receive_transfer(
@@ -816,20 +1050,26 @@ async fn receive_transfer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use handfast_desktop::{Desktop, MockDesktop};
-    use handfast_net::{PayloadLimits, TlsIdentity};
+    use handfast_desktop::{Desktop, FilesError, MockDesktop};
+    use handfast_net::{NetError, PayloadLimits, TlsIdentity};
     use handfast_plugins::registry;
-    use handfast_proto::{file_request, types, Capabilities, DeviceName, DeviceType, ShareFile};
+    use handfast_proto::{
+        file_request, text_request, types, Capabilities, DeviceName, DeviceType, ShareFile,
+        ShareRequest, PAYLOAD_PORT_MAX, PAYLOAD_PORT_MIN,
+    };
     use handfast_runtime::{
         DesktopRequirement, LogLevel, Plugin, PluginContext, PluginError, PluginFactory,
         PluginMeta, PluginOutput, PluginStatus, Registry,
     };
-    use handfast_testkit::payload_peer::{PayloadSender, PayloadSenderConfig};
+    use handfast_testkit::payload_peer::{
+        PayloadReceiver, PayloadReceiverConfig, PayloadSender, PayloadSenderConfig,
+    };
     use handfast_testkit::peer::PeerConfig;
     use handfast_testkit::tls_peer::TlsVersion;
     use tokio::sync::mpsc;
@@ -875,6 +1115,88 @@ mod tests {
                 ..PayloadLimits::default()
             },
         ))
+    }
+
+    fn one_port_payloads(port: u16) -> Arc<PayloadService> {
+        let tls = Arc::new(TlsIdentity::generate(DeviceId::generate()).expect("generate TLS"));
+        Arc::new(PayloadService::new(
+            tls,
+            PayloadLimits {
+                connect_timeout: Duration::from_secs(2),
+                handshake_timeout: Duration::from_secs(2),
+                accept_timeout: Duration::from_secs(2),
+                io_timeout: Duration::from_secs(2),
+                port_min: port,
+                port_max: port,
+                ..PayloadLimits::default()
+            },
+        ))
+    }
+
+    fn long_accept_payloads() -> Arc<PayloadService> {
+        let tls = Arc::new(TlsIdentity::generate(DeviceId::generate()).expect("generate TLS"));
+        Arc::new(PayloadService::new(
+            tls,
+            PayloadLimits {
+                connect_timeout: Duration::from_secs(2),
+                handshake_timeout: Duration::from_secs(2),
+                accept_timeout: Duration::from_secs(30),
+                io_timeout: Duration::from_secs(2),
+                ..PayloadLimits::default()
+            },
+        ))
+    }
+
+    fn free_payload_port() -> u16 {
+        for port in PAYLOAD_PORT_MIN..=PAYLOAD_PORT_MAX {
+            if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() {
+                return port;
+            }
+        }
+        panic!("no free payload port in 1739-1764");
+    }
+
+    fn occupied_payload_port() -> (std::net::TcpListener, u16) {
+        for port in PAYLOAD_PORT_MIN..=PAYLOAD_PORT_MAX {
+            if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", port)) {
+                return (listener, port);
+            }
+        }
+        panic!("no free payload port in 1739-1764");
+    }
+
+    fn payload_receiver() -> PayloadReceiver {
+        PayloadReceiver::new(PayloadReceiverConfig::new(
+            PeerConfig::server(),
+            TlsVersion::Both,
+        ))
+        .expect("build the payload receiver")
+    }
+
+    fn source_file(bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::TempDir::new().expect("a temp dir");
+        let path = dir.path().join("report.pdf");
+        std::fs::write(&path, bytes).expect("write the source file");
+        (dir, path)
+    }
+
+    /// Drain the link channel so the session loop never blocks on it, and
+    /// forward the share packets it saw.
+    fn share_packets(
+        mut link_rx: mpsc::Receiver<Packet>,
+    ) -> (mpsc::Receiver<Packet>, JoinHandle<()>) {
+        let (share_tx, share_rx) = mpsc::channel(8);
+        let task = tokio::spawn(async move {
+            while let Some(packet) = link_rx.recv().await {
+                if packet.ptype != types::SHARE_REQUEST {
+                    continue;
+                }
+                if share_tx.send(packet).await.is_err() {
+                    break;
+                }
+            }
+        });
+        (share_rx, task)
     }
 
     fn payload_sender(mut config: PayloadSenderConfig) -> PayloadSender {
@@ -1492,5 +1814,374 @@ mod tests {
             elapsed < Duration::from_secs(3),
             "returns within the two-second contract: {elapsed:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn outbound_share_sends_packet_and_streams_bytes() {
+        let _ports = ports().await;
+        let desktop = MockDesktop::with_files().expect("build the mock desktop");
+        let receiver = payload_receiver();
+        let certificate = receiver
+            .cert_der()
+            .expect("the receiver presents a certificate")
+            .to_vec();
+        let (session, _events, link_rx) = start_session(&desktop, payloads(), &certificate);
+        let (mut shares, _drain) = share_packets(link_rx);
+        let bytes: Vec<u8> = (0..256 * 1024).map(|index| (index % 251) as u8).collect();
+        let len = bytes.len() as u64;
+        let (_source, path) = source_file(&bytes);
+        let expected = bytes;
+        let handle = session.handle();
+        let share = tokio::spawn(async move { handle.share_file(path).await });
+        let receive = tokio::spawn(async move {
+            let packet = tokio::time::timeout(Duration::from_secs(10), shares.recv())
+                .await
+                .expect("the share packet arrives")
+                .expect("the drain forwards the share packet");
+            let port = packet
+                .payload_transfer_info
+                .as_ref()
+                .expect("a payload port")
+                .port;
+            let mut buffer = Vec::new();
+            let report = receiver
+                .receive(SocketAddr::from(([127, 0, 0, 1], port)), len, &mut buffer)
+                .await
+                .expect("the receiver reads the payload");
+            (packet, buffer, report)
+        });
+
+        let outcome = share
+            .await
+            .expect("the share task joins")
+            .expect("the outbound share succeeds");
+        let (packet, buffer, report) = receive.await.expect("the receive task joins");
+
+        match ShareRequest::from_packet(&packet).expect("a share request") {
+            ShareRequest::File(file) => {
+                assert_eq!(file.filename.as_deref(), Some("report.pdf"));
+                assert_eq!(file.size, PayloadSize::Known(len));
+            }
+            other => panic!("expected a file request, got {other:?}"),
+        }
+        let offer = packet
+            .payload_offer()
+            .expect("a valid payload offer")
+            .expect("a payload");
+        assert!((PAYLOAD_PORT_MIN..=PAYLOAD_PORT_MAX).contains(&offer.port));
+        assert_eq!(buffer, expected);
+        assert_eq!(report.bytes, len);
+        assert!(report.eof, "the receiver sees EOF");
+        assert_eq!(
+            outcome,
+            TransferOutcome {
+                bytes: len,
+                extra_bytes: 0,
+            }
+        );
+        assert_eq!(temp_files(&desktop), 0, "no temp file is written");
+        stop_session(session).await;
+    }
+
+    #[tokio::test]
+    async fn outbound_large_file_completes() {
+        let _ports = ports().await;
+        let desktop = MockDesktop::with_files().expect("build the mock desktop");
+        let receiver = payload_receiver();
+        let certificate = receiver
+            .cert_der()
+            .expect("the receiver presents a certificate")
+            .to_vec();
+        let (session, _events, link_rx) = start_session(&desktop, payloads(), &certificate);
+        let (mut shares, _drain) = share_packets(link_rx);
+        let size = 8 * 1024 * 1024;
+        let bytes: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+        let expected = bytes.clone();
+        let (_source, path) = source_file(&bytes);
+        let handle = session.handle();
+        let share = tokio::spawn(async move { handle.share_file(path).await });
+        let receive = tokio::spawn(async move {
+            let packet = tokio::time::timeout(Duration::from_secs(10), shares.recv())
+                .await
+                .expect("the share packet arrives")
+                .expect("the drain forwards the share packet");
+            let port = packet
+                .payload_transfer_info
+                .as_ref()
+                .expect("a payload port")
+                .port;
+            let mut buffer = Vec::new();
+            let report = receiver
+                .receive(
+                    SocketAddr::from(([127, 0, 0, 1], port)),
+                    size as u64,
+                    &mut buffer,
+                )
+                .await
+                .expect("the receiver reads the payload");
+            (buffer, report)
+        });
+
+        let outcome = share
+            .await
+            .expect("the share task joins")
+            .expect("the outbound share succeeds");
+        let (buffer, report) = receive.await.expect("the receive task joins");
+
+        assert_eq!(report.bytes, size as u64);
+        assert!(report.eof, "the receiver sees EOF");
+        assert_eq!(buffer, expected);
+        assert_eq!(outcome.bytes, size as u64);
+        assert_eq!(outcome.extra_bytes, 0);
+        assert_eq!(temp_files(&desktop), 0, "no temp file is written");
+        stop_session(session).await;
+    }
+
+    #[tokio::test]
+    async fn outbound_transfer_does_not_stall_the_session_loop() {
+        let _ports = ports().await;
+        let desktop = MockDesktop::with_files().expect("build the mock desktop");
+        let receiver = payload_receiver();
+        let certificate = receiver
+            .cert_der()
+            .expect("the receiver presents a certificate")
+            .to_vec();
+        let (session, mut events, link_rx) =
+            start_session(&desktop, long_accept_payloads(), &certificate);
+        let (mut shares, _drain) = share_packets(link_rx);
+        let (_source, path) = source_file(b"payload");
+        let handle = session.handle();
+        let share = tokio::spawn(async move { handle.share_file(path).await });
+
+        let _packet = tokio::time::timeout(Duration::from_secs(10), shares.recv())
+            .await
+            .expect("the share packet arrives")
+            .expect("the drain forwards the share packet");
+        session
+            .handle()
+            .deliver_share(text_request("hello").expect("build the text share"))
+            .await
+            .expect("the text share is queued");
+        let event = wait_for_event(&mut events, |event| {
+            matches!(event, PluginEvent::ShareText { .. })
+        })
+        .await;
+        assert!(
+            matches!(event, PluginEvent::ShareText { text } if text == "hello"),
+            "the session handles a share while the transfer waits for accept"
+        );
+        assert!(
+            !share.is_finished(),
+            "the outbound transfer is still waiting for the receiver"
+        );
+
+        stop_session(session).await;
+        let error = share
+            .await
+            .expect("the share task joins")
+            .expect_err("the stopped session drops the reply");
+        assert!(
+            matches!(error, TransferError::Session(SessionError::Closed)),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_empty_file_sends_metadata_only() {
+        let _ports = ports().await;
+        let desktop = MockDesktop::with_files().expect("build the mock desktop");
+        let (occupied, port) = occupied_payload_port();
+        occupied
+            .set_nonblocking(true)
+            .expect("the occupied listener is nonblocking");
+        let certificate = TlsIdentity::generate(peer_id())
+            .expect("generate the peer certificate")
+            .cert_der()
+            .to_vec();
+        let (session, _events, link_rx) =
+            start_session(&desktop, one_port_payloads(port), &certificate);
+        let (mut shares, _drain) = share_packets(link_rx);
+        let (_source, path) = source_file(b"");
+        let handle = session.handle();
+        let share = tokio::spawn(async move { handle.share_file(path).await });
+
+        let packet = tokio::time::timeout(Duration::from_secs(10), shares.recv())
+            .await
+            .expect("the share packet arrives")
+            .expect("the drain forwards the share packet");
+        let outcome = share
+            .await
+            .expect("the share task joins")
+            .expect("the empty file shares");
+
+        assert_eq!(
+            outcome,
+            TransferOutcome {
+                bytes: 0,
+                extra_bytes: 0,
+            }
+        );
+        assert_eq!(packet.payload_size, None);
+        assert_eq!(packet.payload_transfer_info, None);
+        assert_eq!(packet.payload_offer().expect("a valid packet"), None);
+        assert_eq!(
+            occupied
+                .accept()
+                .expect_err("no payload connection is dialed")
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        stop_session(session).await;
+    }
+
+    #[tokio::test]
+    async fn outbound_no_free_payload_port_fails_before_packet() {
+        let _ports = ports().await;
+        let desktop = MockDesktop::with_files().expect("build the mock desktop");
+        let (occupied, port) = occupied_payload_port();
+        let certificate = TlsIdentity::generate(peer_id())
+            .expect("generate the peer certificate")
+            .cert_der()
+            .to_vec();
+        let (session, _events, link_rx) =
+            start_session(&desktop, one_port_payloads(port), &certificate);
+        let (mut shares, _drain) = share_packets(link_rx);
+        let (_source, path) = source_file(b"payload");
+
+        let error = session
+            .handle()
+            .share_file(path)
+            .await
+            .expect_err("the occupied port fails the share");
+        assert!(
+            matches!(error, TransferError::Payload(PayloadError::NoPort)),
+            "{error:?}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), shares.recv())
+                .await
+                .is_err(),
+            "no share packet is sent"
+        );
+        drop(occupied);
+        stop_session(session).await;
+    }
+
+    #[tokio::test]
+    async fn outbound_packet_send_failure_closes_the_listener() {
+        let _ports = ports().await;
+        let desktop = MockDesktop::with_files().expect("build the mock desktop");
+        let port = free_payload_port();
+        let certificate = TlsIdentity::generate(peer_id())
+            .expect("generate the peer certificate")
+            .cert_der()
+            .to_vec();
+        let (session, _events, link_rx) =
+            start_session(&desktop, one_port_payloads(port), &certificate);
+        drop(link_rx);
+        let (_source, path) = source_file(b"payload");
+
+        let error = session
+            .handle()
+            .share_file(path)
+            .await
+            .expect_err("the closed link fails the share");
+        assert!(
+            matches!(error, TransferError::Net(NetError::LinkClosed)),
+            "{error:?}"
+        );
+        let rebind =
+            std::net::TcpListener::bind(("0.0.0.0", port)).expect("the payload listener is closed");
+        drop(rebind);
+        stop_session(session).await;
+    }
+
+    #[tokio::test]
+    async fn outbound_missing_or_directory_path_fails_before_packet() {
+        let desktop = MockDesktop::with_files().expect("build the mock desktop");
+        let certificate = TlsIdentity::generate(peer_id())
+            .expect("generate the peer certificate")
+            .cert_der()
+            .to_vec();
+        let (session, _events, link_rx) = start_session(&desktop, payloads(), &certificate);
+        let (mut shares, _drain) = share_packets(link_rx);
+        let dir = tempfile::TempDir::new().expect("a temp dir");
+
+        let error = session
+            .handle()
+            .share_file(dir.path().join("missing.bin"))
+            .await
+            .expect_err("a missing path fails");
+        assert!(matches!(error, TransferError::Files(_)), "{error:?}");
+        let error = session
+            .handle()
+            .share_file(dir.path().to_path_buf())
+            .await
+            .expect_err("a directory fails");
+        assert!(
+            matches!(error, TransferError::Files(FilesError::NotRegularFile(_))),
+            "{error:?}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), shares.recv())
+                .await
+                .is_err(),
+            "no share packet is sent"
+        );
+        stop_session(session).await;
+    }
+
+    #[tokio::test]
+    async fn share_file_full_queue_returns_within_two_seconds() {
+        let (tx, _rx) = mpsc::channel(SESSION_QUEUE);
+        let handle = SessionHandle {
+            tx,
+            delivery_timeout: SHARE_DELIVERY_TIMEOUT,
+        };
+        for _ in 0..SESSION_QUEUE {
+            handle.deliver(Packet::empty(types::PING).expect("a valid empty ping"));
+        }
+
+        let start = Instant::now();
+        let error = handle
+            .share_file(PathBuf::from("unused"))
+            .await
+            .expect_err("the full queue rejects the share");
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(error, TransferError::Session(SessionError::Full)),
+            "{error:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(1900),
+            "waits for the delivery timeout: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "returns within the two-second contract: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn share_file_without_a_files_adapter_is_unavailable() {
+        let (events, _events_rx) = mpsc::channel(8);
+        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let drain = tokio::spawn(async move { while link_rx.recv().await.is_some() {} });
+        let session = DeviceSession::start(
+            peer_identity(),
+            LinkHandle::from_channel(peer_id(), link_tx),
+            Arc::new(registry()),
+            Desktop::default(),
+            events,
+        );
+
+        let error = session
+            .handle()
+            .share_file(PathBuf::from("unused"))
+            .await
+            .expect_err("the session has no files adapter");
+        assert!(matches!(error, TransferError::Unavailable(_)), "{error:?}");
+        stop_session(session).await;
+        drain.await.expect("the drain task joins");
     }
 }
