@@ -18,13 +18,14 @@ use clap::Parser;
 use handfast_desktop::Desktop;
 use handfast_net::{
     Discovery, Fingerprint, LinkEvent, LinkLimits, LinkListener, LinkManager, LinkManagerHandle,
-    LocalEndpoint, PendingLink, TrustTable, SHARE_EVENT_QUEUE,
+    LocalEndpoint, PayloadLimits, PayloadService, PendingLink, ShareEvent, TrustTable,
+    SHARE_EVENT_QUEUE,
 };
 use handfast_plugins::registry;
 use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
-use handfast_runtime::Registry;
+use handfast_runtime::{PluginEvent, Registry};
 use handfast_store::Store;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -32,9 +33,10 @@ use tracing_subscriber::EnvFilter;
 
 mod identity;
 mod pairing;
+mod redact;
 mod session;
 
-use session::{DaemonEvent, DeviceSession};
+use session::{DaemonEvent, DeviceSession, TransferSetup};
 
 /// How often to announce this device over UDP discovery.
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
@@ -132,6 +134,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
     // The listener is bound before discovery announces, so the announced port
     // is always one this process owns.
     let tls = Arc::new(identity::load_or_generate_tls_identity(&store, &device_id)?);
+    let payloads = Arc::new(PayloadService::new(
+        Arc::clone(&tls),
+        PayloadLimits::default(),
+    ));
     tracing::info!(
         fingerprint = %tls.fingerprint().to_hex(),
         "TLS identity loaded"
@@ -169,18 +175,6 @@ async fn run() -> Result<(), Box<dyn Error>> {
         link_tx,
         share_tx,
     );
-    // The inbound transfer runner lands with the share session unit. Until
-    // then, drain the reliable channel so a share request cannot fill it and
-    // close the link.
-    let _share_drain = tokio::spawn(async move {
-        while let Some(event) = share_rx.recv().await {
-            tracing::warn!(
-                device_id = %event.device_id,
-                ptype = %event.packet.ptype,
-                "dropping a share packet; the session transfer runner is not implemented"
-            );
-        }
-    });
 
     let local_device_id = identity.device_id.clone();
     let discovery = Discovery::bind(identity, args.discovery_port, tcp_port).await?;
@@ -250,6 +244,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         registry,
         desktop,
         links,
+        payloads,
         events: daemon_tx,
         sessions: HashMap::new(),
         pending: HashMap::new(),
@@ -274,6 +269,15 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
+            event = share_rx.recv() => {
+                match event {
+                    Some(event) => daemon.handle_share(event).await,
+                    None => {
+                        tracing::warn!("share channel stopped");
+                        break;
+                    }
+                }
+            }
             event = daemon_rx.recv() => {
                 match event {
                     Some(event) => daemon.handle_daemon_event(event).await,
@@ -286,6 +290,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     // Dropping the receivers before shutdown keeps a full event queue from
     // stalling the manager while it closes links.
     drop(link_rx);
+    drop(share_rx);
     drop(daemon_rx);
     daemon
         .shutdown(discovery_stop, discovery_task, manager_task)
@@ -298,6 +303,7 @@ struct Daemon {
     registry: Arc<Registry>,
     desktop: Desktop,
     links: LinkManagerHandle,
+    payloads: Arc<PayloadService>,
     events: mpsc::Sender<DaemonEvent>,
     sessions: HashMap<DeviceId, DeviceSession>,
     pending: HashMap<DeviceId, PendingLink>,
@@ -339,12 +345,17 @@ impl Daemon {
                     if let Some(previous) = self.sessions.remove(&device_id) {
                         previous.handle().stop("replaced".to_string());
                     }
-                    let session = DeviceSession::start(
+                    let session = DeviceSession::start_with_transfers(
                         peer,
                         link,
                         Arc::clone(&self.registry),
                         self.desktop.clone(),
                         self.events.clone(),
+                        TransferSetup {
+                            remote_addr,
+                            certificate,
+                            payloads: Arc::clone(&self.payloads),
+                        },
                     );
                     tracing::info!(%device_id, %remote_addr, "paired link connected");
                     self.sessions.insert(device_id, session);
@@ -492,7 +503,7 @@ impl Daemon {
     async fn handle_daemon_event(&mut self, event: DaemonEvent) {
         match event {
             DaemonEvent::PluginEvents { device_id, events } => {
-                tracing::info!(%device_id, events = ?events, "plugin events");
+                redact::log_plugin_events(&device_id, &events);
             }
             DaemonEvent::PairingAccepted { device_id, token } => {
                 if !self.take_prompt(&device_id, token) {
@@ -505,12 +516,18 @@ impl Daemon {
                 if let Some(previous) = self.sessions.remove(&device_id) {
                     previous.handle().stop("replaced".to_string());
                 }
-                let session = DeviceSession::start(
+                let setup = TransferSetup {
+                    remote_addr: pending.remote_addr,
+                    certificate: pending.certificate,
+                    payloads: Arc::clone(&self.payloads),
+                };
+                let session = DeviceSession::start_with_transfers(
                     pending.peer,
                     pending.link,
                     Arc::clone(&self.registry),
                     self.desktop.clone(),
                     self.events.clone(),
+                    setup,
                 );
                 for packet in pending.queued {
                     session.deliver(packet);
@@ -523,6 +540,46 @@ impl Daemon {
                     tracing::info!(%device_id, "pairing rejected");
                 }
             }
+        }
+    }
+
+    /// Route one reliable share packet to its session.
+    ///
+    /// A share packet is either queued for the plugin or the link closes with
+    /// an observable failure. A session that cannot take the packet is stopped
+    /// and removed, and a `ShareFailed` with id 0 is emitted.
+    async fn handle_share(&mut self, event: ShareEvent) {
+        let ShareEvent { device_id, packet } = event;
+        let handle = self.sessions.get(&device_id).map(DeviceSession::handle);
+        let Some(handle) = handle else {
+            tracing::warn!(%device_id, "share packet without a session; closing the link");
+            if let Err(error) = self.links.close(device_id.clone()).await {
+                tracing::warn!(%error, %device_id, "failed to close the link");
+            }
+            return;
+        };
+
+        if let Err(error) = handle.deliver_share(packet).await {
+            tracing::warn!(%error, %device_id, "share delivery failed; closing the link");
+            if let Some(session) = self.sessions.remove(&device_id) {
+                session.handle().stop("share delivery failed".to_string());
+            }
+            if let Err(close_error) = self.links.close(device_id.clone()).await {
+                tracing::warn!(%close_error, %device_id, "failed to close the link");
+            }
+            let failed = DaemonEvent::PluginEvents {
+                device_id,
+                events: vec![PluginEvent::ShareFailed {
+                    transfer_id: 0,
+                    reason: error.to_string(),
+                }],
+            };
+            let events = self.events.clone();
+            tokio::spawn(async move {
+                if events.send(failed).await.is_err() {
+                    tracing::warn!("daemon event channel closed; share failure event dropped");
+                }
+            });
         }
     }
 
