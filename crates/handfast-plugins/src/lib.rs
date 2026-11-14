@@ -10,11 +10,14 @@ pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
 pub mod findthisdevice;
+pub mod mousepad;
 pub mod mpriscontrol;
 pub mod notifications;
 pub mod pausemusic;
 pub mod ping;
+pub mod presenter;
 pub mod roster;
+pub mod screensaver_inhibit;
 pub mod share;
 pub mod systemvolume;
 
@@ -24,10 +27,13 @@ pub use battery::{BatteryFactory, BatteryPlugin};
 pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
 pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
+pub use mousepad::{MousepadFactory, MousepadPlugin};
 pub use mpriscontrol::{MprisControlFactory, MprisControlPlugin};
 pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
+pub use presenter::{PresenterFactory, PresenterPlugin};
+pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
 pub use share::{ShareFactory, SharePlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
 
@@ -45,6 +51,9 @@ pub fn registry() -> Registry {
         Box::new(notifications::NotificationsFactory),
         Box::new(findthisdevice::FindThisDeviceFactory),
         Box::new(systemvolume::SystemVolumeFactory),
+        Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
+        Box::new(presenter::PresenterFactory),
+        Box::new(mousepad::MousepadFactory),
     ])
 }
 
