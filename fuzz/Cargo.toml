@@ -9,12 +9,19 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+handfast-daemon = { path = "../crates/handfast-daemon" }
 handfast-proto = { path = "../crates/handfast-proto" }
 serde_json = "1"
 
 [[bin]]
 name = "frame_decode"
 path = "fuzz_targets/frame_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "control_frame"
+path = "fuzz_targets/control_frame.rs"
 test = false
 doc = false
 

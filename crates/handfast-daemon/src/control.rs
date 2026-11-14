@@ -361,6 +361,30 @@ fn frame_length(header: [u8; 4]) -> Result<usize, ControlError> {
     Ok(length)
 }
 
+/// Decode one complete control frame from `data`.
+///
+/// A frame is a 4-byte big-endian length followed by that many body bytes.
+/// Bytes after the first frame are ignored, matching the streaming reader,
+/// which leaves them for the next frame.
+///
+/// # Errors
+///
+/// Fails when the header or body is truncated, the length is zero, or the
+/// length exceeds [`MAX_FRAME`].
+pub fn decode_frame(data: &[u8]) -> Result<Vec<u8>, ControlError> {
+    let (header, rest) = data
+        .split_first_chunk::<4>()
+        .ok_or_else(|| ControlError::Frame("truncated header".to_string()))?;
+    let length = frame_length(*header)?;
+    let body = rest.get(..length).ok_or_else(|| {
+        ControlError::Frame(format!(
+            "body is {} bytes, frame declares {length}",
+            rest.len()
+        ))
+    })?;
+    Ok(body.to_vec())
+}
+
 #[cfg(unix)]
 async fn start_unix(
     path: PathBuf,
@@ -630,6 +654,32 @@ mod tests {
         assert!(read_frame(&mut reader, Some(CONTROL_IO_TIMEOUT))
             .await
             .is_err());
+    }
+
+    #[test]
+    fn decode_frame_returns_one_body_and_rejects_short_and_over_cap_frames() {
+        let body = b"{\"Share\":{}}";
+        let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(body);
+        frame.extend_from_slice(b"next");
+        assert_eq!(
+            decode_frame(&frame)
+                .expect("decode a valid frame")
+                .as_slice(),
+            body.as_slice(),
+            "the first frame is returned and trailing bytes are ignored"
+        );
+
+        assert!(decode_frame(&[]).is_err(), "empty input");
+        assert!(decode_frame(&[0, 0, 0]).is_err(), "short header");
+        assert!(decode_frame(&[0, 0, 0, 0]).is_err(), "zero length");
+        assert!(
+            decode_frame(&(MAX_FRAME as u32 + 1).to_be_bytes()).is_err(),
+            "over the cap"
+        );
+        let mut truncated = 16u32.to_be_bytes().to_vec();
+        truncated.extend_from_slice(b"short");
+        assert!(decode_frame(&truncated).is_err(), "short body");
     }
 
     #[cfg(unix)]
