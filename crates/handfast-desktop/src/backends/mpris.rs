@@ -17,6 +17,10 @@ const PROGRAM: &str = "playerctl";
 // literal backslash-t.
 const METADATA_FORMAT: &str = "{{title}}\t{{artist}}\t{{position}}\t{{mpris:length}}";
 
+// playerctl prints this and exits 1 when the selected player has no current
+// track (`can-play` is false or the metadata dict is empty).
+const NO_TRACK_MESSAGE: &str = "No player could handle this command";
+
 /// MPRIS media control through the `playerctl` command line tool.
 pub struct PlayerctlMedia {
     runner: Arc<dyn CommandRunner>,
@@ -76,12 +80,12 @@ impl Media for PlayerctlMedia {
 
         let metadata_args = ["-p", player, "metadata", "--format", METADATA_FORMAT];
         let metadata = self.call(&metadata_args).await?;
-        // playerctl exits non-zero when the player has no current track. That is
-        // an empty snapshot, not a backend failure.
         let line = if metadata.success {
             first_line(&metadata.stdout)
-        } else {
+        } else if reports_no_track(&metadata) {
             String::new()
+        } else {
+            return Err(failure(&metadata_args, &metadata));
         };
         let mut fields = line.split('\t');
         Ok(Some(PlaybackState {
@@ -137,6 +141,15 @@ fn failure(args: &[&str], output: &CommandOutput) -> DesktopError {
         format!("{PROGRAM} {} exited with {code}: {stderr}", args.join(" "))
     };
     DesktopError::Backend(detail)
+}
+
+fn reports_no_track(output: &CommandOutput) -> bool {
+    if output.success || !output.stdout.is_empty() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .any(|line| line.trim() == NO_TRACK_MESSAGE)
 }
 
 fn first_line(stdout: &[u8]) -> String {
@@ -320,6 +333,61 @@ mod tests {
         assert!(!state.playing);
         assert_eq!(state.title, None);
         assert_eq!(state.artist, None);
+    }
+
+    #[tokio::test]
+    async fn playback_no_track_while_playing_keeps_the_snapshot() {
+        let (media, _) = backend(vec![
+            success("Playing\n"),
+            failure_reply(1, "No player could handle this command\n"),
+        ]);
+
+        let state = media.playback("vlc").await.unwrap().unwrap();
+        assert!(state.playing);
+        assert_eq!(state.title, None);
+        assert_eq!(state.artist, None);
+        assert_eq!(state.position_ms, 0);
+        assert_eq!(state.length_ms, 0);
+    }
+
+    #[tokio::test]
+    async fn playback_metadata_failure_is_backend_error() {
+        let (media, _) = backend(vec![
+            success("Playing\n"),
+            failure_reply(
+                1,
+                "Could not execute command: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown\n",
+            ),
+        ]);
+
+        let error = media.playback("vlc").await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                DesktopError::Backend(message)
+                    if message.contains("vlc")
+                        && message.contains("org.freedesktop.DBus.Error.ServiceUnknown")
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn playback_metadata_no_players_is_backend_error() {
+        let (media, _) = backend(vec![
+            success("Playing\n"),
+            failure_reply(1, "No players found\n"),
+        ]);
+
+        let error = media.playback("vlc").await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                DesktopError::Backend(message)
+                    if message.contains("vlc") && message.contains("No players found")
+            ),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
