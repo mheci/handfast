@@ -70,8 +70,8 @@ try {
     }
     if (-not $started) {
         [Console]::Error.WriteLine("handfastd did not start. Log: $log")
-        $tail = Read-Log $log
-        if ($tail) { [Console]::Error.WriteLine($tail) }
+        $tail = (Read-Log $log).TrimEnd() -split "`r?`n" | Select-Object -Last 30
+        if ($tail) { [Console]::Error.WriteLine(($tail -join "`n")) }
         throw 'handfastd did not start.'
     }
 
