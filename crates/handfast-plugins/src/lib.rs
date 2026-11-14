@@ -9,6 +9,7 @@
 pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
+pub mod findthisdevice;
 pub mod mpriscontrol;
 pub mod notifications;
 pub mod pausemusic;
@@ -21,6 +22,7 @@ use handfast_runtime::{PluginMeta, Registry};
 pub use battery::{BatteryFactory, BatteryPlugin};
 pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
+pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
 pub use mpriscontrol::{MprisControlFactory, MprisControlPlugin};
 pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
@@ -39,6 +41,7 @@ pub fn registry() -> Registry {
         Box::new(share::ShareFactory),
         Box::new(mpriscontrol::MprisControlFactory),
         Box::new(notifications::NotificationsFactory),
+        Box::new(findthisdevice::FindThisDeviceFactory),
     ])
 }
 
