@@ -3,9 +3,7 @@
 //! A stored identity is never regenerated. A corrupt record, a common-name
 //! mismatch or a device ID that disagrees with `settings_v1` is fatal: a new
 //! certificate would silently change this device's fingerprint and break every
-//! peer that pinned it. A state path that is a link or owned by another user is
-//! rejected before it is opened, because the private key would land in a file
-//! the daemon does not control.
+//! peer that pinned it.
 
 use std::error::Error;
 use std::path::Path;
@@ -61,8 +59,8 @@ pub fn load_or_generate_tls_identity(
         .map_err(|error: TlsError| format!("stored identity is unusable: {error}").into())
 }
 
-/// Reject a state directory or state file that a link or another user could
-/// redirect the private key into.
+/// Reject a state path that is itself a symlink or reparse point, or is owned
+/// by another user.
 ///
 /// A missing path passes, because the daemon creates it itself. Run the check
 /// before creating or opening the path: `create_dir_all` and the store follow a
@@ -130,7 +128,6 @@ pub fn ensure_owned_state_path(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The effective uid of this process.
 #[cfg(unix)]
 #[allow(unsafe_code)]
 fn effective_uid() -> u32 {

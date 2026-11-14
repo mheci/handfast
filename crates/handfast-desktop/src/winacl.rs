@@ -312,11 +312,6 @@ fn current_user_sid() -> io::Result<TokenSid> {
     process_token_sid(TokenUser)
 }
 
-/// The SID the token sets as the owner of a new object.
-///
-/// An elevated Administrators token creates objects owned by the
-/// Administrators group rather than the user SID, so both count as the current
-/// user.
 fn current_owner_sid() -> io::Result<TokenSid> {
     process_token_sid(TokenOwner)
 }
