@@ -9,6 +9,7 @@
 pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
+pub mod pausemusic;
 pub mod ping;
 pub mod roster;
 
@@ -17,6 +18,7 @@ use handfast_runtime::{PluginMeta, Registry};
 pub use battery::{BatteryFactory, BatteryPlugin};
 pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
+pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
 
 /// Build the registry of implemented plugins.
@@ -27,6 +29,7 @@ pub fn registry() -> Registry {
         Box::new(battery::BatteryFactory),
         Box::new(clipboard::ClipboardFactory),
         Box::new(connectivity_report::ConnectivityReportFactory),
+        Box::new(pausemusic::PauseMusicFactory),
     ])
 }
 

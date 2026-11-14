@@ -156,9 +156,9 @@ pub const NOTIFICATIONS: PluginMeta = PluginMeta {
 pub const PAUSEMUSIC: PluginMeta = PluginMeta {
     name: "pausemusic",
     title: "Pause media during calls",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::TELEPHONY],
-    outgoing: &[types::MPRIS_REQUEST],
+    outgoing: &[],
     desktop: DesktopRequirement::Media,
 };
 
@@ -421,8 +421,8 @@ mod tests {
     }
 
     #[test]
-    fn exactly_four_plugins_are_implemented() {
+    fn exactly_five_plugins_are_implemented() {
         let implemented = ALL.iter().filter(|meta| meta.status == IMPLEMENTED).count();
-        assert_eq!(implemented, 4);
+        assert_eq!(implemented, 5);
     }
 }
