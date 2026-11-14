@@ -116,6 +116,24 @@ is the only writer of peer trust; it pins the certificate fingerprint on `y`.
 A paired link runs one session task with a `DeviceHost` and calls
 `on_disconnect` when the link closes.
 
+### Share composition
+
+`handfastd` composes the share path before it builds its identity. `LocalFiles`
+creates the incoming root and its private `.handfast-tmp` directory, and the
+startup sweep removes `.part` files older than 24 h from that directory only.
+The desktop is then rebuilt with `files`, and the plugin registry recomputes the
+capabilities, so the announced identity advertises `kdeconnect.share.request`.
+`--print-identity` returns before this step: it keeps the default desktop, does
+not create the incoming directory and opens no control socket.
+
+One `TlsIdentity` serves both the control links and the payload connections;
+`PayloadService` never generates a second certificate. `ShareLimits` is the one
+owner of the file size, extra-byte, free-space, filename and queue bounds, and
+`files()` and `payloads()` derive both adapters from it. The local control
+channel is an adapter over `SessionHandle::share_file`: it adds the same-user
+check and framing, not a second transfer path. `hfctl` is a temporary binary in
+the daemon crate until the full IPC replaces the control channel.
+
 ## Plugin model
 
 ```rust
