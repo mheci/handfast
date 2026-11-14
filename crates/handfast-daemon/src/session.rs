@@ -21,7 +21,7 @@ use handfast_proto::{
     file_request, DeviceId, Identity, Packet, PayloadSize, ProtoError, ShareFile,
 };
 use handfast_runtime::{Device, DeviceHost, Dispatch, PluginEvent, Registry, Transfer};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 
 #[cfg(test)]
@@ -182,12 +182,25 @@ impl DeviceSession {
         deps: Option<TransferDeps>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(SESSION_QUEUE);
+        let (stop_tx, stop_rx) = watch::channel(None);
         let handle = SessionHandle {
             tx,
+            stop_tx,
             delivery_timeout: limits.delivery_timeout,
             drops: Arc::new(AtomicU64::new(0)),
         };
-        let task = tokio::spawn(run(peer, link, registry, desktop, events, rx, deps));
+        let task = tokio::spawn(run(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            SessionChannels {
+                input: rx,
+                stop: stop_rx,
+            },
+            deps,
+        ));
         Self { task, handle }
     }
 
@@ -213,6 +226,7 @@ impl DeviceSession {
 #[derive(Clone)]
 pub struct SessionHandle {
     tx: mpsc::Sender<SessionInput>,
+    stop_tx: watch::Sender<Option<String>>,
     delivery_timeout: Duration,
     drops: Arc<AtomicU64>,
 }
@@ -303,18 +317,7 @@ impl SessionHandle {
 
     /// Stop the session. `on_disconnect` runs before the task exits.
     pub fn stop(&self, reason: String) {
-        match self.tx.try_send(SessionInput::Disconnected(reason)) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Closed(_)) => {}
-            Err(mpsc::error::TrySendError::Full(input)) => {
-                // The queue is backed up; deliver the stop after the backlog
-                // rather than dropping it.
-                let tx = self.tx.clone();
-                tokio::spawn(async move {
-                    let _ = tx.send(input).await;
-                });
-            }
-        }
+        self.stop_tx.send_replace(Some(reason));
     }
 }
 
@@ -424,8 +427,6 @@ pub enum SessionInput {
         /// Transfer result.
         reply: oneshot::Sender<Result<TransferOutcome, TransferError>>,
     },
-    /// The link closed or the daemon is shutting down.
-    Disconnected(String),
 }
 
 /// Payload and file adapters for the inbound transfer runner.
@@ -702,9 +703,26 @@ impl TransferRunner {
 /// One step of the session loop.
 enum SessionStep {
     Input(Option<SessionInput>),
+    Stop(String),
     Receive(Option<Result<(), JoinError>>),
     Connect(Option<ConnectJoin>),
     Send(Option<Result<(), JoinError>>),
+}
+
+async fn next_stop(stop: &mut watch::Receiver<Option<String>>) -> String {
+    loop {
+        if let Some(reason) = stop.borrow_and_update().clone() {
+            return reason;
+        }
+        if stop.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+struct SessionChannels {
+    input: mpsc::Receiver<SessionInput>,
+    stop: watch::Receiver<Option<String>>,
 }
 
 async fn run(
@@ -713,9 +731,13 @@ async fn run(
     registry: Arc<Registry>,
     desktop: Desktop,
     events: mpsc::Sender<DaemonEvent>,
-    mut input: mpsc::Receiver<SessionInput>,
+    channels: SessionChannels,
     deps: Option<TransferDeps>,
 ) {
+    let SessionChannels {
+        mut input,
+        mut stop,
+    } = channels;
     let device_id = peer.device_id.clone();
     let device = Device {
         id: peer.device_id,
@@ -749,6 +771,8 @@ async fn run(
         let step = match runner.as_mut() {
             Some(runner) => {
                 tokio::select! {
+                    biased;
+                    reason = next_stop(&mut stop) => SessionStep::Stop(reason),
                     input = input.recv() => SessionStep::Input(input),
                     joined = runner.receives.join_next(), if receives_open => {
                         SessionStep::Receive(joined)
@@ -761,17 +785,23 @@ async fn run(
                     }
                 }
             }
-            None => SessionStep::Input(input.recv().await),
+            None => {
+                tokio::select! {
+                    biased;
+                    reason = next_stop(&mut stop) => SessionStep::Stop(reason),
+                    input = input.recv() => SessionStep::Input(input),
+                }
+            }
         };
 
         match step {
+            SessionStep::Stop(reason) => break reason,
             SessionStep::Input(None) => break "session channel closed".to_string(),
             SessionStep::Input(Some(input)) => {
-                if let Some(reason) =
-                    handle_input(input, &mut host, &mut runner, &link, &events, &device_id).await
-                {
+                if let Some(reason) = stop.borrow().clone() {
                     break reason;
                 }
+                handle_input(input, &mut host, &mut runner, &link, &events, &device_id).await;
             }
             SessionStep::Receive(joined) => {
                 if let Some(runner) = runner.as_mut() {
@@ -806,7 +836,7 @@ async fn handle_input(
     link: &LinkHandle,
     events: &mpsc::Sender<DaemonEvent>,
     device_id: &DeviceId,
-) -> Option<String> {
+) {
     match input {
         SessionInput::Packet(packet) | SessionInput::Share(packet) => {
             let dispatch = host.dispatch(&packet).await;
@@ -814,20 +844,15 @@ async fn handle_input(
             if let Some(runner) = runner.as_mut() {
                 runner.enqueue_all(transfers).await;
             }
-            None
         }
-        SessionInput::ShareFile { path, reply } => {
-            match runner.as_mut() {
-                Some(runner) => runner.share_file(path, link, reply),
-                None => {
-                    let _ = reply.send(Err(TransferError::Unavailable(
-                        "session has no files adapter",
-                    )));
-                }
+        SessionInput::ShareFile { path, reply } => match runner.as_mut() {
+            Some(runner) => runner.share_file(path, link, reply),
+            None => {
+                let _ = reply.send(Err(TransferError::Unavailable(
+                    "session has no files adapter",
+                )));
             }
-            None
-        }
-        SessionInput::Disconnected(reason) => Some(reason),
+        },
     }
 }
 
@@ -1113,13 +1138,22 @@ mod tests {
     };
     use handfast_testkit::peer::PeerConfig;
     use handfast_testkit::tls_peer::TlsVersion;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, Notify};
 
     static RECORDING: PluginMeta = PluginMeta {
         name: "recording",
         title: "Recording",
         status: PluginStatus::Implemented,
         incoming: &[],
+        outgoing: &[],
+        desktop: DesktopRequirement::None,
+    };
+
+    static GATED: PluginMeta = PluginMeta {
+        name: "gated",
+        title: "Gated",
+        status: PluginStatus::Implemented,
+        incoming: &[types::PING],
         outgoing: &[],
         desktop: DesktopRequirement::None,
     };
@@ -1450,6 +1484,61 @@ mod tests {
         }
     }
 
+    struct GatedPlugin {
+        packets: Arc<AtomicUsize>,
+        entered: Arc<Notify>,
+        gate: Arc<Notify>,
+        disconnects: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Plugin for GatedPlugin {
+        fn meta(&self) -> &'static PluginMeta {
+            &GATED
+        }
+
+        async fn on_packet(
+            &mut self,
+            _ctx: &mut PluginContext<'_>,
+            _packet: &Packet,
+        ) -> Result<PluginOutput, PluginError> {
+            self.packets.fetch_add(1, Ordering::SeqCst);
+            self.entered.notify_one();
+            self.gate.notified().await;
+            Ok(PluginOutput::new())
+        }
+
+        async fn on_disconnect(
+            &mut self,
+            _ctx: &mut PluginContext<'_>,
+        ) -> Result<PluginOutput, PluginError> {
+            self.disconnects.fetch_add(1, Ordering::SeqCst);
+            Ok(PluginOutput::new())
+        }
+    }
+
+    struct GatedFactory {
+        packets: Arc<AtomicUsize>,
+        entered: Arc<Notify>,
+        gate: Arc<Notify>,
+        disconnects: Arc<AtomicUsize>,
+    }
+
+    impl PluginFactory for GatedFactory {
+        fn meta(&self) -> &'static PluginMeta {
+            &GATED
+        }
+
+        fn create(&self) -> Box<dyn Plugin> {
+            Box::new(GatedPlugin {
+                packets: Arc::clone(&self.packets),
+                entered: Arc::clone(&self.entered),
+                gate: Arc::clone(&self.gate),
+                disconnects: Arc::clone(&self.disconnects),
+            })
+        }
+    }
+
     #[tokio::test]
     async fn disconnect_runs_on_disconnect_and_forwards_its_output() {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -1511,6 +1600,71 @@ mod tests {
             }
             _ => panic!("expected plugin events"),
         }
+    }
+
+    #[tokio::test]
+    async fn stop_preempts_a_full_queue_and_disconnects_once() {
+        let packets = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(Notify::new());
+        let gate = Arc::new(Notify::new());
+        let disconnects = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(Registry::new(vec![Box::new(GatedFactory {
+            packets: Arc::clone(&packets),
+            entered: Arc::clone(&entered),
+            gate: Arc::clone(&gate),
+            disconnects: Arc::clone(&disconnects),
+        })]));
+        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let drain = tokio::spawn(async move { while link_rx.recv().await.is_some() {} });
+        let (events, _events_rx) = mpsc::channel(8);
+        let session = DeviceSession::start(
+            peer_identity(),
+            LinkHandle::from_channel(peer_id(), link_tx),
+            registry,
+            Desktop::default(),
+            events,
+            SessionLimits::default(),
+        );
+
+        session
+            .handle()
+            .deliver(Packet::empty(types::PING).expect("a valid empty ping"));
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("the first packet reaches the plugin");
+
+        for _ in 0..SESSION_QUEUE {
+            session
+                .handle()
+                .deliver(Packet::empty(types::PING).expect("a valid empty ping"));
+        }
+        assert_eq!(
+            packets.load(Ordering::SeqCst),
+            1,
+            "one packet is in flight and the queue is full"
+        );
+
+        session.handle().stop("test stop".to_string());
+        let dispatched = packets.load(Ordering::SeqCst);
+        gate.notify_one();
+
+        tokio::time::timeout(Duration::from_secs(5), session.into_task())
+            .await
+            .expect("the session exits promptly")
+            .expect("the session task joins");
+
+        assert_eq!(
+            packets.load(Ordering::SeqCst),
+            dispatched,
+            "no queued packet is dispatched after the stop"
+        );
+        assert_eq!(dispatched, 1, "only the in-flight packet ran");
+        assert_eq!(
+            disconnects.load(Ordering::SeqCst),
+            1,
+            "on_disconnect runs once"
+        );
+        drain.abort();
     }
 
     #[tokio::test]
@@ -1843,6 +1997,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(SESSION_QUEUE);
         let handle = SessionHandle {
             tx,
+            stop_tx: watch::channel(None).0,
             delivery_timeout: SessionLimits::default().delivery_timeout,
             drops: Arc::new(AtomicU64::new(0)),
         };
@@ -1872,6 +2027,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(SESSION_QUEUE);
         let handle = SessionHandle {
             tx,
+            stop_tx: watch::channel(None).0,
             delivery_timeout: SessionLimits::default().delivery_timeout,
             drops: Arc::new(AtomicU64::new(0)),
         };
@@ -2215,6 +2371,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(SESSION_QUEUE);
         let handle = SessionHandle {
             tx,
+            stop_tx: watch::channel(None).0,
             delivery_timeout: SessionLimits::default().delivery_timeout,
             drops: Arc::new(AtomicU64::new(0)),
         };
