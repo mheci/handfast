@@ -729,7 +729,28 @@ async fn wait_for_log_count(log: &Path, needle: &str, count: usize, daemon: &mut
 }
 
 fn read_log(log: &Path) -> String {
-    std::fs::read_to_string(log).unwrap_or_default()
+    let raw = std::fs::read_to_string(log).unwrap_or_default();
+    strip_ansi(&raw)
+}
+
+/// Remove ANSI CSI sequences so assertions see the plain log text. The daemon
+/// keeps ANSI color in its stderr output even when stderr is a file.
+fn strip_ansi(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for next in chars.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+            continue;
+        }
+        output.push(character);
+    }
+    output
 }
 
 fn stop(mut daemon: Child) {
