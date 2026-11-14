@@ -83,7 +83,8 @@ Active parallel wave:
 - Unit 7 manager share routing: merged in `4dc1aa7`.
 - Unit 8 inbound session runner: merged in `c429058`.
 - Unit 9 outbound share: merged in `89eaf75`.
-- Unit 10 control channel: PR [#217](https://github.com/mheci/handfast/pull/217), head `19ea7af`, all 9 checks green, Windows pipe tests now run in CI, final re-verify in flight.
+- Unit 10 control channel: PR [#217](https://github.com/mheci/handfast/pull/217), head `19ea7af`, verifier PASS, owner merging.
+- Unit 11 composition brief: ready at `C:\Users\mah\AppData\Local\Temp\opencode\unit11-composition-brief.md`.
 - Incident: commit `708fee3` accidentally swept the unit 10 working files into main and was reverted by `6241ec8`. Main's tree is restored to `488e851`; PR #217 remains the source of truth.
 - Windows ACLs: merged in `4f4a7cf`. The P1 Windows state and incoming ACL blocker is cleared.
 - P1 hardening: merged in `b4d41ba`.
