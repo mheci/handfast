@@ -28,8 +28,8 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>> {
 ///
 /// Fails when the packet cannot be serialized or exceeds the frame limit.
 pub fn encode_into(packet: &Packet, frame: &mut Vec<u8>) -> Result<()> {
-    packet.validate()?;
     frame.clear();
+    packet.validate()?;
     frame.extend_from_slice(&[0u8; 4]);
     if let Err(error) = serde_json::to_writer(&mut *frame, packet) {
         frame.clear();
