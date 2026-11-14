@@ -12,6 +12,8 @@ Hardening queue, 2026-11-14:
 - The daemon now installs Files plus the six CLI adapters when their tools exist, and identity capabilities follow the installed adapters.
 - Read-only audits running: P1 network and share security `ses_e2565ed05ffeeK7UWW763yFjY6`, desktop and plugin correctness `ses_e2565ed05ffdTZuAu0rk6w50hc`. Their findings seed the third wave.
 - Desktop audit complete, 16 findings. Third wave launched, one owner per file set: notifier lifecycle `ses_e254d2c93ffdyyotZKPD9X4VL2`, notification namespace `ses_e254d2c92ffe3fJlvwgDmxS3NB`, peer string caps `ses_e254d2c8cffddcd5y8guebO1uX`, pause/resume on disconnect `ses_e254d2c87ffeLR6vyG0tjGGaeD`, files hardening `ses_e254d2c85ffeb9S3aJbHBhz1y2`, session stop preempt `ses_e254cc475ffdi4rBlOHVmyxMFP`, share dedupe `ses_e254cc473ffeWHEpMuxDfB6BbG`, clipboard and volume gates `ses_e254cc46fffeoJNQRkcpqFQKMu`, screensaver child lifetime `ses_e254cc46effeRtDQ6u7yDvZ7jn`.
+- Network audit complete, 9 findings. Running: discovery flood `ses_e2548894effepI0tKr4e5bdcgD` (discovery.rs, main.rs, store.rs) and pending handshake admission `ses_e2548894effdiDiAfFH202Nbzh` (manager.rs, policy.rs).
+- Queued fourth wave after their files clear: pairing prompt and share race (`pairing.rs`, `main.rs`), LocalFiles reserved-space and owner checks (`files.rs`), state dir and file symlink/owner checks (`identity.rs`, `main.rs`, `store.rs`), Windows control pipe token (low, deferred). Interop risk: eager queued-file handshake (`session.rs`) after the stop preempt unit.
 - Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. Then the remaining P2-P4 plugins and backends.
 
 Current state:
