@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use clap::Parser;
 use handfast_daemon::control::{ControlResponse, ControlServer, DaemonCommand};
 use handfast_daemon::default_data_dir;
-use handfast_desktop::{default_incoming_dir, Desktop, Files, LocalFiles};
+use handfast_desktop::{backends, default_incoming_dir, Desktop, Files, LocalFiles};
 use handfast_net::{
     Discovery, Fingerprint, LinkEvent, LinkHandle, LinkLimits, LinkListener, LinkManager,
     LinkManagerHandle, LocalEndpoint, PayloadService, PeerCertificate, PendingLink, ShareEvent,
@@ -181,7 +181,16 @@ async fn run() -> Result<(), Box<dyn Error>> {
         files: Some(Arc::clone(&files) as Arc<dyn Files>),
         ..Desktop::default()
     };
+    let desktop = install_backends(
+        desktop,
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+        backends::program_available,
+    );
     let capabilities = registry.capabilities(&desktop)?;
+    tracing::info!(
+        capabilities = ?desktop.capabilities(),
+        "desktop backends installed"
+    );
 
     // One TLS identity serves the control links and the payload connections.
     let payloads = Arc::new(PayloadService::new(Arc::clone(&tls), limits.payloads()));
@@ -850,9 +859,118 @@ fn device_name() -> String {
         .unwrap_or_else(|_| "Handfast desktop".to_string())
 }
 
+fn install_backends(
+    mut desktop: Desktop,
+    wayland: bool,
+    available: impl Fn(&str) -> bool,
+) -> Desktop {
+    let clipboard = if wayland { "wl-paste" } else { "xclip" };
+    if available(clipboard) {
+        desktop.clipboard = Some(backends::clipboard());
+    }
+    if available("notify-send") {
+        desktop.notifier = Some(backends::notifier());
+    }
+    if available("playerctl") {
+        desktop.media = Some(backends::media());
+    }
+    if available("wpctl") {
+        desktop.volume = Some(backends::volume());
+    }
+    if available("xdg-open") {
+        desktop.shell = Some(backends::shell());
+    }
+    if available("systemd-inhibit") {
+        desktop.screensaver = Some(backends::screensaver());
+    }
+    desktop
+}
+
 #[cfg(test)]
 mod tests {
+    use handfast_desktop::DesktopCapabilities;
+    use handfast_proto::types;
+
     use super::*;
+
+    #[test]
+    fn available_tools_select_their_backends() {
+        let none = install_backends(Desktop::default(), false, |_| false);
+        assert_eq!(none.capabilities(), DesktopCapabilities::default());
+
+        let all = install_backends(Desktop::default(), false, |_| true);
+        assert_eq!(
+            all.capabilities(),
+            DesktopCapabilities {
+                clipboard: true,
+                notifications: true,
+                media: true,
+                volume: true,
+                input: false,
+                screensaver: true,
+                shell: true,
+                files: false,
+            }
+        );
+
+        let wayland = install_backends(Desktop::default(), true, |program| program == "wl-paste");
+        assert!(wayland.capabilities().clipboard);
+
+        let x11_only = install_backends(Desktop::default(), true, |program| program == "xclip");
+        assert!(!x11_only.capabilities().clipboard);
+    }
+
+    #[test]
+    fn capabilities_follow_the_installed_adapters() {
+        let registry = registry();
+        let packets = [
+            ("xclip", &[types::CLIPBOARD, types::CLIPBOARD_CONNECT][..]),
+            (
+                "notify-send",
+                &[
+                    types::NOTIFICATION,
+                    types::FINDMYPHONE_REQUEST,
+                    types::FINDTHISDEVICE_PRIVATE,
+                ][..],
+            ),
+            ("playerctl", &[types::MPRIS_REQUEST, types::TELEPHONY][..]),
+            (
+                "wpctl",
+                &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST][..],
+            ),
+        ];
+
+        for (tool, accepted) in packets {
+            let without = install_backends(Desktop::default(), false, |program| program != tool);
+            let capabilities = registry.capabilities(&without).unwrap();
+            for packet in accepted {
+                assert!(
+                    !capabilities.accepts(packet),
+                    "{packet} advertised without {tool}"
+                );
+            }
+
+            let with = install_backends(Desktop::default(), false, |program| program == tool);
+            let capabilities = registry.capabilities(&with).unwrap();
+            for packet in accepted {
+                assert!(capabilities.accepts(packet), "{packet} missing with {tool}");
+            }
+        }
+    }
+
+    #[test]
+    fn shell_and_screensaver_adapters_add_no_packets() {
+        let registry = registry();
+        let desktop = install_backends(Desktop::default(), false, |program| {
+            program == "xdg-open" || program == "systemd-inhibit"
+        });
+        assert!(desktop.capabilities().shell);
+        assert!(desktop.capabilities().screensaver);
+
+        let capabilities = registry.capabilities(&desktop).unwrap();
+        assert!(!capabilities.accepts(types::RUNCOMMAND_REQUEST));
+        assert!(!capabilities.accepts(types::LOCK_REQUEST));
+    }
 
     #[tokio::test]
     async fn link_events_are_preferred_over_share_events() {
