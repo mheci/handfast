@@ -15,6 +15,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
+use handfast_daemon::control::{ControlResponse, ControlServer, DaemonCommand};
+use handfast_daemon::default_data_dir;
 use handfast_desktop::Desktop;
 use handfast_net::{
     Discovery, Fingerprint, LinkEvent, LinkHandle, LinkLimits, LinkListener, LinkManager,
@@ -47,6 +49,9 @@ const LINK_EVENT_QUEUE: usize = 256;
 
 /// The daemon event channel from sessions and pairing tasks.
 const DAEMON_EVENT_QUEUE: usize = 256;
+
+/// The local control command channel.
+const COMMAND_QUEUE: usize = 16;
 
 /// How long shutdown waits for tasks before aborting them.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -239,6 +244,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
         }
     });
 
+    let (command_tx, mut command_rx) = mpsc::channel(COMMAND_QUEUE);
+    let control = ControlServer::start(&data_dir, command_tx).await?;
+
     let mut daemon = Daemon {
         store,
         registry,
@@ -254,6 +262,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         prompt_task,
     };
 
+    let mut command_open = true;
     loop {
         // Link events are handled before share events so a Connected event
         // creates the session before a share packet for the same link arrives.
@@ -287,14 +296,26 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     None => break,
                 }
             }
+            command = command_rx.recv(), if command_open => {
+                match command {
+                    Some(command) => daemon.handle_command(command),
+                    None => {
+                        tracing::warn!("control command channel stopped");
+                        command_open = false;
+                    }
+                }
+            }
         }
     }
 
     // Dropping the receivers before shutdown keeps a full event queue from
-    // stalling the manager while it closes links.
+    // stalling the manager while it closes links. The control server stops
+    // accepting before sessions stop, so no command starts mid-shutdown.
     drop(link_rx);
     drop(share_rx);
     drop(daemon_rx);
+    drop(command_rx);
+    control.shutdown().await;
     daemon
         .shutdown(discovery_stop, discovery_task, manager_task)
         .await;
@@ -601,6 +622,34 @@ impl Daemon {
         }
     }
 
+    /// Queue one control command. The transfer runs in its own task so a 30 s
+    /// payload accept cannot stall the event loop.
+    fn handle_command(&self, command: DaemonCommand) {
+        let DaemonCommand::Share {
+            device_id,
+            path,
+            reply,
+        } = command;
+        let Some(session) = self.sessions.get(&device_id) else {
+            let _ = reply.send(ControlResponse::Err {
+                message: format!("device {device_id} is not connected"),
+            });
+            return;
+        };
+        let handle = session.handle();
+        tokio::spawn(async move {
+            let response = match handle.share_file(path).await {
+                Ok(outcome) => ControlResponse::Ok {
+                    bytes: outcome.bytes,
+                },
+                Err(error) => ControlResponse::Err {
+                    message: error.to_string(),
+                },
+            };
+            let _ = reply.send(response);
+        });
+    }
+
     /// Remove the prompt handle only when the outcome belongs to the current
     /// prompt. A stale outcome must not clear a newer prompt.
     fn take_prompt(&mut self, device_id: &DeviceId, token: u64) -> bool {
@@ -699,22 +748,6 @@ fn device_name() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "Handfast desktop".to_string())
-}
-
-fn default_data_dir() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(value) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(value).join("handfast");
-        }
-    }
-    if let Some(value) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(value).join("handfast");
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join(".local/share/handfast");
-    }
-    PathBuf::from("handfast-data")
 }
 
 #[cfg(test)]
