@@ -84,6 +84,15 @@ impl Desktop {
         self
     }
 
+    /// Compose a desktop with only a clipboard adapter.
+    #[must_use]
+    pub fn with_clipboard(clipboard: Arc<dyn Clipboard>) -> Self {
+        Self {
+            clipboard: Some(clipboard),
+            ..Self::default()
+        }
+    }
+
     /// Report which adapters are present.
     #[must_use]
     pub fn capabilities(&self) -> DesktopCapabilities {
