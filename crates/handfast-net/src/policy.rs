@@ -1,9 +1,9 @@
 //! Admission policy for unpaired links and inbound connections.
 //!
-//! The policy is the only owner of the unpaired slot count and the inbound
-//! per-IP window. The manager creates one policy and clones it into handshake
-//! tasks. A short mutex keeps the cap exact across concurrent accepts; it does
-//! not guard sockets or link state.
+//! The policy is the only owner of the unpaired slot count, the per-IP pending
+//! handshake count and the inbound per-IP window. The manager creates one
+//! policy and clones it into handshake tasks. A short mutex keeps the caps
+//! exact across concurrent accepts; it does not guard sockets or link state.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -20,6 +20,7 @@ use crate::link::LinkLimits;
 struct PolicyState {
     unpaired: usize,
     inbound: HashMap<IpAddr, Instant>,
+    pending: HashMap<IpAddr, usize>,
 }
 
 /// The admission policy shared by the manager and its handshake tasks.
@@ -37,9 +38,38 @@ impl LinkPolicy {
             state: Arc::new(Mutex::new(PolicyState {
                 unpaired: 0,
                 inbound: HashMap::new(),
+                pending: HashMap::new(),
             })),
             limits,
         }
+    }
+
+    /// Reserve one pending handshake slot for an inbound address.
+    ///
+    /// The manager calls this at accept, before the plaintext hello, so silent
+    /// connections cannot hold the whole pending pool. One address may hold at
+    /// most half of [`LinkLimits::max_pending`], and never less than one slot;
+    /// the rest stay free for other addresses. The returned permit releases the
+    /// slot on drop.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the address already holds its share of the pending slots.
+    pub fn reserve_pending(&self, address: IpAddr) -> Result<PendingPermit> {
+        let limit = (self.limits.max_pending / 2).max(1);
+        let mut state = self.lock();
+        let held = state.pending.get(&address).copied().unwrap_or_default();
+        if held >= limit {
+            return Err(NetError::Admission(format!(
+                "pending handshake cap reached for {address}"
+            )));
+        }
+        state.pending.insert(address, held + 1);
+        drop(state);
+        Ok(PendingPermit {
+            state: Arc::clone(&self.state),
+            address,
+        })
     }
 
     /// Reserve a slot for an incoming connection.
@@ -150,6 +180,28 @@ impl Drop for AdmissionPermit {
     }
 }
 
+/// A reserved per-IP pending handshake slot. Dropping it releases the slot.
+pub struct PendingPermit {
+    state: Arc<Mutex<PolicyState>>,
+    address: IpAddr,
+}
+
+impl Drop for PendingPermit {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let released = match state.pending.get_mut(&self.address) {
+            Some(held) => {
+                *held = held.saturating_sub(1);
+                *held == 0
+            }
+            None => false,
+        };
+        if released {
+            state.pending.remove(&self.address);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
@@ -170,6 +222,30 @@ mod tests {
 
     fn address(last: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, last))
+    }
+
+    #[test]
+    fn one_ip_cannot_reserve_every_pending_slot() {
+        let policy = LinkPolicy::new(LinkLimits {
+            max_pending: 4,
+            ..limits()
+        });
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            if let Ok(permit) = policy.reserve_pending(address(1)) {
+                held.push(permit);
+            }
+        }
+        assert!(held.len() < 4, "one IP never holds the whole pending pool");
+        assert!(
+            policy.reserve_pending(address(2)).is_ok(),
+            "another IP is admitted while the first holds its share"
+        );
+        held.clear();
+        assert!(
+            policy.reserve_pending(address(1)).is_ok(),
+            "dropping the permits frees the IP's share"
+        );
     }
 
     #[test]

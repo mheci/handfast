@@ -480,6 +480,16 @@ impl ManagerState {
     }
 
     fn spawn_inbound(&self, tcp: tokio::net::TcpStream, handshakes: &mut JoinSet<()>) {
+        let Ok(remote_addr) = tcp.peer_addr() else {
+            return;
+        };
+        let pending = match self.policy.reserve_pending(remote_addr.ip()) {
+            Ok(permit) => permit,
+            Err(error) => {
+                debug!(%error, "pending handshake per-IP cap reached; closing the connection");
+                return;
+            }
+        };
         let Ok(slot) = Arc::clone(&self.pending_slots).try_acquire_owned() else {
             debug!("pending handshake cap reached; closing the connection");
             return;
@@ -492,6 +502,7 @@ impl ManagerState {
         let messages = self.messages.clone();
         handshakes.spawn(async move {
             let _slot = slot;
+            let _pending = pending;
             let result =
                 accept_handshake(tcp, &tls, local.as_ref(), &trust, &limits, &policy).await;
             let _ = messages
