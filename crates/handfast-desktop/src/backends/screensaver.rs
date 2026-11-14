@@ -42,7 +42,6 @@ struct ChildInhibition {
 #[async_trait]
 impl Inhibition for ChildInhibition {
     async fn release(&self) -> io::Result<()> {
-        // Close the pipe first so the inhibited command exits before the kill fallback.
         drop(self.stdin.lock().ok().and_then(|mut slot| slot.take()));
         let Some(mut child) = self.child.lock().ok().and_then(|mut slot| slot.take()) else {
             return Ok(());
