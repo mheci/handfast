@@ -13,6 +13,7 @@ fail() {
 find_binary() {
     local name=$1
     local override=$2
+    local required=${3:-required}
     if [ -n "$override" ]; then
         [ -x "$override" ] || fail "$name override is not executable: $override"
         printf '%s\n' "$override"
@@ -28,6 +29,9 @@ find_binary() {
             fi
         done
     done
+    if [ "$required" = optional ]; then
+        return 1
+    fi
     fail "$name not found under $repo_root/target. Build both binaries first:
   cargo build --release -p handfast-daemon --bin handfastd --bin hfctl
 Set HANDFASTD or HFCTL to use another path."
@@ -137,7 +141,7 @@ EOF
 if [ -n "${HFCTL:-}" ]; then
     [ -x "$HFCTL" ] || fail "HFCTL override is not executable: $HFCTL"
 fi
-if hfctl=$(find_binary hfctl "${HFCTL:-}"); then
+if hfctl=$(find_binary hfctl "${HFCTL:-}" optional); then
     cat <<EOF
 Outbound to a paired peer:
 
