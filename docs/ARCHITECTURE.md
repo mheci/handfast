@@ -113,8 +113,9 @@ device IDs agree.
 
 Unpaired links are admitted under a 42-link cap and a 500 ms inbound per-IP
 window, are idle-closed after 60 s and can send only `kdeconnect.pair`. The
-daemon creates no `DeviceHost` for an unpaired peer. The terminal pairing prompt
-is the only writer of peer trust; it pins the certificate fingerprint on `y`.
+daemon creates no `DeviceHost` for an unpaired peer. The pairing prompt is the
+only writer of peer trust; it answers from the terminal, the window or
+`handfast pair` and pins the certificate fingerprint on accept.
 A paired link runs one session task with a `DeviceHost` and calls
 `on_disconnect` when the link closes.
 

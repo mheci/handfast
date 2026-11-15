@@ -69,6 +69,7 @@ expensive one.
 | --- | --- | --- |
 | `handfast daemon` | `handfastd` | `--incoming-dir`, `--tcp-port` (default 1716), `--discovery-port` (default 1716), `--log-file`, `--print-identity` |
 | `handfast share` | `hfctl share` | `--device <id>`, `<path>` |
+| `handfast pair` | new | `--accept <id>` or `--reject <id>`, exactly one |
 | `handfast status` | new | `--json` |
 | `handfast identity` | `handfastd --print-identity` | `--tcp-port` (default 1716) |
 | `handfast version` | new | none |
@@ -538,6 +539,7 @@ status, so the window cannot render a running daemon with no data.
 | Header | `Running` or `Stopped`, version, uptime, Start and Stop buttons |
 | Identity | Device name, device ID, fingerprint with a copy button |
 | Incoming folder | The resolved path and an Open button |
+| Pairing requests | One row per pending request with name, device ID and fingerprint, and Accept and Reject buttons |
 | Devices | Paired devices with name, type and a connected marker |
 | Transfers | One row per active transfer, bytes of total |
 | Update | Check and Install buttons, the last result, and the reason for a refusal |
@@ -547,6 +549,13 @@ it runs `explorer.exe` with the folder path, because `handfast-desktop` has no
 Windows backend. That is the only platform branch in the window.
 
 The update buttons call the same code as `handfast update`.
+
+The Accept and Reject buttons send `WorkerCommand::PairingDecision { device_id,
+accept }` to the worker thread. The worker sends `ControlRequest::PairingDecision`
+and prints a failure on stderr. The row disappears on the next one-second status
+poll, because the daemon removes the prompt when the task reports
+`PairingAccepted` or `PairingRejected`. The window never blocks on the reply, so
+a slow or stopped daemon cannot freeze the UI.
 
 No file picker in v1. Sharing is not in the window's brief, and a native dialog
 means a second GUI dependency (`rfd`) plus a per-platform dialog path. The
@@ -698,19 +707,21 @@ Rejected:
 
 ## Decision 6: control status and shutdown
 
-Two requests join `Share` on the existing channel.
+Two requests join `Share` on the existing channel, and a third answers pairing.
 
 ```rust
 pub enum ControlRequest {
     Share { device_id: DeviceId, path: PathBuf },
     Status,
     Shutdown,
+    PairingDecision { device_id: String, accept: bool },
 }
 
 pub enum ControlResponse {
     Ok { bytes: u64 },
     Status { status: Box<DaemonStatus> },
     ShuttingDown,
+    Decided,
     Err { message: String },
 }
 ```
@@ -726,6 +737,7 @@ pub struct DaemonStatus {
     pub incoming_dir: PathBuf,
     pub connected: Vec<DeviceSummary>,
     pub paired: Vec<DeviceSummary>,
+    pub pending_pairings: Vec<PairingSummary>,
     pub transfers: Vec<TransferSummary>,
     pub truncated: bool,
 }
@@ -742,6 +754,12 @@ pub struct DeviceSummary {
     pub device_name: String,
     pub device_type: String,
     pub connected: bool,
+}
+
+pub struct PairingSummary {
+    pub device_id: DeviceId,
+    pub device_name: String,
+    pub fingerprint: String,
 }
 
 pub struct TransferSummary {
@@ -766,6 +784,7 @@ The boxed `Status` variant keeps `ControlResponse` small, which is what
 | `incoming_dir` | the resolved path `run()` used for `LocalFiles` |
 | `connected` | a new `HashMap<DeviceId, DeviceSummary>` filled on `LinkEvent::Connected` and cleared on `LinkEvent::Disconnected` |
 | `paired` | `store.trust_table()` plus one `store.device(id)` per id |
+| `pending_pairings` | one `PairingSummary` per open prompt, built when `LinkEvent::PairingRequest` queues the prompt |
 | `transfers` | a reducer over `PluginEvent::ShareProgress`, `ShareCompleted` and `ShareFailed` |
 
 `DeviceSession` does not expose its peer identity, and the daemon already sees
@@ -783,6 +802,7 @@ window's job, which is to show that something is happening.
 `paired` and `connected` are capped at 128 entries each and set `truncated`. A
 frame body over 64 KiB fails at `write_frame`, which would break the window with
 a clear but unhelpful error. The cap is three lines and turns that into a flag.
+`pending_pairings` is capped the same way.
 
 The status handler runs in the daemon event loop and reads the store through the
 existing `run_blocking` path. A status request reads at most 129 small records,
@@ -796,20 +816,59 @@ shutdown future with that receiver in one `tokio::select!` arm, and
 alternatives are `Child::kill` and `schtasks /End`, which skip the bounded
 shutdown path the daemon already has.
 
+### Pairing decisions
+
+The terminal prompt is not enough. A daemon started by the logon task or the
+systemd user unit has no terminal, and a window-started daemon's prompt is
+invisible behind the window. The prompt therefore races three answers:
+
+| Answer | Source |
+| --- | --- |
+| Cancel | The daemon, when the link closes or the device is unpaired |
+| Decision | `PairingDecision` on the control channel, from the window or `handfast pair` |
+| Terminal | `y`, `n`, Enter or the 30-second timeout on stdin |
+
+The daemon keeps one `PendingPrompt` per device: the prompt token, a
+`PairingSummary`, the cancel sender and the decision sender. `prompt` selects
+cancel first, then the decision, then the terminal line, so the first answer
+wins and a closed link always wins over a late click. The prompt task still
+reports `PairingAccepted` or `PairingRejected`, which is what removes the prompt
+and creates the session. A second decision for the same prompt replies an error,
+so a double click cannot answer twice.
+
+`read_answers` parks on `std::future::pending()` when stdin reaches EOF instead
+of dropping the answer sender. Without that, a service with no terminal would
+close the answer channel and every prompt would reject itself before anyone
+could answer. A stdout write failure is ignored for the same reason: the prompt
+still has to wait for the control or GUI answer.
+
+`PairingDecision { device_id: String, accept: bool }` carries the ID as a string
+so the control boundary can reply `"<value> is not a device ID"` instead of
+failing JSON decode and closing the connection without a response. `dispatch`
+parses it into a `DeviceId` before the daemon sees it, like every other typed
+command.
+
 `handfast status` prints the human form. One line per field, then one row per
-device and one per transfer. `--json` prints `DaemonStatus` as JSON.
+device and one per transfer. `--json` prints `DaemonStatus` as JSON. A pending
+pairing prints as one `pairing requests: <n>` line and one row with the device
+ID, name and fingerprint. `handfast pair --accept <id>` and `handfast pair
+--reject <id>` send the decision and print `pairing accepted for <id>` or
+`pairing rejected for <id>`.
 
 ### Same door, same check
 
-`Status` and `Shutdown` go through the existing `serve` and `dispatch`. They
-inherit the Unix peer-credential check and the Windows pipe DACL. The design adds
-no second listener, no TCP port, no token file and no GUI credential. Validation
-stays at the boundary, and the request types carry already-typed values.
+`Status`, `Shutdown` and `PairingDecision` go through the existing `serve` and
+`dispatch`. They inherit the Unix peer-credential check and the Windows pipe
+DACL. The design adds no second listener, no TCP port, no token file and no GUI
+credential. Validation stays at the boundary, and the request types carry
+already-typed values.
 
 A same-user process can already kill the daemon, so `Shutdown` grants no new
 capability. `Status` exposes device names and ids that the same user can read in
 `state.db`. The fingerprint is public and already logged at startup. The private
-key is never in a response.
+key is never in a response. `PairingDecision` grants only what the same user
+already has: the terminal prompt belongs to that user, and the decision is the
+same pin write it would perform.
 
 Rejected:
 
