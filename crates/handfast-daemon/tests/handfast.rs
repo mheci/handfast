@@ -244,6 +244,44 @@ fn daemon_subcommand_binds_the_tcp_listener_and_writes_the_log_file() {
     daemon.wait().unwrap();
 }
 
+#[test]
+fn daemon_creates_a_missing_log_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let stderr_log = directory.path().join("daemon.log");
+    let log_file = directory.path().join("logs").join("handfast.log");
+    assert!(!log_file.parent().unwrap().exists());
+    let stderr_file = std::fs::File::create(&stderr_log).unwrap();
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_handfast"))
+        .args([
+            "daemon",
+            "--data-dir",
+            directory.path().join("state").to_str().unwrap(),
+            "--incoming-dir",
+            directory.path().join("incoming").to_str().unwrap(),
+            "--tcp-port",
+            &free_tcp_port().to_string(),
+            "--discovery-port",
+            &free_udp_port().to_string(),
+            "--log-file",
+            log_file.to_str().unwrap(),
+        ])
+        .env_remove("XDG_RUNTIME_DIR")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(stderr_file))
+        .spawn()
+        .expect("spawn handfast daemon");
+
+    wait_for_log(&stderr_log, "TCP listener bound", &mut daemon);
+    let written = std::fs::read_to_string(&log_file).expect("read the log file");
+    assert!(
+        written.contains("TCP listener bound"),
+        "the log file's parent is created: {written}"
+    );
+
+    daemon.kill().unwrap();
+    daemon.wait().unwrap();
+}
+
 fn wait_for_log(log: &Path, needle: &str, daemon: &mut std::process::Child) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

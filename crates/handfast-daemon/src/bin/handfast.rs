@@ -298,7 +298,7 @@ fn run_service(args: ServiceArgs, data_dir: PathBuf) -> ExitCode {
     };
 
     let result = match args.command {
-        ServiceCommand::Install => service.install().map(|notes| {
+        ServiceCommand::Install => service.install(&control).map(|notes| {
             for note in notes {
                 println!("{note}");
             }
@@ -361,6 +361,12 @@ fn init_tracing(log_file: Option<&Path>) -> Result<(), Box<dyn std::error::Error
 }
 
 fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     rotate_log(path);
     std::fs::OpenOptions::new()
         .create(true)

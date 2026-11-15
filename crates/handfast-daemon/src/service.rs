@@ -5,10 +5,6 @@
 //! state directory. A SYSTEM service or a root systemd unit loses all of them,
 //! so the service is a Task Scheduler logon task on Windows and a systemd user
 //! unit on Linux.
-//!
-//! Commands are values run through a [`CommandRunner`], and the task XML and
-//! unit file are rendered as plain text, so the tests assert the exact argv and
-//! file content without installing anything.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,7 +22,6 @@ pub const UNIT_NAME: &str = "handfast.service";
 /// How long `stop` waits for the control endpoint to stop answering.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How often `stop` probes the endpoint while it waits.
 const STOP_POLL: Duration = Duration::from_millis(100);
 
 /// A snapshot of the installed and running service.
@@ -112,7 +107,6 @@ pub enum ServiceError {
     },
 }
 
-/// One external command, built before it runs so the tests can assert it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Cmd {
     program: &'static str,
@@ -240,16 +234,16 @@ impl<'a> Service<'a> {
     ///
     /// # Errors
     ///
-    /// Fails when the data directory, the unit file or the task definition
-    /// cannot be written, or when the service manager rejects a command.
-    pub fn install(&self) -> Result<Vec<String>, ServiceError> {
-        // An autostarted daemon opens its log before the daemon root creates
-        // the state directory, so the install creates it first.
-        std::fs::create_dir_all(&self.data_dir)?;
+    /// Fails when the unit file or the task definition cannot be written, when
+    /// the service manager rejects a command, or when the task cannot be
+    /// started.
+    pub fn install(&self, control: &dyn DaemonControl) -> Result<Vec<String>, ServiceError> {
+        #[cfg(unix)]
+        let _ = control;
         #[cfg(unix)]
         return self.install_unit();
         #[cfg(windows)]
-        return self.install_task();
+        return self.install_task(control);
     }
 
     /// Stop, disable and remove the unit or task.
@@ -273,13 +267,17 @@ impl<'a> Service<'a> {
     ///
     /// Fails when the service manager rejects the start command.
     pub fn start(&self, control: &dyn DaemonControl) -> Result<(), ServiceError> {
+        #[cfg(unix)]
+        return self.start_with(control, &unix_start_command());
+        #[cfg(windows)]
+        return self.start_with(control, &windows_run_task());
+    }
+
+    fn start_with(&self, control: &dyn DaemonControl, command: &Cmd) -> Result<(), ServiceError> {
         if control.status().is_ok() {
             return Ok(());
         }
-        #[cfg(unix)]
-        self.run_checked(&unix_start_command())?;
-        #[cfg(windows)]
-        self.run_checked(&windows_run_task())?;
+        self.run_checked(command)?;
         Ok(())
     }
 
@@ -348,11 +346,12 @@ impl<'a> Service<'a> {
 
     #[cfg(any(unix, test))]
     fn uninstall_unit(&self) -> Result<(), ServiceError> {
-        if self.unit_path.is_file() {
-            // A unit that was never enabled answers disable with an error.
-            self.run_ignored(&unix_disable_unit());
-            self.run_ignored(&unix_stop_command());
-            std::fs::remove_file(&self.unit_path)?;
+        if self.installed_unix() {
+            self.run_checked(&unix_disable_unit())?;
+            self.run_checked(&unix_stop_command())?;
+            if self.unit_path.is_file() {
+                std::fs::remove_file(&self.unit_path)?;
+            }
         }
         self.run_checked(&unix_daemon_reload())?;
         Ok(())
@@ -365,13 +364,17 @@ impl<'a> Service<'a> {
     }
 
     #[cfg(windows)]
-    fn install_task(&self) -> Result<Vec<String>, ServiceError> {
+    fn install_task(&self, control: &dyn DaemonControl) -> Result<Vec<String>, ServiceError> {
         let sid = handfast_desktop::winacl::current_user_sid_string()?;
-        self.install_task_with_sid(&sid)
+        self.install_task_with_sid(&sid, control)
     }
 
     #[cfg(any(windows, test))]
-    fn install_task_with_sid(&self, sid: &str) -> Result<Vec<String>, ServiceError> {
+    fn install_task_with_sid(
+        &self,
+        sid: &str,
+        control: &dyn DaemonControl,
+    ) -> Result<Vec<String>, ServiceError> {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         // Concurrent installs must not share one definition file.
@@ -384,6 +387,7 @@ impl<'a> Service<'a> {
         let created = self.run_checked(&windows_create_task(&temp));
         let _ = std::fs::remove_file(&temp);
         created?;
+        self.start_with(control, &windows_run_task())?;
 
         let mut notes = vec![format!("installed task {TASK_NAME}")];
         if !self.succeeds(
@@ -451,6 +455,7 @@ impl<'a> Service<'a> {
         })
     }
 
+    #[cfg(any(windows, test))]
     fn run_ignored(&self, command: &Cmd) {
         let _ = self.run(command);
     }
@@ -1008,23 +1013,6 @@ WantedBy=default.target
         assert_eq!(notes, vec![format!("installed {}", unit_path.display())]);
     }
 
-    #[test]
-    fn install_creates_the_state_directory() {
-        let directory = tempfile::tempdir().unwrap();
-        let runner = FakeCommands::default();
-        let data_dir = directory.path().join("data");
-        let service = service_for(
-            "/opt/handfast/handfast",
-            &data_dir,
-            directory.path().join(UNIT_NAME),
-            &runner,
-        );
-
-        service.install().unwrap();
-
-        assert!(data_dir.is_dir(), "the daemon log needs its parent");
-    }
-
     #[cfg(any(unix, test))]
     #[test]
     fn install_twice_leaves_one_unit_and_the_same_state() {
@@ -1049,7 +1037,7 @@ WantedBy=default.target
 
     #[cfg(any(windows, test))]
     #[test]
-    fn install_writes_and_registers_the_task() {
+    fn install_writes_registers_and_starts_the_task() {
         let directory = tempfile::tempdir().unwrap();
         let runner = FakeCommands::default();
         let data_dir = directory.path().join("data");
@@ -1059,13 +1047,14 @@ WantedBy=default.target
             directory.path().join(UNIT_NAME),
             &runner,
         );
+        let control = FakeControl::stopped();
 
         let notes = service
-            .install_task_with_sid("S-1-5-21-1-2-3-1001")
+            .install_task_with_sid("S-1-5-21-1-2-3-1001", &control)
             .unwrap();
 
         let calls = runner.calls();
-        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls.len(), 3, "{calls:?}");
         assert_eq!(calls[0].0, "schtasks");
         assert_eq!(calls[0].1[0], "/Create");
         assert_eq!(calls[0].1[1], "/XML");
@@ -1074,11 +1063,39 @@ WantedBy=default.target
             "the XML path is passed: {calls:?}"
         );
         assert_eq!(calls[0].1[3..], ["/TN", TASK_NAME, "/F"]);
-        assert_eq!(calls[1].0, "netsh");
+        assert_eq!(calls[1].1, ["/Run", "/TN", TASK_NAME]);
+        assert_eq!(calls[2].0, "netsh");
         assert_eq!(notes[0], format!("installed task {TASK_NAME}"));
         assert!(
             !Path::new(&calls[0].1[2]).exists(),
             "the temp definition is removed"
+        );
+    }
+
+    #[cfg(any(windows, test))]
+    #[test]
+    fn install_leaves_a_running_daemon_alone() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::default();
+        let data_dir = directory.path().join("data");
+        let service = service_for(
+            r"C:\Handfast\handfast.exe",
+            &data_dir,
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+        let control = FakeControl::answering(&[true]);
+
+        service
+            .install_task_with_sid("S-1-5-21-1-2-3-1001", &control)
+            .unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls[0].1[0], "/Create");
+        assert!(
+            !calls.iter().any(|call| call.1[0] == "/Run"),
+            "a running daemon needs no second start: {calls:?}"
         );
     }
 
@@ -1096,7 +1113,7 @@ WantedBy=default.target
         );
 
         let notes = service
-            .install_task_with_sid("S-1-5-21-1-2-3-1001")
+            .install_task_with_sid("S-1-5-21-1-2-3-1001", &FakeControl::stopped())
             .unwrap();
 
         let expected = firewall_command(Path::new(r"C:\Handfast\handfast.exe"));
@@ -1126,7 +1143,7 @@ WantedBy=default.target
         );
 
         let notes = service
-            .install_task_with_sid("S-1-5-21-1-2-3-1001")
+            .install_task_with_sid("S-1-5-21-1-2-3-1001", &FakeControl::stopped())
             .unwrap();
 
         assert_eq!(notes, vec![format!("installed task {TASK_NAME}")]);
@@ -1191,6 +1208,25 @@ WantedBy=default.target
     #[test]
     fn uninstall_without_a_unit_still_reloads() {
         let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::failing(&["systemctl --user cat"]);
+        let service = service_for(
+            "/opt/handfast/handfast",
+            directory.path(),
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+
+        service.uninstall_unit().unwrap();
+
+        assert_eq!(runner.calls().len(), 2, "{:?}", runner.calls());
+        assert_eq!(runner.calls()[0].1, ["--user", "cat", UNIT_NAME]);
+        assert_eq!(runner.calls()[1].1, ["--user", "daemon-reload"]);
+    }
+
+    #[cfg(any(unix, test))]
+    #[test]
+    fn uninstall_disables_a_packaged_unit() {
+        let directory = tempfile::tempdir().unwrap();
         let runner = FakeCommands::default();
         let service = service_for(
             "/opt/handfast/handfast",
@@ -1201,8 +1237,31 @@ WantedBy=default.target
 
         service.uninstall_unit().unwrap();
 
-        assert_eq!(runner.calls().len(), 1, "{:?}", runner.calls());
-        assert_eq!(runner.calls()[0].1, ["--user", "daemon-reload"]);
+        let calls = runner.calls();
+        assert_eq!(calls[0].1, ["--user", "cat", UNIT_NAME]);
+        assert_eq!(calls[1].1, ["--user", "disable", UNIT_NAME]);
+        assert_eq!(calls[2].1, ["--user", "stop", UNIT_NAME]);
+        assert_eq!(calls[3].1, ["--user", "daemon-reload"]);
+    }
+
+    #[cfg(any(unix, test))]
+    #[test]
+    fn uninstall_reports_a_failed_disable() {
+        let directory = tempfile::tempdir().unwrap();
+        let unit_path = directory.path().join(UNIT_NAME);
+        std::fs::write(&unit_path, "unit").unwrap();
+        let runner = FakeCommands::failing(&["systemctl --user disable"]);
+        let service = service_for(
+            "/opt/handfast/handfast",
+            directory.path(),
+            unit_path.clone(),
+            &runner,
+        );
+
+        let error = service.uninstall_unit().unwrap_err();
+
+        assert!(matches!(error, ServiceError::Command { .. }), "{error}");
+        assert!(unit_path.exists(), "a failed disable removes nothing");
     }
 
     #[cfg(any(windows, test))]
