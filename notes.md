@@ -16,7 +16,9 @@ Hardening queue, 2026-11-14:
 - Third wave merged: `#243` peer caps, `#244` clipboard and volume gates, `#245` notification namespace, `#246` share dedupe, `#247` screensaver lifetime, `#248` files hardening, `#249` notifier lifecycle, `#250` pending handshakes, `#251` session stop, `#253` pause/resume.
 - Third wave complete: all PRs merged, `#252` last at `bceaa91`.
 - Fourth wave merged: `#254` incoming space reservation, `#255` interop harness nits, `#256` session stop design docs, `#257` share-during-pairing queue, `#258` state path safety, `#259` incoming owner check.
-- P2 feature wave: `lockdevice` `ses_e21d5417effeBpOYO3GdGqBsEi` running, lock-only with a `loginctl` backend.
+- P2 feature wave: `lockdevice` `ses_e21d5417effeBpOYO3GdGqBsEi` is PR `#260` at `9f9671b`, verifying.
+- P1 gate finding, 2026-11-15: the phone discovers the daemon and connects, but every handshake fails with `protocol: frame too large: 2065852776 bytes (max 1048576)`. Root cause: the official Android plaintext hello is a newline-terminated JSON line (`NetworkPacket.serialize()` appends `\n`, `readLineBounded` reads it), not a 4-byte length frame. Handfast uses `frame::write_frame`/`read_frame` for the hello. Fix unit `ses_e21c161b6ffefEZ9Gs0yBTmdPG`, branch `fix/plaintext-hello-line`. The encrypted identity after TLS stays framed.
+- The live daemon is stopped while the hello fix builds. Restart after the fix and re-run the phone check.
 - Queued: Windows control pipe token (low, deferred), eager queued-file handshake (held for the manual gate), pairing prompt stale-answer race (low, not started), `p1-share-file.md:782` two-to-three JoinSets docs fix.
 - Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. The user is running it now; record the evidence and the exit verdict when it returns.
 
