@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use handfast_daemon::control::{
-    send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus,
+    send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus, PairingSummary,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::update::{Authenticode, GitHub, Updater};
@@ -36,6 +36,8 @@ enum Command {
     Daemon(DaemonArgs),
     /// Send a file to a connected device.
     Share(ShareArgs),
+    /// Accept or reject a pending pairing request.
+    Pair(PairArgs),
     /// Print the running daemon's status.
     Status(StatusArgs),
     /// Install and control the per-user autostart service.
@@ -58,6 +60,18 @@ struct ShareArgs {
 
     /// Local file to send.
     path: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+#[command(group(ArgGroup::new("answer").required(true)))]
+struct PairArgs {
+    /// Accept the pairing request from this device ID.
+    #[arg(long, value_name = "DEVICE_ID", group = "answer")]
+    accept: Option<String>,
+
+    /// Reject the pairing request from this device ID.
+    #[arg(long, value_name = "DEVICE_ID", group = "answer")]
+    reject: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -151,6 +165,10 @@ fn main() -> ExitCode {
         Command::Share(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_share(args, data_dir)
+        }
+        Command::Pair(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_pair(args, data_dir)
         }
         Command::Status(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
@@ -256,9 +274,81 @@ async fn send_share(args: ShareArgs, data_dir: PathBuf) -> Result<(), ControlErr
             Ok(())
         }
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
-        ControlResponse::Status { .. } | ControlResponse::ShuttingDown => Err(
-            ControlError::Remote("unexpected control response".to_string()),
-        ),
+        ControlResponse::Status { .. }
+        | ControlResponse::ShuttingDown
+        | ControlResponse::Decided => Err(ControlError::Remote(
+            "unexpected control response".to_string(),
+        )),
+    }
+}
+
+fn run_pair(args: PairArgs, data_dir: PathBuf) -> ExitCode {
+    let (device_id, accept) = match (args.accept, args.reject) {
+        (Some(device_id), _) => (device_id, true),
+        (None, Some(device_id)) => (device_id, false),
+        (None, None) => {
+            return fail("pair needs --accept <device-id> or --reject <device-id>");
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_pair(device_id, accept, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_pair(
+    device_id: String,
+    accept: bool,
+    data_dir: PathBuf,
+) -> Result<String, ControlError> {
+    let status = request_status(&data_dir).await?;
+    let Some(fingerprint) = pending_fingerprint(&status.pending_pairings, &device_id) else {
+        return Err(ControlError::Remote(format!(
+            "no pairing request from {device_id}"
+        )));
+    };
+    let request = ControlRequest::PairingDecision {
+        device_id: device_id.clone(),
+        accept,
+        fingerprint: fingerprint.to_string(),
+    };
+    let response = send_request(&data_dir, &request).await?;
+    decision_message(&device_id, accept, response)
+}
+
+/// The fingerprint of the pending row for `device_id`, so a stale command
+/// cannot answer a newer prompt.
+fn pending_fingerprint<'a>(pending: &'a [PairingSummary], device_id: &str) -> Option<&'a str> {
+    pending
+        .iter()
+        .find(|pairing| pairing.device_id.as_str() == device_id)
+        .map(|pairing| pairing.fingerprint.as_str())
+}
+
+fn decision_message(
+    device_id: &str,
+    accept: bool,
+    response: ControlResponse,
+) -> Result<String, ControlError> {
+    let answer = if accept { "accepted" } else { "rejected" };
+    match response {
+        ControlResponse::Decided => Ok(format!("pairing {answer} for {device_id}")),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        ControlResponse::Ok { .. }
+        | ControlResponse::Status { .. }
+        | ControlResponse::ShuttingDown => Err(ControlError::Remote(
+            "unexpected control response".to_string(),
+        )),
     }
 }
 
@@ -277,19 +367,24 @@ fn run_status(args: StatusArgs, data_dir: PathBuf) -> ExitCode {
 }
 
 async fn fetch_status(json: bool, data_dir: PathBuf) -> Result<(), ControlError> {
-    match send_request(&data_dir, &ControlRequest::Status).await? {
-        ControlResponse::Status { status } => {
-            if json {
-                println!("{}", serde_json::to_string_pretty(&status)?);
-            } else {
-                print_status(&status);
-            }
-            Ok(())
-        }
+    let status = request_status(&data_dir).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    } else {
+        print_status(&status);
+    }
+    Ok(())
+}
+
+async fn request_status(data_dir: &Path) -> Result<DaemonStatus, ControlError> {
+    match send_request(data_dir, &ControlRequest::Status).await? {
+        ControlResponse::Status { status } => Ok(*status),
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
-        ControlResponse::Ok { .. } | ControlResponse::ShuttingDown => Err(ControlError::Remote(
-            "unexpected control response".to_string(),
-        )),
+        ControlResponse::Ok { .. } | ControlResponse::ShuttingDown | ControlResponse::Decided => {
+            Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            ))
+        }
     }
 }
 
@@ -320,6 +415,13 @@ fn print_status(status: &DaemonStatus) {
         println!(
             "  {}  {}  {}  {}",
             device.device_id, device.device_name, device.device_type, link
+        );
+    }
+    println!("pairing requests: {}", status.pending_pairings.len());
+    for pairing in &status.pending_pairings {
+        println!(
+            "  {}  {}  {}",
+            pairing.device_id, pairing.device_name, pairing.fingerprint
         );
     }
     println!("transfers: {}", status.transfers.len());
@@ -476,6 +578,95 @@ fn rotate_log(path: &Path) {
             "handfast: cannot rotate {} to {}: {error}",
             path.display(),
             rotated.display()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DEVICE: &str = "0123456789abcdef0123456789abcdef";
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("handfast").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn pair_takes_exactly_one_answer() {
+        let cli = parse(&["pair", "--accept", DEVICE]).expect("--accept parses");
+        let Some(Command::Pair(args)) = cli.command else {
+            panic!("expected the pair subcommand");
+        };
+        assert_eq!(args.accept.as_deref(), Some(DEVICE));
+        assert!(args.reject.is_none());
+
+        let cli = parse(&["pair", "--reject", DEVICE]).expect("--reject parses");
+        let Some(Command::Pair(args)) = cli.command else {
+            panic!("expected the pair subcommand");
+        };
+        assert_eq!(args.reject.as_deref(), Some(DEVICE));
+        assert!(args.accept.is_none());
+
+        assert!(parse(&["pair"]).is_err(), "an answer is required");
+        assert!(
+            parse(&["pair", "--accept", DEVICE, "--reject", DEVICE]).is_err(),
+            "the two answers are exclusive"
+        );
+    }
+
+    #[test]
+    fn a_decided_response_prints_the_answer() {
+        assert_eq!(
+            decision_message(DEVICE, true, ControlResponse::Decided)
+                .expect("a decided response is a success"),
+            format!("pairing accepted for {DEVICE}")
+        );
+        assert_eq!(
+            decision_message(DEVICE, false, ControlResponse::Decided)
+                .expect("a decided response is a success"),
+            format!("pairing rejected for {DEVICE}")
+        );
+    }
+
+    #[test]
+    fn the_cli_takes_the_fingerprint_from_the_pending_row() {
+        let device = DeviceId::new(DEVICE).expect("a valid device id");
+        let fingerprint = "cd".repeat(32);
+        let rows = vec![PairingSummary {
+            device_id: device,
+            device_name: "Tablet".to_string(),
+            fingerprint: fingerprint.clone(),
+        }];
+        assert_eq!(
+            pending_fingerprint(&rows, DEVICE),
+            Some(fingerprint.as_str())
+        );
+        assert_eq!(
+            pending_fingerprint(&rows, "fedcba9876543210fedcba9876543210"),
+            None,
+            "another device has no row"
+        );
+        assert_eq!(pending_fingerprint(&[], DEVICE), None, "no prompt is open");
+    }
+
+    #[test]
+    fn a_pairing_error_is_relayed() {
+        let error = decision_message(
+            DEVICE,
+            true,
+            ControlResponse::Err {
+                message: format!("no pairing request from {DEVICE}"),
+            },
+        )
+        .expect_err("an error response fails");
+        assert!(error.to_string().contains("no pairing request"), "{error}");
+
+        let error = decision_message(DEVICE, true, ControlResponse::ShuttingDown)
+            .expect_err("an unexpected response fails");
+        assert!(
+            error.to_string().contains("unexpected control response"),
+            "{error}"
         );
     }
 }

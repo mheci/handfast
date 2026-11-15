@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use handfast_daemon::control::{
     ControlResponse, ControlServer, DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary,
-    PairedDevice, TransferSummary,
+    PairedDevice, PairingSummary, TransferSummary,
 };
 use handfast_proto::DeviceId;
 use serde_json::{json, Value};
@@ -64,6 +64,11 @@ fn sample_status() -> DaemonStatus {
             device_name: "Pixel".to_string(),
             device_type: "phone".to_string(),
             connected: true,
+        }],
+        pending_pairings: vec![PairingSummary {
+            device_id: device_id(PEER),
+            device_name: "Tablet".to_string(),
+            fingerprint: "cd".repeat(32),
         }],
         transfers: vec![TransferSummary {
             device_id: device_id(PEER),
@@ -138,6 +143,7 @@ async fn status_prints_human_fields_rows_and_json() {
         "incoming dir: /home/me/Downloads".to_string(),
         "connected: 1".to_string(),
         "paired: 1".to_string(),
+        "pairing requests: 1".to_string(),
         "transfers: 1".to_string(),
     ];
     for line in expected {
@@ -146,6 +152,10 @@ async fn status_prints_human_fields_rows_and_json() {
     assert!(
         human.contains(&format!("  {PEER}  Pixel  phone  connected")),
         "the paired row marks the open link:\n{human}"
+    );
+    assert!(
+        human.contains(&format!("  {PEER}  Tablet  {}", "cd".repeat(32))),
+        "the pending pairing row shows the name, id and fingerprint:\n{human}"
     );
     assert!(
         human.contains(&format!("  {PEER}  7  1024/4096")),
@@ -165,6 +175,15 @@ async fn status_prints_human_fields_rows_and_json() {
     assert_eq!(status["connected"][0]["device_id"], json!(PEER));
     assert_eq!(status["connected"][0]["connected"], json!(true));
     assert_eq!(status["paired"][0]["connected"], json!(true));
+    assert_eq!(status["pending_pairings"][0]["device_id"], json!(PEER));
+    assert_eq!(
+        status["pending_pairings"][0]["device_name"],
+        json!("Tablet")
+    );
+    assert_eq!(
+        status["pending_pairings"][0]["fingerprint"],
+        json!("cd".repeat(32))
+    );
     assert_eq!(status["transfers"][0]["transfer_id"], json!(7));
     assert_eq!(status["transfers"][0]["total"], json!(4096));
     assert_eq!(status["truncated"], json!(false));

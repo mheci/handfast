@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use handfast_proto::DeviceId;
+
 use crate::control::{send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus};
 
 /// The Task Scheduler task name.
@@ -185,6 +187,35 @@ impl LocalControl {
             }
         })
     }
+
+    /// Answer one pending pairing request.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no daemon answers, the request is unknown or answered, the
+    /// fingerprint no longer matches the open prompt, or the response is not an
+    /// acknowledgement.
+    pub fn pairing_decision(
+        &self,
+        device_id: &DeviceId,
+        accept: bool,
+        fingerprint: &str,
+    ) -> Result<(), ControlError> {
+        let request = ControlRequest::PairingDecision {
+            device_id: device_id.as_str().to_string(),
+            accept,
+            fingerprint: fingerprint.to_string(),
+        };
+        match self.request(&request)? {
+            ControlResponse::Decided => Ok(()),
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            ControlResponse::Ok { .. }
+            | ControlResponse::Status { .. }
+            | ControlResponse::ShuttingDown => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
+        }
+    }
 }
 
 impl DaemonControl for LocalControl {
@@ -192,9 +223,11 @@ impl DaemonControl for LocalControl {
         match self.request(&ControlRequest::Status)? {
             ControlResponse::Status { status } => Ok(*status),
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
-            ControlResponse::Ok { .. } | ControlResponse::ShuttingDown => Err(
-                ControlError::Remote("unexpected control response".to_string()),
-            ),
+            ControlResponse::Ok { .. }
+            | ControlResponse::ShuttingDown
+            | ControlResponse::Decided => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
         }
     }
 
@@ -202,9 +235,11 @@ impl DaemonControl for LocalControl {
         match self.request(&ControlRequest::Shutdown)? {
             ControlResponse::ShuttingDown => Ok(()),
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
-            ControlResponse::Ok { .. } | ControlResponse::Status { .. } => Err(
-                ControlError::Remote("unexpected control response".to_string()),
-            ),
+            ControlResponse::Ok { .. }
+            | ControlResponse::Status { .. }
+            | ControlResponse::Decided => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
         }
     }
 }
@@ -843,6 +878,7 @@ mod tests {
             incoming_dir: PathBuf::from("/incoming"),
             connected: Vec::new(),
             paired: Vec::<PairedDevice>::new(),
+            pending_pairings: Vec::new(),
             transfers: Vec::<TransferSummary>::new(),
             truncated: false,
         }

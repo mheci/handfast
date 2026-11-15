@@ -1,9 +1,9 @@
 //! Minimal same-user local control channel.
 //!
-//! The channel carries three requests, `share`, `status` and `shutdown`. Unix
-//! uses a Unix domain socket with a peer-credential check; Windows uses a named
-//! pipe with a current-user DACL. The frame is a 4-byte big-endian length
-//! followed by JSON, capped at 64 KiB.
+//! The channel carries four requests, `share`, `status`, `shutdown` and
+//! `pairing decision`. Unix uses a Unix domain socket with a peer-credential
+//! check; Windows uses a named pipe with a current-user DACL. The frame is a
+//! 4-byte big-endian length followed by JSON, capped at 64 KiB.
 //!
 //! The server never touches the session map. It forwards a [`DaemonCommand`] to
 //! the daemon event loop and relays the framed result. The path is validated by
@@ -57,6 +57,16 @@ pub enum ControlRequest {
     Status,
     /// Stop the daemon through its bounded shutdown path.
     Shutdown,
+    /// Accept or reject a pending pairing request.
+    PairingDecision {
+        /// Device ID shown in the pairing prompt. The daemon validates it.
+        device_id: String,
+        /// Whether to accept the request.
+        accept: bool,
+        /// Fingerprint of the certificate the caller saw, so a stale decision
+        /// cannot answer a newer prompt for the same device.
+        fingerprint: String,
+    },
 }
 
 /// One response on the local control channel.
@@ -74,6 +84,8 @@ pub enum ControlResponse {
     },
     /// The daemon accepted the shutdown request.
     ShuttingDown,
+    /// The daemon recorded the pairing decision.
+    Decided,
     /// The request failed. The message is safe to print.
     Err {
         /// Failure reason.
@@ -98,6 +110,8 @@ pub struct DaemonStatus {
     pub connected: Vec<DeviceSummary>,
     /// Paired devices from the store, sorted by device ID.
     pub paired: Vec<PairedDevice>,
+    /// Pairing requests waiting for an answer, sorted by device ID.
+    pub pending_pairings: Vec<PairingSummary>,
     /// In-flight transfers, sorted by device ID then transfer ID.
     pub transfers: Vec<TransferSummary>,
     /// Whether a device list hit [`MAX_STATUS_DEVICES`].
@@ -145,6 +159,15 @@ pub struct PairedDevice {
     pub connected: bool,
 }
 
+/// A pairing request waiting for an answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingSummary {
+    pub device_id: DeviceId,
+    pub device_name: String,
+    /// SHA-256 of the peer certificate as hex.
+    pub fingerprint: String,
+}
+
 /// An in-flight transfer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferSummary {
@@ -177,6 +200,17 @@ pub enum DaemonCommand {
     },
     /// Reply, then complete the daemon's shutdown future.
     Shutdown {
+        /// Reply sender.
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Answer one open pairing prompt and reply.
+    PairingDecision {
+        /// Device ID of the open prompt.
+        device_id: DeviceId,
+        /// Whether to accept the request.
+        accept: bool,
+        /// Fingerprint the caller saw, checked against the open prompt.
+        fingerprint: String,
         /// Reply sender.
         reply: oneshot::Sender<ControlResponse>,
     },
@@ -391,6 +425,23 @@ async fn dispatch(
         },
         ControlRequest::Status => DaemonCommand::Status { reply },
         ControlRequest::Shutdown => DaemonCommand::Shutdown { reply },
+        ControlRequest::PairingDecision {
+            device_id,
+            accept,
+            fingerprint,
+        } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            DaemonCommand::PairingDecision {
+                device_id,
+                accept,
+                fingerprint,
+                reply,
+            }
+        }
     };
     if commands.send(command).await.is_err() {
         return ControlResponse::Err {
@@ -735,6 +786,11 @@ mod tests {
                 device_type: "phone".to_string(),
                 connected: true,
             }],
+            pending_pairings: vec![PairingSummary {
+                device_id: DeviceId::new("00112233445566778899aabbccddeeff").expect("a device id"),
+                device_name: "Tablet".to_string(),
+                fingerprint: "cd".repeat(32),
+            }],
             transfers: vec![TransferSummary {
                 device_id: DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id"),
                 transfer_id: 7,
@@ -784,8 +840,25 @@ mod tests {
             ControlRequest::Shutdown
         );
         assert_eq!(
+            round_trip(&ControlRequest::PairingDecision {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                accept: true,
+                fingerprint: "ab".repeat(32),
+            })
+            .await,
+            ControlRequest::PairingDecision {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                accept: true,
+                fingerprint: "ab".repeat(32),
+            }
+        );
+        assert_eq!(
             round_trip(&ControlResponse::ShuttingDown).await,
             ControlResponse::ShuttingDown
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::Decided).await,
+            ControlResponse::Decided
         );
 
         let response = ControlResponse::Status {
@@ -811,6 +884,13 @@ mod tests {
                 device_name: "Handfast test peer".to_string(),
                 device_type: "phone".to_string(),
                 connected: index % 2 == 0,
+            })
+            .collect();
+        status.pending_pairings = (0..MAX_STATUS_DEVICES)
+            .map(|index| PairingSummary {
+                device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
+                device_name: "Handfast test peer".to_string(),
+                fingerprint: "ab".repeat(32),
             })
             .collect();
         let response = ControlResponse::Status {
@@ -1081,6 +1161,75 @@ mod tests {
 
         server.shutdown().await;
         script.abort();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pairing_decision_is_relayed_to_the_daemon() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("handfast.sock");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = start_at(path.clone(), commands)
+            .await
+            .expect("start the control server");
+        let expected = device_id();
+        let script = tokio::spawn(async move {
+            if let Some(DaemonCommand::PairingDecision {
+                device_id,
+                accept,
+                fingerprint,
+                reply,
+            }) = command_rx.recv().await
+            {
+                assert_eq!(device_id, expected);
+                assert!(accept);
+                assert_eq!(fingerprint, "ab".repeat(32));
+                let _ = reply.send(ControlResponse::Decided);
+            }
+        });
+
+        let request = ControlRequest::PairingDecision {
+            device_id: device_id().as_str().to_string(),
+            accept: true,
+            fingerprint: "ab".repeat(32),
+        };
+        let response = send_to_path(&path, &request)
+            .await
+            .expect("relay the pairing decision");
+        assert_eq!(response, ControlResponse::Decided);
+
+        server.shutdown().await;
+        script.await.expect("the script joins");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_malformed_pairing_device_id_is_an_error() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("handfast.sock");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = start_at(path.clone(), commands)
+            .await
+            .expect("start the control server");
+
+        let request = ControlRequest::PairingDecision {
+            device_id: "not-a-device".to_string(),
+            accept: false,
+            fingerprint: "ab".repeat(32),
+        };
+        let response = send_to_path(&path, &request)
+            .await
+            .expect("the boundary replies");
+        assert!(
+            matches!(&response, ControlResponse::Err { message } if message.contains("is not a device ID")),
+            "{response:?}"
+        );
+        assert!(
+            command_rx.try_recv().is_err(),
+            "a malformed device ID never reaches the daemon"
+        );
+
+        server.shutdown().await;
     }
 
     #[cfg(unix)]

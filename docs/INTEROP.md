@@ -87,9 +87,9 @@ The fingerprint is public. The private key never appears in a log.
 | Android link | Accepts or dials, completes the plaintext hello and TLS. The debug log shows `TLS handshake complete version=Some(TLSv1_2)`. | The official Android app caps TLS at 1.2 through `SSLContext("TLSv1.2")`. |
 | Desktop link | The same handshake with `version=Some(TLSv1_3)` when the desktop client offers 1.3. | KDE Connect desktop shows the device as reachable. |
 | Certificate CN | Parses one peer certificate, requires exactly one CN and requires CN equal to the peer device ID. | The peer validates the Handfast certificate against its stored or first-seen pin. |
-| Pairing request | Prints `Pairing request from <name> (<device ID>)` and the 64-character fingerprint, then waits up to 30 s for `y`. | The peer shows its own pairing request or waits for Handfast. |
-| Accept | On `y`, writes the pin, sends `kdeconnect.pair` with `pair: true`, creates the session and runs `on_connect`. The log shows `pairing pin written` and `pairing accepted`. | The peer marks Handfast as paired. A ping from either side arrives. |
-| Reject | On `n`, Enter or timeout, sends `kdeconnect.pair` with `pair: false` and writes no pin. | The peer shows the pairing as rejected. |
+| Pairing request | Prints `Pairing request from <name> (<device ID>)` and the 64-character fingerprint, then waits up to 30 s for an answer from the terminal, the window or `handfast pair`. | The peer shows its own pairing request or waits for Handfast. |
+| Accept | On `y`, the window's Accept button or `handfast pair --accept <id>`, writes the pin, sends `kdeconnect.pair` with `pair: true`, creates the session and runs `on_connect`. The log shows `pairing pin written` and `pairing accepted`. | The peer marks Handfast as paired. A ping from either side arrives. |
+| Reject | On `n`, Enter, the window's Reject button, `handfast pair --reject <id>` or the timeout, sends `kdeconnect.pair` with `pair: false` and writes no pin. | The peer shows the pairing as rejected. |
 | Restart | Reuses the same certificate and fingerprint. The log shows the same `TLS identity loaded` fingerprint. | The paired peer reconnects without a new pairing prompt. |
 | Unpair from the peer | Receives `pair: false`, clears the stored pin and the manager pin, stops the session and runs `on_disconnect`. | The peer shows Handfast as unpaired. |
 | Changed certificate | A pinned peer with a different certificate is rejected before any packet, and the pin stays. | The peer cannot force an unpair by reconnecting with a new certificate. |
@@ -106,7 +106,12 @@ The fingerprint is public. The private key never appears in a log.
    64-character fingerprint.
 6. Confirm the phone certificate CN equals the phone device ID. The phone
    device ID is in its KDE Connect settings.
-7. Type `y` and press Enter.
+7. Answer the prompt. Type `y` and press Enter in the daemon's terminal, click
+   Accept in `handfast gui`, or run
+   `handfast pair --accept <phone device ID>`. A daemon started by the logon
+   task or the systemd unit has no terminal, so use the window or the command.
+   `handfast status` lists the pending request with the name, device ID and
+   fingerprint.
 8. Confirm the phone shows Handfast as paired and a ping from the phone reaches
    the Handfast log as `plugin events` with `Ping`.
 9. Confirm the Handfast debug log shows `version=Some(TLSv1_2)` for this link.
@@ -124,8 +129,10 @@ The fingerprint is public. The private key never appears in a log.
 4. Request pairing from the KDE Connect desktop device page.
 5. Confirm the Handfast prompt shows the desktop name, device ID and
    fingerprint, and that the desktop certificate CN equals its device ID.
-6. Accept on Handfast. Confirm the desktop shows Handfast as paired and that
-   `version=Some(TLSv1_3)` appears when the desktop offers TLS 1.3.
+6. Accept on Handfast from the terminal, the window or
+   `handfast pair --accept <device ID>`. Confirm the desktop shows Handfast as
+   paired and that `version=Some(TLSv1_3)` appears when the desktop offers TLS
+   1.3.
 7. Restart Handfast and confirm the desktop reconnects with the same
    fingerprint and no new prompt.
 8. If the desktop presents an RSA certificate, confirm the handshake still
@@ -134,8 +141,9 @@ The fingerprint is public. The private key never appears in a log.
 ## Reject and unpair checks
 
 1. Start with a fresh state directory. Request pairing from the peer.
-2. Answer `n`. Confirm the peer shows rejection and the Handfast log shows
-   `pairing rejected`. There is no pin in the state file.
+2. Answer `n` in the terminal or run `handfast pair --reject <device ID>`.
+   Confirm the peer shows rejection and the Handfast log shows `pairing
+   rejected`. There is no pin in the state file.
 3. Pair again and accept. Confirm the peer is paired.
 4. Unpair from the peer. Confirm the Handfast log shows the link close and the
    session stop, and that a later pairing request prompts again.

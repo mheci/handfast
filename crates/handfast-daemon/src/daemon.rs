@@ -31,12 +31,12 @@ use tokio::task::JoinHandle;
 
 use crate::control::{
     ControlResponse, ControlServer, DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary,
-    PairedDevice, TransferSummary, MAX_STATUS_DEVICES,
+    PairedDevice, PairingSummary, TransferSummary, MAX_STATUS_DEVICES,
 };
 use crate::default_data_dir;
 use crate::identity;
 use crate::limits::{ShareLimits, STALE_TEMP_AGE};
-use crate::pairing;
+use crate::pairing::{self, PairingDecision};
 use crate::redact;
 use crate::session::{DaemonEvent, DeviceSession, SessionLimits, TransferSetup};
 
@@ -402,7 +402,7 @@ struct Daemon {
     events: mpsc::Sender<DaemonEvent>,
     sessions: HashMap<DeviceId, DeviceSession>,
     pending: HashMap<DeviceId, PendingLink>,
-    prompts: HashMap<DeviceId, (u64, oneshot::Sender<()>)>,
+    prompts: HashMap<DeviceId, PendingPrompt>,
     next_prompt: u64,
     prompt_tx: mpsc::Sender<pairing::PromptRequest>,
     prompt_task: JoinHandle<()>,
@@ -412,6 +412,14 @@ struct Daemon {
     connected: HashMap<DeviceId, DeviceSummary>,
     transfers: HashMap<(DeviceId, u64), TransferSummary>,
     shutdown: Option<oneshot::Sender<()>>,
+}
+
+struct PendingPrompt {
+    token: u64,
+    summary: PairingSummary,
+    cancel: oneshot::Sender<()>,
+    /// Taken by the first decision, so a second command cannot answer twice.
+    decision: Option<oneshot::Sender<PairingDecision>>,
 }
 
 impl Daemon {
@@ -611,13 +619,28 @@ impl Daemon {
         let token = self.next_prompt;
         self.next_prompt = self.next_prompt.wrapping_add(1);
         let (cancel, cancel_rx) = oneshot::channel();
-        self.prompts.insert(device_id.clone(), (token, cancel));
+        let (decision, decision_rx) = oneshot::channel();
+        let summary = PairingSummary {
+            device_id: device_id.clone(),
+            device_name: peer.device_name.as_str().to_string(),
+            fingerprint: certificate.fingerprint().to_hex(),
+        };
+        self.prompts.insert(
+            device_id.clone(),
+            PendingPrompt {
+                token,
+                summary,
+                cancel,
+                decision: Some(decision),
+            },
+        );
         if let Err(error) = self.prompt_tx.try_send(pairing::PromptRequest {
             peer,
             certificate,
             link,
             token,
             cancel: cancel_rx,
+            decision: decision_rx,
         }) {
             self.prompts.remove(&device_id);
             tracing::warn!(?error, %device_id, "pairing prompt queue is full");
@@ -626,8 +649,8 @@ impl Daemon {
 
     /// Wake a prompt whose link has closed and drop its generation.
     fn cancel_prompt(&mut self, device_id: &DeviceId) {
-        if let Some((_, cancel)) = self.prompts.remove(device_id) {
-            let _ = cancel.send(());
+        if let Some(prompt) = self.prompts.remove(device_id) {
+            let _ = prompt.cancel.send(());
         }
     }
 
@@ -787,6 +810,14 @@ impl Daemon {
         let mut connected: Vec<DeviceSummary> = self.connected.values().cloned().collect();
         connected.sort_by(|left, right| left.device_id.as_str().cmp(right.device_id.as_str()));
 
+        let mut pending_pairings: Vec<PairingSummary> = self
+            .prompts
+            .values()
+            .map(|prompt| prompt.summary.clone())
+            .collect();
+        pending_pairings
+            .sort_by(|left, right| left.device_id.as_str().cmp(right.device_id.as_str()));
+
         let mut transfers: Vec<TransferSummary> = self.transfers.values().cloned().collect();
         transfers.sort_by(|left, right| {
             left.device_id
@@ -795,9 +826,12 @@ impl Daemon {
                 .then(left.transfer_id.cmp(&right.transfer_id))
         });
 
-        let truncated = connected.len() > MAX_STATUS_DEVICES || paired.len() > MAX_STATUS_DEVICES;
+        let truncated = connected.len() > MAX_STATUS_DEVICES
+            || paired.len() > MAX_STATUS_DEVICES
+            || pending_pairings.len() > MAX_STATUS_DEVICES;
         connected.truncate(MAX_STATUS_DEVICES);
         paired.truncate(MAX_STATUS_DEVICES);
+        pending_pairings.truncate(MAX_STATUS_DEVICES);
 
         Ok(DaemonStatus {
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -807,6 +841,7 @@ impl Daemon {
             incoming_dir: self.incoming_dir.clone(),
             connected,
             paired,
+            pending_pairings,
             transfers,
             truncated,
         })
@@ -855,16 +890,60 @@ impl Daemon {
                     let _ = shutdown.send(());
                 }
             }
+            DaemonCommand::PairingDecision {
+                device_id,
+                accept,
+                fingerprint,
+                reply,
+            } => {
+                let _ = reply.send(self.decide_pairing(&device_id, accept, &fingerprint));
+            }
         }
+    }
+
+    fn decide_pairing(
+        &mut self,
+        device_id: &DeviceId,
+        accept: bool,
+        fingerprint: &str,
+    ) -> ControlResponse {
+        let Some(prompt) = self.prompts.get_mut(device_id) else {
+            return ControlResponse::Err {
+                message: format!("no pairing request from {device_id}"),
+            };
+        };
+        if prompt.summary.fingerprint != fingerprint {
+            return ControlResponse::Err {
+                message: "the pairing request changed; refresh and decide again".to_string(),
+            };
+        }
+        let Some(decision_tx) = prompt.decision.take() else {
+            return ControlResponse::Err {
+                message: format!("the pairing request from {device_id} is already answered"),
+            };
+        };
+        let decision = if accept {
+            PairingDecision::Accept
+        } else {
+            PairingDecision::Reject
+        };
+        // The prompt task reports the outcome, and that removes the prompt. A
+        // closed receiver means the prompt resolved before this decision.
+        let Ok(()) = decision_tx.send(decision) else {
+            return ControlResponse::Err {
+                message: format!("the pairing request from {device_id} is no longer open"),
+            };
+        };
+        ControlResponse::Decided
     }
 
     /// Remove the prompt handle only when the outcome belongs to the current
     /// prompt. A stale outcome must not clear a newer prompt.
     fn take_prompt(&mut self, device_id: &DeviceId, token: u64) -> bool {
-        let Some((current, _)) = self.prompts.get(device_id) else {
+        let Some(prompt) = self.prompts.get(device_id) else {
             return false;
         };
-        if *current != token {
+        if prompt.token != token {
             tracing::debug!(%device_id, "ignoring a stale pairing outcome");
             return false;
         }
@@ -894,8 +973,8 @@ impl Daemon {
             session.handle().stop("daemon shutting down".to_string());
             session_tasks.push(session.into_task());
         }
-        for (_, (_, cancel)) in prompts {
-            let _ = cancel.send(());
+        for prompt in prompts.into_values() {
+            let _ = prompt.cancel.send(());
         }
         prompt_task.abort();
         pending.clear();
@@ -1677,6 +1756,281 @@ mod tests {
         assert!(status.truncated, "129 rows in one list set the flag");
         assert_eq!(status.connected.len(), MAX_STATUS_DEVICES);
         assert_eq!(status.paired.len(), MAX_STATUS_DEVICES);
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    fn prompt_fingerprint() -> String {
+        "ab".repeat(32)
+    }
+
+    fn pending_prompt(device_id: &DeviceId) -> (PendingPrompt, oneshot::Receiver<PairingDecision>) {
+        let (cancel, _cancel_rx) = oneshot::channel();
+        let (decision, decision_rx) = oneshot::channel();
+        (
+            PendingPrompt {
+                token: 1,
+                summary: PairingSummary {
+                    device_id: device_id.clone(),
+                    device_name: "Pixel".to_string(),
+                    fingerprint: prompt_fingerprint(),
+                },
+                cancel,
+                decision: Some(decision),
+            },
+            decision_rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_control_accept_answers_the_pending_prompt() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let (prompt, decision_rx) = pending_prompt(&peer);
+        daemon.prompts.insert(peer.clone(), prompt);
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::PairingDecision {
+                device_id: peer.clone(),
+                accept: true,
+                fingerprint: prompt_fingerprint(),
+                reply,
+            })
+            .await;
+
+        assert_eq!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Decided
+        );
+        assert_eq!(
+            decision_rx.await.expect("the prompt takes the answer"),
+            PairingDecision::Accept
+        );
+        assert!(
+            daemon.prompts.contains_key(&peer),
+            "the prompt stays until the task reports the outcome"
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_control_reject_answers_the_pending_prompt() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let (prompt, decision_rx) = pending_prompt(&peer);
+        daemon.prompts.insert(peer.clone(), prompt);
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::PairingDecision {
+                device_id: peer,
+                accept: false,
+                fingerprint: prompt_fingerprint(),
+                reply,
+            })
+            .await;
+
+        assert_eq!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Decided
+        );
+        assert_eq!(
+            decision_rx.await.expect("the prompt takes the answer"),
+            PairingDecision::Reject
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_control_decision_reports_an_unknown_prompt() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::PairingDecision {
+                device_id: peer,
+                accept: true,
+                fingerprint: prompt_fingerprint(),
+                reply,
+            })
+            .await;
+        assert!(
+            matches!(
+                reply_rx.await.expect("the daemon replies"),
+                ControlResponse::Err { message } if message.contains("no pairing request")
+            ),
+            "an unknown device is an error"
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_second_control_decision_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let (prompt, _decision_rx) = pending_prompt(&peer);
+        daemon.prompts.insert(peer.clone(), prompt);
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::PairingDecision {
+                device_id: peer.clone(),
+                accept: true,
+                fingerprint: prompt_fingerprint(),
+                reply,
+            })
+            .await;
+        assert_eq!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Decided
+        );
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::PairingDecision {
+                device_id: peer,
+                accept: false,
+                fingerprint: prompt_fingerprint(),
+                reply,
+            })
+            .await;
+        assert!(
+            matches!(
+                reply_rx.await.expect("the daemon replies"),
+                ControlResponse::Err { message } if message.contains("already answered")
+            ),
+            "the first decision wins"
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_decision_after_the_prompt_closed_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let (prompt, mut decision_rx) = pending_prompt(&peer);
+        daemon.prompts.insert(peer.clone(), prompt);
+        decision_rx.close();
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::PairingDecision {
+                device_id: peer,
+                accept: true,
+                fingerprint: prompt_fingerprint(),
+                reply,
+            })
+            .await;
+        assert!(
+            matches!(
+                reply_rx.await.expect("the daemon replies"),
+                ControlResponse::Err { message } if message.contains("no longer open")
+            ),
+            "a prompt that already resolved cannot take a late decision"
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_stale_fingerprint_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let (prompt, mut decision_rx) = pending_prompt(&peer);
+        daemon.prompts.insert(peer.clone(), prompt);
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::PairingDecision {
+                device_id: peer.clone(),
+                accept: true,
+                fingerprint: "ef".repeat(32),
+                reply,
+            })
+            .await;
+        assert!(
+            matches!(
+                reply_rx.await.expect("the daemon replies"),
+                ControlResponse::Err { message } if message.contains("pairing request changed")
+            ),
+            "a decision for an older certificate is refused"
+        );
+        assert!(
+            matches!(
+                decision_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ),
+            "the stale decision leaves the prompt open"
+        );
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::PairingDecision {
+                device_id: peer,
+                accept: true,
+                fingerprint: prompt_fingerprint(),
+                reply,
+            })
+            .await;
+        assert_eq!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Decided,
+            "the matching fingerprint still answers the prompt"
+        );
+        assert_eq!(
+            decision_rx.await.expect("the prompt takes the answer"),
+            PairingDecision::Accept
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn status_lists_the_pending_pairings() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let (prompt, _decision_rx) = pending_prompt(&peer);
+        daemon.prompts.insert(peer.clone(), prompt);
+
+        let status = daemon.status().await.expect("build the status");
+        assert_eq!(status.pending_pairings.len(), 1);
+        assert_eq!(status.pending_pairings[0].device_id, peer);
+        assert_eq!(status.pending_pairings[0].device_name, "Pixel");
+        assert_eq!(status.pending_pairings[0].fingerprint, "ab".repeat(32));
 
         links.shutdown();
         let _ = manager_task.await;

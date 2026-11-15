@@ -61,6 +61,7 @@ handfast gui               # open the window
 handfast status [--json]   # print the running daemon's status
 handfast identity          # print this device's identity packet
 handfast share --device <id> <path>
+handfast pair --accept|--reject <id>
 handfast service install|uninstall|start|stop|status
 handfast update check|apply
 handfast version
@@ -95,7 +96,8 @@ Wayland development packages on Linux; the `gui` CI job installs
 ## What works
 
 - One `handfast` binary with `daemon`, `gui`, `status`, `identity`, `share`,
-  `service`, `update` and `version` subcommands, and a global `--data-dir`.
+  `pair`, `service`, `update` and `version` subcommands, and a global
+  `--data-dir`.
 - Packet framing: one UTF-8 JSON line per packet, 1 MiB hard limit. The local
   control channel keeps its 4-byte length frame and 64 KiB cap.
 - Packet validation: namespaced type, object body, payload fields that appear
@@ -111,7 +113,10 @@ Wayland development packages on Linux; the `gui` CI job installs
 - Link manager: 42 unpaired links, inbound per-IP rate limit, peer expiry,
   last-successful-handshake duplicate resolution, backoff and shutdown.
 - Daemon pairing prompt: the terminal prompt prints the peer name, device ID
-  and certificate fingerprint, pins on `y` and writes no pin on reject.
+  and certificate fingerprint, pins on `y` and writes no pin on reject. The same
+  prompt answers from the window or `handfast pair --accept|--reject <id>`, so a
+  daemon started by the autostart service still pairs. The first answer wins and
+  a closed link cancels the prompt.
 - Plugin runtime: registry, per-device host, five-second timeout, panic
   isolation and permanent disable after a failure.
 - Plugin roster: all 31 KDE Connect plugins are listed and 13 are implemented:
@@ -135,7 +140,8 @@ Wayland development packages on Linux; the `gui` CI job installs
   `handfast update apply` verifies `SHA256SUMS`, checks Authenticode on Windows
   and replaces the running binary atomically.
 - The `gui` feature: an `egui` window that starts, stops and reports the daemon
-  over the control channel.
+  over the control channel, and answers pairing requests with the peer name,
+  device ID and fingerprint.
 
 Not wired yet:
 
