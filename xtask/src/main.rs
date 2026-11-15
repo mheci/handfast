@@ -1,8 +1,15 @@
 //! Rust developer tasks.
 
+use std::collections::HashSet;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use clap::{Parser, Subcommand};
+use sha2::{Digest, Sha256};
+
+/// The checksum file the updater reads beside the portable assets.
+const SUMS_FILE: &str = "SHA256SUMS";
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask", about = "Handfast developer tasks")]
@@ -23,6 +30,10 @@ enum Task {
     Doc,
     /// Run fmt, clippy, tests and docs.
     Check,
+    /// Copy the release binary to `dist/handfast-<target>(.exe)`.
+    Portable,
+    /// Write `dist/SHA256SUMS` over every other file in `dist/`.
+    Checksums,
 }
 
 fn main() -> ExitCode {
@@ -41,6 +52,15 @@ fn main() -> ExitCode {
 }
 
 fn run(task: &Task) -> bool {
+    match task {
+        Task::Portable => portable(),
+        Task::Checksums => checksums(),
+        Task::Check => false,
+        _ => run_cargo(task),
+    }
+}
+
+fn run_cargo(task: &Task) -> bool {
     let mut command = Command::new("cargo");
     match task {
         Task::Fmt => {
@@ -64,7 +84,7 @@ fn run(task: &Task) -> bool {
                 .env("RUSTDOCFLAGS", "-D warnings")
                 .args(["doc", "--workspace", "--no-deps"]);
         }
-        Task::Check => return false,
+        Task::Check | Task::Portable | Task::Checksums => return false,
     }
     println!("running {task:?}");
     match command.status() {
@@ -78,4 +98,129 @@ fn run(task: &Task) -> bool {
             false
         }
     }
+}
+
+fn portable() -> bool {
+    let Some(target) = rustc_host() else {
+        eprintln!("failed to read the host triple from rustc -vV");
+        return false;
+    };
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let source = Path::new("target")
+        .join("release")
+        .join(format!("handfast{suffix}"));
+    let dist = Path::new("dist");
+    let destination = dist.join(format!("handfast-{target}{suffix}"));
+    if let Err(error) = std::fs::create_dir_all(dist) {
+        eprintln!("failed to create {}: {error}", dist.display());
+        return false;
+    }
+    match std::fs::copy(&source, &destination) {
+        Ok(_) => {
+            println!("wrote {}", destination.display());
+            true
+        }
+        Err(error) => {
+            eprintln!(
+                "failed to copy {} to {}: {error}",
+                source.display(),
+                destination.display()
+            );
+            false
+        }
+    }
+}
+
+fn checksums() -> bool {
+    let dist = Path::new("dist");
+    let mut files = Vec::new();
+    if let Err(error) = collect_files(dist, &mut files) {
+        eprintln!("failed to read {}: {error}", dist.display());
+        return false;
+    }
+    files.sort();
+
+    let mut seen = HashSet::new();
+    let mut text = String::new();
+    for path in &files {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            eprintln!("{} has no UTF-8 file name", path.display());
+            return false;
+        };
+        if name == SUMS_FILE {
+            continue;
+        }
+        if !seen.insert(name.to_string()) {
+            eprintln!("{name} appears in more than one artifact directory");
+            return false;
+        }
+        let digest = match sha256_file(path) {
+            Ok(digest) => digest,
+            Err(error) => {
+                eprintln!("failed to hash {}: {error}", path.display());
+                return false;
+            }
+        };
+        text.push_str(&digest);
+        text.push_str("  ");
+        text.push_str(name);
+        text.push('\n');
+    }
+
+    let sums = dist.join(SUMS_FILE);
+    match std::fs::write(&sums, text) {
+        Ok(()) => {
+            println!("wrote {} over {} files", sums.display(), seen.len());
+            true
+        }
+        Err(error) => {
+            eprintln!("failed to write {}: {error}", sums.display());
+            false
+        }
+    }
+}
+
+fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_files(&path, files)?;
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(digest.len() * 2);
+    for byte in digest.as_slice() {
+        text.push(char::from(DIGITS[usize::from(*byte >> 4)]));
+        text.push(char::from(DIGITS[usize::from(*byte & 0x0f)]));
+    }
+    Ok(text)
+}
+
+fn rustc_host() -> Option<String> {
+    let output = Command::new("rustc").arg("-vV").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines().find_map(|line| {
+        line.strip_prefix("host: ")
+            .map(|host| host.trim().to_string())
+    })
 }
