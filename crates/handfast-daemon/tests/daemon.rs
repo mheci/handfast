@@ -638,8 +638,9 @@ fn receiver_identity() -> Identity {
 }
 
 fn print_identity(directory: &Path, tcp_port: u16) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+    let output = Command::new(env!("CARGO_BIN_EXE_handfast"))
         .args([
+            "daemon",
             "--print-identity",
             "--data-dir",
             directory.to_str().unwrap(),
@@ -675,9 +676,10 @@ fn spawn_daemon_filtered(
     filter: &str,
 ) -> Child {
     let stderr = std::fs::File::create(log).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_handfastd"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_handfast"));
     command
         .args([
+            "daemon",
             "--data-dir",
             directory.to_str().unwrap(),
             "--incoming-dir",
@@ -718,11 +720,11 @@ async fn wait_for_state_file(directory: &Path, daemon: &mut Child) {
     while !directory.join("state.db").exists() {
         assert!(
             daemon.try_wait().unwrap().is_none(),
-            "handfastd exited before opening its state file"
+            "handfast exited before opening its state file"
         );
         assert!(
             Instant::now() < deadline,
-            "handfastd did not open its state file"
+            "handfast did not open its state file"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -736,7 +738,7 @@ async fn wait_for_log(log: &Path, needle: &str, daemon: &mut Child) {
         }
         assert!(
             daemon.try_wait().unwrap().is_none(),
-            "handfastd exited while waiting for {needle:?}"
+            "handfast exited while waiting for {needle:?}"
         );
         assert!(
             Instant::now() < deadline,
@@ -755,7 +757,7 @@ async fn wait_for_log_count(log: &Path, needle: &str, count: usize, daemon: &mut
         }
         assert!(
             daemon.try_wait().unwrap().is_none(),
-            "handfastd exited while waiting for {count} x {needle:?}"
+            "handfast exited while waiting for {count} x {needle:?}"
         );
         assert!(
             Instant::now() < deadline,
@@ -842,7 +844,7 @@ fn incoming_dir(directory: &Path) -> PathBuf {
 }
 
 fn control_socket(directory: &Path) -> PathBuf {
-    directory.join("handfastd.sock")
+    directory.join("handfast.sock")
 }
 
 fn temp_dir(incoming: &Path) -> PathBuf {
@@ -1018,7 +1020,7 @@ async fn wait_for_path(path: &Path, daemon: &mut Child) {
     while !path.exists() {
         assert!(
             daemon.try_wait().unwrap().is_none(),
-            "handfastd exited before {} appeared",
+            "handfast exited before {} appeared",
             path.display()
         );
         assert!(
@@ -1079,22 +1081,22 @@ fn temp_entries(incoming: &Path) -> usize {
         .unwrap_or(0)
 }
 
-async fn run_hfctl(data_dir: PathBuf, device: String, path: PathBuf) -> std::process::Output {
+async fn run_share(data_dir: PathBuf, device: String, path: PathBuf) -> std::process::Output {
     tokio::time::timeout(
         Duration::from_secs(30),
         tokio::task::spawn_blocking(move || {
-            Command::new(env!("CARGO_BIN_EXE_hfctl"))
+            Command::new(env!("CARGO_BIN_EXE_handfast"))
                 .env_remove("XDG_RUNTIME_DIR")
                 .args(["share", "--device", &device, "--data-dir"])
                 .arg(&data_dir)
                 .arg(&path)
                 .output()
-                .expect("run hfctl")
+                .expect("run handfast share")
         }),
     )
     .await
-    .expect("hfctl finishes")
-    .expect("the hfctl task joins")
+    .expect("handfast share finishes")
+    .expect("the handfast task joins")
 }
 
 fn stderr(output: &std::process::Output) -> String {
@@ -1119,10 +1121,10 @@ fn wait_for_exit(mut daemon: Child) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(status) = daemon.try_wait().unwrap() {
-            assert!(status.success(), "handfastd exits cleanly on SIGINT");
+            assert!(status.success(), "handfast exits cleanly on SIGINT");
             return;
         }
-        assert!(Instant::now() < deadline, "handfastd did not exit");
+        assert!(Instant::now() < deadline, "handfast did not exit");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -1589,7 +1591,7 @@ async fn full_share_channel_closes_the_link() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn outbound_hfctl_share_reaches_a_testkit_receiver() {
+async fn outbound_share_reaches_a_testkit_receiver() {
     let _serial = serial().await;
     let directory = tempfile::tempdir().unwrap();
     let log = directory.path().join("daemon.log");
@@ -1604,7 +1606,7 @@ async fn outbound_hfctl_share_reaches_a_testkit_receiver() {
     let expected = bytes.clone();
     let len = expected.len() as u64;
 
-    let share = tokio::spawn(run_hfctl(
+    let share = tokio::spawn(run_share(
         directory.path().to_path_buf(),
         TEST_PEER_ID.to_string(),
         source,
@@ -1639,7 +1641,7 @@ async fn outbound_hfctl_share_reaches_a_testkit_receiver() {
         .expect("the receiver reads the payload");
     assert_eq!(received, expected, "the receiver gets the source bytes");
 
-    let output = share.await.expect("hfctl joins");
+    let output = share.await.expect("handfast share joins");
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(
         stdout(&output).trim(),
@@ -1667,7 +1669,7 @@ async fn outbound_empty_file_sends_no_payload_listener() {
     let source = source_dir.path().join("empty.txt");
     std::fs::write(&source, b"").expect("write the empty source file");
 
-    let share = tokio::spawn(run_hfctl(
+    let share = tokio::spawn(run_share(
         directory.path().to_path_buf(),
         TEST_PEER_ID.to_string(),
         source,
@@ -1692,7 +1694,7 @@ async fn outbound_empty_file_sends_no_payload_listener() {
         packet.payload_transfer_info, None,
         "an empty file advertises no payload port"
     );
-    let output = share.await.expect("hfctl joins");
+    let output = share.await.expect("handfast share joins");
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(
         stdout(&output).trim(),
@@ -1719,7 +1721,7 @@ async fn outbound_with_no_free_payload_port_sends_no_packet() {
     let source = source_dir.path().join("report.pdf");
     std::fs::write(&source, b"payload").expect("write the source file");
 
-    let output = run_hfctl(
+    let output = run_share(
         directory.path().to_path_buf(),
         TEST_PEER_ID.to_string(),
         source,
@@ -1880,7 +1882,7 @@ async fn invalid_temp_path_is_a_fatal_startup_error() {
         }
         assert!(
             Instant::now() < deadline,
-            "handfastd did not reject the invalid temp path"
+            "handfast did not reject the invalid temp path"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

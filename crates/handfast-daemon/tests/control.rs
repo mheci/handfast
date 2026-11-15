@@ -1,9 +1,9 @@
 #![cfg(unix)]
 
-//! `hfctl` round trips over the Unix control socket.
+//! `handfast share` round trips over the Unix control socket.
 //!
 //! Each test runs a `ControlServer` plus a scripted command loop, then spawns
-//! the real `hfctl` binary.
+//! the real `handfast` binary.
 
 use std::path::Path;
 use std::process::Command;
@@ -45,25 +45,25 @@ fn device_id() -> DeviceId {
     DeviceId::new(DEVICE).expect("a valid device id")
 }
 
-async fn run_hfctl(env: &TestEnv, data_dir: &Path, path: &Path) -> std::process::Output {
+async fn run_share(env: &TestEnv, data_dir: &Path, path: &Path) -> std::process::Output {
     let data_dir = data_dir.to_path_buf();
     let runtime = env.runtime().to_path_buf();
     let path = path.to_path_buf();
     tokio::time::timeout(
         Duration::from_secs(10),
         tokio::task::spawn_blocking(move || {
-            Command::new(env!("CARGO_BIN_EXE_hfctl"))
+            Command::new(env!("CARGO_BIN_EXE_handfast"))
                 .env("XDG_RUNTIME_DIR", runtime)
                 .args(["share", "--device", DEVICE, "--data-dir"])
                 .arg(&data_dir)
                 .arg(&path)
                 .output()
-                .expect("run hfctl")
+                .expect("run handfast share")
         }),
     )
     .await
-    .expect("hfctl finishes")
-    .expect("the hfctl task joins")
+    .expect("handfast share finishes")
+    .expect("the handfast task joins")
 }
 
 fn stderr(output: &std::process::Output) -> String {
@@ -82,7 +82,7 @@ async fn join_script(script: tokio::task::JoinHandle<()>) {
 }
 
 #[tokio::test]
-async fn hfctl_share_round_trips_over_the_socket() {
+async fn share_round_trips_over_the_socket() {
     let env = TestEnv::new().await;
     let data_dir = tempfile::TempDir::new().expect("a temp data dir");
     let source_dir = tempfile::TempDir::new().expect("a temp source dir");
@@ -110,12 +110,12 @@ async fn hfctl_share_round_trips_over_the_socket() {
         "the control socket is bound"
     );
 
-    let output = run_hfctl(&env, data_dir.path(), &source).await;
+    let output = run_share(&env, data_dir.path(), &source).await;
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(
         stdout(&output).trim(),
         format!("sent 7 bytes to {DEVICE}"),
-        "hfctl prints the byte count and device"
+        "handfast share prints the byte count and device"
     );
 
     let (device, path) = tokio::time::timeout(Duration::from_secs(5), observed_rx)
@@ -130,7 +130,7 @@ async fn hfctl_share_round_trips_over_the_socket() {
 }
 
 #[tokio::test]
-async fn hfctl_reports_an_unknown_device() {
+async fn share_reports_an_unknown_device() {
     let env = TestEnv::new().await;
     let data_dir = tempfile::TempDir::new().expect("a temp data dir");
     let source_dir = tempfile::TempDir::new().expect("a temp source dir");
@@ -149,7 +149,7 @@ async fn hfctl_reports_an_unknown_device() {
         }
     });
 
-    let output = run_hfctl(&env, data_dir.path(), &source).await;
+    let output = run_share(&env, data_dir.path(), &source).await;
     assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
     assert!(
         stderr(&output).contains(&format!("device {DEVICE} is not connected")),
@@ -163,7 +163,7 @@ async fn hfctl_reports_an_unknown_device() {
 }
 
 #[tokio::test]
-async fn hfctl_reports_an_invalid_path() {
+async fn share_reports_an_invalid_path() {
     let env = TestEnv::new().await;
     let data_dir = tempfile::TempDir::new().expect("a temp data dir");
     let incoming = tempfile::TempDir::new().expect("a temp incoming dir");
@@ -184,7 +184,7 @@ async fn hfctl_reports_an_invalid_path() {
         }
     });
 
-    let output = run_hfctl(&env, data_dir.path(), data_dir.path()).await;
+    let output = run_share(&env, data_dir.path(), data_dir.path()).await;
     assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
     assert!(
         stderr(&output).contains("not a regular file"),
@@ -197,38 +197,38 @@ async fn hfctl_reports_an_invalid_path() {
 }
 
 #[tokio::test]
-async fn hfctl_reports_a_missing_daemon() {
+async fn share_reports_a_missing_daemon() {
     let env = TestEnv::new().await;
     let data_dir = tempfile::TempDir::new().expect("a temp data dir");
     let source = data_dir.path().join("report.pdf");
 
-    let output = run_hfctl(&env, data_dir.path(), &source).await;
+    let output = run_share(&env, data_dir.path(), &source).await;
     assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
     assert!(
-        stderr(&output).contains("handfastd is not running"),
+        stderr(&output).contains("handfast is not running"),
         "stderr: {}",
         stderr(&output)
     );
 }
 
 #[tokio::test]
-async fn hfctl_rejects_a_malformed_device_id() {
+async fn share_rejects_a_malformed_device_id() {
     let env = TestEnv::new().await;
     let data_dir = tempfile::TempDir::new().expect("a temp data dir");
     let source = data_dir.path().join("report.pdf");
     let runtime = env.runtime().to_path_buf();
     let data_dir = data_dir.path().to_path_buf();
     let output = tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_hfctl"))
+        Command::new(env!("CARGO_BIN_EXE_handfast"))
             .env("XDG_RUNTIME_DIR", runtime)
             .args(["share", "--device", "not-a-device", "--data-dir"])
             .arg(&data_dir)
             .arg(&source)
             .output()
-            .expect("run hfctl")
+            .expect("run handfast share")
     })
     .await
-    .expect("the hfctl task joins");
+    .expect("the handfast task joins");
 
     assert_eq!(output.status.code(), Some(2), "stderr: {}", stderr(&output));
 }
