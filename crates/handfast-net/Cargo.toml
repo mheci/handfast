@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-handfast-proto = { path = "../handfast-proto", version = "0.2.0" }
+handfast-proto = { path = "../handfast-proto", version = "0.3.0" }
 rcgen.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
@@ -27,4 +27,4 @@ zeroize.workspace = true
 test-support = []
 
 [dev-dependencies]
-handfast-testkit = { path = "../handfast-testkit", version = "0.2.0" }
+handfast-testkit = { path = "../handfast-testkit", version = "0.3.0" }

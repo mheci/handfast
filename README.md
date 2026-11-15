@@ -2,56 +2,73 @@
 
 Clean-room, Rust-native KDE Connect implementation.
 
-> **P1 link milestone on `main`.** `handfast daemon` now discovers peers, binds a
-> KDE Connect TCP port, completes a TLS 1.2 or TLS 1.3 link with certificate
-> pinning and protocol-8 identity re-exchange, prompts for pairing and runs the
-> ping and battery plugins for paired devices. Payload and file transfer,
-> desktop backends and most plugins are still not wired. The 0.2.0 packages
-> remain a foundation and packaging milestone.
+> **0.3.0 ships one binary.** `handfast` starts the daemon, talks to it, installs
+> its own autostart, updates itself and opens a window. `handfastd` and `hfctl`
+> are gone. The packages are `handfast`, `handfast-bin` and a per-user
+> `handfast-<version>-x64.msi`. See
+> [docs/releases/0.3.0.md](docs/releases/0.3.0.md) for the upgrade note.
 
 ## Install
 
-The 0.2.0 packages are attached to the GitHub release.
+The 0.3.0 packages are attached to the GitHub release.
 
 Windows 11, x64:
 
 ```text
-handfast-0.2.0-x64.msi
+handfast-0.3.0-x64.msi
 ```
 
-Open the MSI and run `handfastd` from `C:\Program Files\Handfast`. The 0.2.0
-MSI is unsigned. The release workflow signs it when the Windows signing secrets
-are configured. State is written to `%LOCALAPPDATA%\handfast`.
+Open the MSI. It installs per user to `%LOCALAPPDATA%\Handfast`, adds a Start
+Menu shortcut named `Handfast` that runs `handfast gui`, and writes state to
+`%LOCALAPPDATA%\handfast`. The 0.3.0 MSI is signed when the Windows signing
+secrets are configured. The MSI registers the logon task with
+`handfast service install` and removes it on uninstall. Run
+`handfast service install` once after the install to print the administrator
+command for the firewall rule: a per-user install cannot add the rule itself.
 
 Debian 12, amd64:
 
 ```sh
-sudo apt install ./handfastd_0.2.0_debian12_amd64.deb
+sudo apt install ./handfast_0.3.0_debian12_amd64.deb
+systemctl --user enable --now handfast
 ```
 
 Ubuntu 24.04, amd64:
 
 ```sh
-sudo apt install ./handfastd_0.2.0_ubuntu24.04_amd64.deb
+sudo apt install ./handfast_0.3.0_ubuntu24.04_amd64.deb
+systemctl --user enable --now handfast
 ```
 
 Arch Linux, x86_64:
 
 ```sh
-sudo pacman -U handfastd-bin-0.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U handfast-bin-0.3.0-1-x86_64.pkg.tar.zst
+systemctl --user enable --now handfast
 ```
 
-The Linux packages install `/usr/bin/handfastd`. There is no service unit yet.
-The daemon is a console program. Run it directly:
+The Linux packages install `/usr/bin/handfast` and the systemd user unit at
+`/usr/lib/systemd/user/handfast.service`. The deb carries `Conflicts`,
+`Replaces` and `Provides: handfastd`; the Arch package carries
+`conflicts=('handfastd-bin')` and `replaces=('handfastd-bin')`. They upgrade a
+0.2.0 install in one step.
+
+Run the same binary for every job:
 
 ```sh
-handfastd --print-identity
-handfastd
+handfast daemon            # run the daemon
+handfast gui               # open the window
+handfast status [--json]   # print the running daemon's status
+handfast identity          # print this device's identity packet
+handfast share --device <id> <path>
+handfast service install|uninstall|start|stop|status
+handfast update check|apply
+handfast version
 ```
 
-The 0.2.0 packages install `handfastd`. On `main`, one `handfast` binary
-replaces it: `handfast identity` prints the packet and `handfast daemon` runs
-the daemon.
+`handfast service install` writes a unit or task for the current binary, which
+is what a portable install under `~/.local/bin` needs. A packaged install
+already has the unit; enable it with `systemctl --user enable --now handfast`.
 
 Linux state lives in `$XDG_DATA_HOME/handfast`, or
 `~/.local/share/handfast` when `XDG_DATA_HOME` is unset. Use `--data-dir` to
@@ -62,16 +79,25 @@ override it.
 Requires Rust 1.90 or newer.
 
 ```sh
-cargo build --workspace --all-features
-cargo test --workspace --all-features
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo build --workspace
+cargo build -p handfast-daemon --features gui   # with the window
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo run -p handfast-testkit -- self-test
+cargo run -p xtask -- build                     # release build with the GUI
 ```
 
-## What works on main
+A plain `cargo build` is the headless build. The `gui` feature needs the X11 and
+Wayland development packages on Linux; the `gui` CI job installs
+`libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev`.
 
-- Packet framing: 4-byte big-endian length, JSON body, 1 MiB hard limit.
+## What works
+
+- One `handfast` binary with `daemon`, `gui`, `status`, `identity`, `share`,
+  `service`, `update` and `version` subcommands, and a global `--data-dir`.
+- Packet framing: one UTF-8 JSON line per packet, 1 MiB hard limit. The local
+  control channel keeps its 4-byte length frame and 64 KiB cap.
 - Packet validation: namespaced type, object body, payload fields that appear
   together, payload size bounds.
 - Identity and capabilities: protocol 8 parsing, device ID and name
@@ -88,29 +114,41 @@ cargo run -p handfast-testkit -- self-test
   and certificate fingerprint, pins on `y` and writes no pin on reject.
 - Plugin runtime: registry, per-device host, five-second timeout, panic
   isolation and permanent disable after a failure.
-- Plugin roster: all 31 KDE Connect plugins are listed. Ping, battery and
-  clipboard text are implemented. Clipboard requires a desktop adapter.
+- Plugin roster: all 31 KDE Connect plugins are listed and 13 are implemented:
+  battery, clipboard, connectivity report, find this device, lock device, MPRIS
+  control, notifications, pause music, ping, presenter, screensaver inhibit,
+  share and system volume.
+- Share and file transfer over the second TLS connection, both directions, with
+  a safe incoming folder, no-clobber names and a bounded extra-bytes policy.
 - State store: redb tables for devices, per-device plugin state, settings and
   the daemon TLS identity. Trust and pairing updates are atomic.
 - Independent testkit with TLS 1.2 and 1.3 peers, golden vectors and four fuzz
   targets.
-- `handfast identity` and a stable, persisted device ID and certificate.
+- `handfast identity`, `handfast status [--json]` and a stable, persisted device
+  ID and certificate.
 - UDP discovery in `handfast daemon`: identity announcements, peer receive and
   device persistence. A peer that announces this daemon's own ID is ignored.
+- Per-user autostart: `handfast service install` writes a systemd user unit or a
+  Task Scheduler logon task, starts the daemon and reports a missing Windows
+  firewall rule.
+- Self-update: `handfast update check` reads the latest release, and
+  `handfast update apply` verifies `SHA256SUMS`, checks Authenticode on Windows
+  and replaces the running binary atomically.
+- The `gui` feature: an `egui` window that starts, stops and reports the daemon
+  over the control channel.
 
 Not wired yet:
 
-- Payload and file transfer over the second TCP connection.
-- Linux desktop backends for clipboard, notifications, media, volume, input
-  and the remaining plugins.
-- The other 28 plugins.
+- 18 of the 31 plugins.
+- Windows and macOS desktop backends. The adapter traits leave room for them,
+  but v2 ships Linux only.
 - The real Android and desktop interop run. The checklist is in
   [docs/INTEROP.md](docs/INTEROP.md); it is the P1 exit gate.
 
-The 0.2.0 packages open no network sockets. On `main`, `handfast daemon`
-announces its identity over UDP discovery on port 1716, binds a TCP port in
-1716-1764, accepts or dials peers, runs the TLS link and pairing prompt, and
-persists discovered and authenticated devices until Ctrl+C.
+`handfast daemon` announces its identity over UDP discovery on port 1716, binds
+a TCP port in 1716-1764, accepts or dials peers, runs the TLS link and pairing
+prompt, serves share and the implemented plugins, and persists discovered and
+authenticated devices until it stops.
 
 ## Architecture
 
@@ -124,7 +162,7 @@ persists discovered and authenticated devices until Ctrl+C.
 | `handfast-store` | redb state, settings and migrations |
 | `handfast-testkit` | Independent wire peer, TLS peers, golden vectors and self-test |
 | `handfast-daemon` | The `handfast` binary, daemon composition root and control client |
-| `xtask` | Local fmt, clippy, test and doc tasks |
+| `xtask` | Local fmt, clippy, test, build, packaging and checksum tasks |
 | `fuzz` | Separate cargo-fuzz workspace for the frame and permissive parsers |
 
 The v1 implementation is archived at tag `v1-archive`. No v1 source is copied
@@ -134,7 +172,8 @@ official client behavior.
 ## Protocol target
 
 - KDE Connect protocol version 8.
-- 4-byte big-endian length, JSON body, 1 MiB hard limit.
+- One UTF-8 JSON line per LAN link packet, 1 MiB hard limit. The local control
+  channel uses a 4-byte big-endian length frame.
 - UDP discovery on port 1716.
 - TCP control links in the 1716-1764 range. Payload transfer uses a second
   connection to the port announced in `payloadTransferInfo.port`.
@@ -163,7 +202,15 @@ apps, and behavioral parity with the 31 plugins shipped by `kdeconnect-kde`.
   [ARCHITECTURE.md](docs/ARCHITECTURE.md#windows-state-file-and-incoming-file-acls).
 - The Windows release signs the executable and MSI when
   `WINDOWS_CERT_PFX_BASE64` and `WINDOWS_CERT_PASSWORD` are configured, then
-  verifies both signatures. The 0.2.0 MSI is unsigned.
+  verifies both signatures. The Windows updater refuses an unsigned asset.
+- The update path accepts HTTPS to a fixed host allowlist, checks `SHA256SUMS`
+  from the same release, verifies Authenticode on Windows and refuses on any
+  mismatch. It runs as the user and never elevates.
+- The daemon runs as the logged-in user, from a systemd user unit or a Task
+  Scheduler logon task, so the desktop adapters keep the user's session bus and
+  the state stays in the user's profile.
+- The release binary contains BSL-1.0 code and OFL-1.1 and Ubuntu-font-1.0 font
+  data. `THIRD-PARTY-NOTICES.md` carries the texts and ships in every package.
 
 ## Development
 
@@ -171,15 +218,19 @@ CI runs on GitHub Actions:
 
 - formatting, clippy with warnings denied, tests and doc tests;
 - MSRV 1.90, `cargo-deny`, documentation build and testkit self-test;
+- the `gui` job, which builds and tests the window with the X11 and Wayland
+  development packages;
 - nightly fuzzing for the frame, identity, hello and discovery parsers;
 - a Windows build with the static CRT used by the MSI and the Windows
   `handfast-net` socket-option tests.
 
 Releases are tag driven. The tag must match the workspace version, for example
-`v0.2.0`. The release workflow builds native Debian 12, Ubuntu 24.04 and Arch
-Linux packages plus the Windows MSI, then publishes them as GitHub release
+`v0.3.0`. The release workflow builds one `handfast` binary per platform, wraps
+it in native Debian 12, Ubuntu 24.04, Arch Linux and per-user Windows packages,
+adds the portable assets and `SHA256SUMS`, then publishes them as GitHub release
 assets. See [docs/RELEASING.md](docs/RELEASING.md) for the signing secrets and
-the release runbook.
+the release runbook, and
+[docs/releases/0.3.0.md](docs/releases/0.3.0.md) for the current notes.
 
 ## Roadmap
 

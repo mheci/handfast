@@ -21,4 +21,4 @@ tokio.workspace = true
 tokio-rustls.workspace = true
 
 [dev-dependencies]
-handfast-proto = { path = "../handfast-proto", version = "0.2.0" }
+handfast-proto = { path = "../handfast-proto", version = "0.3.0" }

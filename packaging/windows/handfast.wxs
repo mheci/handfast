@@ -1,26 +1,71 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<!--
+  Per-user install. A per-machine install puts the exe in Program Files, which
+  the user cannot write, so `handfast update apply` would need elevation on every
+  update.
+
+  The UpgradeCode is the 0.2.0 one, so 0.3.0 and later upgrade in place. Windows
+  Installer cannot upgrade the 0.2.0 per-machine install from a per-user package
+  without elevation, so 0.2.0 must be uninstalled once by hand. See
+  docs/RELEASING.md.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   <Product Id="*" Name="Handfast" Language="1033" Version="$(var.Version)"
            Manufacturer="Handfast" UpgradeCode="7F4C4DB9-9355-493C-A898-C5AD678C0DA3">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" Platform="x64" />
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of Handfast is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- A per-user install cannot add the firewall rule, which needs an
+         administrator. The daemon cannot discover peers until the rule exists,
+         so the Add or Remove Programs entry carries the command. -->
+    <Property Id="ARPCOMMENTS"
+              Value="Handfast needs a firewall rule for UDP 1716 and TCP 1716-1764. Run 'handfast service install' and follow the printed netsh command from an administrator prompt." />
+
+    <!-- CloseApplication's parents are Product, Fragment and Module, not
+         Component. It sends WM_CLOSE so an upgrade can replace a running exe. -->
+    <util:CloseApplication Id="CloseHandfast" Target="handfast.exe"
+                           CloseMessage="yes" PromptToContinue="no" RebootPrompt="no" />
+
+    <!-- Both actions run as the installing user and log a failure without
+         failing the install: a missing autostart is repairable. -->
+    <CustomAction Id="ServiceInstall" FileKey="HandfastExe" ExeCommand="service install"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="ServiceUninstall" FileKey="HandfastExe" ExeCommand="service uninstall"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="ServiceInstall" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="ServiceUninstall" Before="RemoveFiles">REMOVE="ALL"</Custom>
+    </InstallExecuteSequence>
+
     <Feature Id="ProductFeature" Title="Handfast" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="StartMenuShortcut" />
     </Feature>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFiles64Folder">
+      <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLFOLDER" Name="Handfast" />
       </Directory>
+      <Directory Id="ProgramMenuFolder" />
     </Directory>
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-      <Component Id="HandfastdExe" Guid="4D6C071F-0764-4CD7-BC4D-F297B909216A">
-        <File Id="HandfastdExe" Source="$(var.BinaryPath)" KeyPath="yes" />
+      <Component Id="HandfastExe" Guid="C3B8E0D2-5F4A-4A97-8B6E-1D2F3C4A5B60">
+        <File Id="HandfastExe" Source="$(var.BinaryPath)" KeyPath="yes" />
+        <File Id="ThirdPartyNotices" Source="$(var.NoticesPath)" />
       </Component>
     </ComponentGroup>
+
+    <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder"
+               Guid="B2A5B0A4-6E39-4F6B-9F0C-7A2C8B3D9E41">
+      <Shortcut Id="HandfastShortcut" Name="Handfast"
+                Description="Open the Handfast window"
+                Target="HandfastExe" Arguments="gui" WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKCU" Key="Software\Handfast" Name="StartMenuShortcut"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
   </Product>
 </Wix>

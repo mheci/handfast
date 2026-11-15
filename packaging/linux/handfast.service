@@ -1,0 +1,16 @@
+[Unit]
+Description=Handfast KDE Connect daemon
+Documentation=https://github.com/mheci/handfast
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/handfast daemon
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

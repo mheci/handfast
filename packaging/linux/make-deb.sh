@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Build a native .deb from target/release/handfastd.
 set -euo pipefail
 
 if [ "$#" -ne 4 ]; then
@@ -16,23 +15,33 @@ arch=$(dpkg --print-architecture)
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 
-install -d "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/doc/handfastd"
-install -m 0755 target/release/handfastd "$root/usr/bin/handfastd"
-install -m 0644 README.md "$root/usr/share/doc/handfastd/README.md"
-install -m 0644 LICENSE-MIT "$root/usr/share/doc/handfastd/copyright"
+install -d "$root/DEBIAN" \
+    "$root/usr/bin" \
+    "$root/usr/lib/systemd/user" \
+    "$root/usr/share/doc/handfast"
+install -m 0755 target/release/handfast "$root/usr/bin/handfast"
+install -m 0644 packaging/linux/handfast.service "$root/usr/lib/systemd/user/handfast.service"
+install -m 0644 README.md "$root/usr/share/doc/handfast/README.md"
+install -m 0644 LICENSE-MIT "$root/usr/share/doc/handfast/copyright"
+install -m 0644 THIRD-PARTY-NOTICES.md "$root/usr/share/doc/handfast/THIRD-PARTY-NOTICES.md"
 
 cat > "$root/DEBIAN/control" <<EOF
-Package: handfastd
+Package: handfast
 Version: ${version}
 Section: net
 Priority: optional
 Architecture: ${arch}
-Depends: libc6 (>= ${glibc}), libgcc-s1
+Depends: libc6 (>= ${glibc}), libgcc-s1, libegl1, libgl1,
+ libwayland-client0, libwayland-cursor0, libwayland-egl1, libx11-6,
+ libxcursor1, libxi6, libxkbcommon0, libxkbcommon-x11-0, libxrandr2
+Conflicts: handfastd
+Replaces: handfastd
+Provides: handfastd
 Maintainer: mheci <274998646+mheci@users.noreply.github.com>
 Homepage: https://github.com/mheci/handfast
-Description: KDE Connect compatible daemon
+Description: KDE Connect compatible client
  Handfast is a clean-room, Rust-native KDE Connect implementation.
 EOF
 
 mkdir -p "$out"
-dpkg-deb --build --root-owner-group "$root" "$out/handfastd_${version}_${label}_${arch}.deb"
+dpkg-deb --build --root-owner-group "$root" "$out/handfast_${version}_${label}_${arch}.deb"

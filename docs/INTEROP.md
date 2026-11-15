@@ -28,6 +28,26 @@ sudo ufw allow 1716:1764/tcp
 On Windows, allow `handfast.exe` on private networks for UDP 1716 and TCP
 1716-1764.
 
+## Installed build
+
+A package installs the same binary, so the run below works without a build step.
+Use the installed path in place of `./target/release/handfast`:
+
+- Debian 12: `sudo apt install ./handfast_<version>_debian12_amd64.deb` installs
+  `/usr/bin/handfast` and the unit at
+  `/usr/lib/systemd/user/handfast.service`.
+- Ubuntu 24.04: `sudo apt install ./handfast_<version>_ubuntu24.04_amd64.deb`
+  installs the same files.
+- Arch Linux: `sudo pacman -U handfast-bin-<version>-1-x86_64.pkg.tar.zst`
+  installs the same two files.
+- Windows 11: the MSI installs `%LOCALAPPDATA%\Handfast\handfast.exe` and keeps
+  state in `%LOCALAPPDATA%\handfast`.
+
+`handfast service install` registers the unit or logon task for the installed
+binary. On Windows, uninstall a 0.2.0 MSI once before installing 0.3.0; the two
+scopes share an `UpgradeCode` and Windows Installer cannot replace a per-machine
+product from a per-user package. See [RELEASING.md](RELEASING.md).
+
 ## Build and start
 
 ```sh

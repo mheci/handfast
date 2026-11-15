@@ -23,12 +23,12 @@ eframe = { version = "0.33", default-features = false, features = [
     "wayland",
     "x11",
 ], optional = true }
-handfast-desktop = { path = "../handfast-desktop", version = "0.2.0" }
-handfast-net = { path = "../handfast-net", version = "0.2.0" }
-handfast-plugins = { path = "../handfast-plugins", version = "0.2.0" }
-handfast-proto = { path = "../handfast-proto", version = "0.2.0" }
-handfast-runtime = { path = "../handfast-runtime", version = "0.2.0" }
-handfast-store = { path = "../handfast-store", version = "0.2.0" }
+handfast-desktop = { path = "../handfast-desktop", version = "0.3.0" }
+handfast-net = { path = "../handfast-net", version = "0.3.0" }
+handfast-plugins = { path = "../handfast-plugins", version = "0.3.0" }
+handfast-proto = { path = "../handfast-proto", version = "0.3.0" }
+handfast-runtime = { path = "../handfast-runtime", version = "0.3.0" }
+handfast-store = { path = "../handfast-store", version = "0.3.0" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -48,8 +48,8 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 async-trait.workspace = true
-handfast-net = { path = "../handfast-net", version = "0.2.0", features = ["test-support"] }
-handfast-testkit = { path = "../handfast-testkit", version = "0.2.0" }
+handfast-net = { path = "../handfast-net", version = "0.3.0", features = ["test-support"] }
+handfast-testkit = { path = "../handfast-testkit", version = "0.3.0" }
 redb.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

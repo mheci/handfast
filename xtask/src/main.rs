@@ -30,8 +30,40 @@ enum Task {
     Doc,
     /// Run fmt, clippy, tests and docs.
     Check,
+    /// Build the release binary with the GUI feature.
+    Build,
     /// Copy the release binary to `dist/handfast-<target>(.exe)`.
     Portable,
+    /// Build the Debian package with `packaging/linux/make-deb.sh`.
+    Deb {
+        /// Package version. Defaults to the workspace version with `-` as `~`.
+        #[arg(long)]
+        version: Option<String>,
+        /// Minimum glibc version for the Depends line.
+        #[arg(long, default_value = "2.36")]
+        glibc: String,
+        /// Distribution label in the file name.
+        #[arg(long, default_value = "debian12")]
+        label: String,
+        /// Output directory.
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+    },
+    /// Build the MSI with candle and light from the WiX Toolset.
+    Msi {
+        /// Output directory.
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+    },
+    /// Copy the portable binary and build the host's native package.
+    Package {
+        /// Minimum glibc version for the host's deb package.
+        #[arg(long)]
+        glibc: Option<String>,
+        /// Distribution label for the host's deb package.
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Write `dist/SHA256SUMS` over every other file in `dist/`.
     Checksums,
 }
@@ -54,6 +86,16 @@ fn main() -> ExitCode {
 fn run(task: &Task) -> bool {
     match task {
         Task::Portable => portable(),
+        Task::Deb {
+            version,
+            glibc,
+            label,
+            out,
+        } => deb(version.as_deref(), glibc, label, out),
+        Task::Msi { out } => msi(out),
+        Task::Package { glibc, label } => {
+            portable() && native_package(glibc.as_deref(), label.as_deref())
+        }
         Task::Checksums => checksums(),
         Task::Check => false,
         _ => run_cargo(task),
@@ -84,7 +126,23 @@ fn run_cargo(task: &Task) -> bool {
                 .env("RUSTDOCFLAGS", "-D warnings")
                 .args(["doc", "--workspace", "--no-deps"]);
         }
-        Task::Check | Task::Portable | Task::Checksums => return false,
+        Task::Build => {
+            command.args([
+                "build",
+                "--release",
+                "--locked",
+                "-p",
+                "handfast-daemon",
+                "--features",
+                "gui",
+            ]);
+        }
+        Task::Check
+        | Task::Portable
+        | Task::Deb { .. }
+        | Task::Msi { .. }
+        | Task::Package { .. }
+        | Task::Checksums => return false,
     }
     println!("running {task:?}");
     match command.status() {
@@ -98,6 +156,127 @@ fn run_cargo(task: &Task) -> bool {
             false
         }
     }
+}
+
+fn workspace_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+fn deb(version: Option<&str>, glibc: &str, label: &str, out: &Path) -> bool {
+    let version = match version {
+        Some(version) => version.to_string(),
+        None => workspace_version().replace('-', "~"),
+    };
+    println!("building the deb package");
+    match Command::new("bash")
+        .args(["packaging/linux/make-deb.sh", &version, glibc, label])
+        .arg(out)
+        .status()
+    {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            eprintln!("make-deb.sh failed with {status}");
+            false
+        }
+        Err(error) => {
+            eprintln!("failed to spawn bash: {error}");
+            false
+        }
+    }
+}
+
+fn msi(out: &Path) -> bool {
+    let version = workspace_version()
+        .split('-')
+        .next()
+        .unwrap_or(workspace_version());
+    let wxs = Path::new("packaging/windows/handfast.wxs");
+    let notices = Path::new("THIRD-PARTY-NOTICES.md");
+    if !wxs.is_file() || !notices.is_file() {
+        eprintln!("run xtask from the repository root");
+        return false;
+    }
+    let binary = Path::new("target")
+        .join("release")
+        .join(format!("handfast{}", std::env::consts::EXE_SUFFIX));
+    if !binary.is_file() {
+        eprintln!("{} is missing; run `xtask build` first", binary.display());
+        return false;
+    }
+    let wix_dir = Path::new("target").join("wix");
+    for directory in [wix_dir.as_path(), out] {
+        if let Err(error) = std::fs::create_dir_all(directory) {
+            eprintln!("failed to create {}: {error}", directory.display());
+            return false;
+        }
+    }
+
+    let wixobj = wix_dir.join("handfast.wixobj");
+    let package = out.join(format!("handfast-{version}-x64.msi"));
+    let candle = wix_tool("candle.exe");
+    let light = wix_tool("light.exe");
+    let candle_args = [
+        "-nologo".to_string(),
+        "-arch".to_string(),
+        "x64".to_string(),
+        "-ext".to_string(),
+        "WixUtilExtension".to_string(),
+        format!("-dVersion={version}"),
+        format!("-dBinaryPath={}", binary.display()),
+        format!("-dNoticesPath={}", notices.display()),
+        "-out".to_string(),
+        wixobj.display().to_string(),
+        wxs.display().to_string(),
+    ];
+    if !run_tool(&candle, &candle_args) {
+        return false;
+    }
+    let light_args = [
+        "-nologo".to_string(),
+        "-ext".to_string(),
+        "WixUtilExtension".to_string(),
+        "-out".to_string(),
+        package.display().to_string(),
+        wixobj.display().to_string(),
+    ];
+    run_tool(&light, &light_args)
+}
+
+fn run_tool(tool: &Path, args: &[String]) -> bool {
+    match Command::new(tool).args(args).status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            eprintln!("{} failed with {status}", tool.display());
+            false
+        }
+        Err(error) => {
+            eprintln!("failed to spawn {}: {error}", tool.display());
+            false
+        }
+    }
+}
+
+fn wix_tool(name: &str) -> PathBuf {
+    match std::env::var_os("WIX_BIN") {
+        Some(directory) if !directory.is_empty() => PathBuf::from(directory).join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
+#[cfg(windows)]
+fn native_package(_glibc: Option<&str>, _label: Option<&str>) -> bool {
+    msi(Path::new("dist"))
+}
+
+#[cfg(unix)]
+fn native_package(glibc: Option<&str>, label: Option<&str>) -> bool {
+    let (Some(glibc), Some(label)) = (glibc, label) else {
+        eprintln!(
+            "pass --glibc and --label for the host's deb, for example --glibc 2.39 --label ubuntu24.04"
+        );
+        return false;
+    };
+    deb(None, glibc, label, Path::new("dist"))
 }
 
 fn portable() -> bool {
