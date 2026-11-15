@@ -465,9 +465,31 @@ pub async fn dial_with_hello(
     config: &TlsPeerConfig,
     hello: &WirePacket,
 ) -> Result<TlsPeer> {
+    let line = frame::encode_line(hello)?;
+    dial_with_raw_hello(address, expected_device_id, config, &line).await
+}
+
+/// Dial a listener with caller-built plaintext hello bytes.
+///
+/// The bytes must be one newline-terminated JSON line. Tests use this to send
+/// the exact shape a real client writes.
+///
+/// # Errors
+///
+/// Fails on IO, a TLS handshake failure, a hello mismatch or a timeout.
+pub async fn dial_with_raw_hello(
+    address: SocketAddr,
+    expected_device_id: &str,
+    config: &TlsPeerConfig,
+    hello: &[u8],
+) -> Result<TlsPeer> {
     let mut tcp = within_timeout(TcpStream::connect(address)).await?;
     tcp.set_nodelay(true)?;
-    within_timeout(frame::write(&mut tcp, hello)).await?;
+    within_timeout(async {
+        tcp.write_all(hello).await?;
+        tcp.flush().await
+    })
+    .await?;
 
     let acceptor = TlsAcceptor::from(Arc::new(config.server_config()?));
     let stream = within_timeout(acceptor.accept(tcp)).await?;
@@ -512,7 +534,7 @@ pub async fn connect_silent(address: SocketAddr) -> Result<TcpStream> {
 pub async fn accept(listener: &TcpListener, config: &TlsPeerConfig) -> Result<TlsPeer> {
     let (mut tcp, _) = within_timeout(listener.accept()).await?;
     tcp.set_nodelay(true)?;
-    let hello = within_timeout(frame::read(&mut tcp))
+    let hello = within_timeout(frame::read_line(&mut tcp))
         .await?
         .ok_or_else(|| TestkitError::Protocol("dialer closed before its hello".to_string()))?;
     config.check_hello(&hello)?;

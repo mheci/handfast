@@ -179,6 +179,65 @@ pub async fn write<W: AsyncWrite + Unpin>(writer: &mut W, packet: &WirePacket) -
     Ok(())
 }
 
+/// Maximum plaintext hello line accepted by the peer, matching Android's
+/// `readLineBounded` cap.
+pub const MAX_HELLO_LINE: usize = 512 * 1024;
+
+/// Encode a packet as one compact JSON line terminated by `\n`.
+///
+/// # Errors
+///
+/// Fails when the packet is invalid or cannot be serialized.
+pub fn encode_line(packet: &WirePacket) -> Result<Vec<u8>> {
+    packet.validate()?;
+    let mut line = serde_json::to_vec(packet)?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// Read one newline-terminated JSON line, one byte at a time.
+///
+/// Returns `Ok(None)` on a clean EOF before the first byte. A buffered reader
+/// could consume the TLS handshake bytes that follow the hello.
+///
+/// # Errors
+///
+/// Fails on a truncated or over-cap line or invalid JSON.
+pub async fn read_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<WirePacket>> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if reader.read(&mut byte).await? == 0 {
+            if line.is_empty() {
+                return Ok(None);
+            }
+            return Err(TestkitError::Protocol("truncated hello line".to_string()));
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        if line.len() >= MAX_HELLO_LINE {
+            return Err(TestkitError::Protocol("hello line too large".to_string()));
+        }
+        line.push(byte[0]);
+    }
+    let packet: WirePacket = serde_json::from_slice(&line)?;
+    packet.validate()?;
+    Ok(Some(packet))
+}
+
+/// Write one newline-terminated JSON line and flush it.
+///
+/// # Errors
+///
+/// Fails when the packet is invalid or the write fails.
+pub async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, packet: &WirePacket) -> Result<()> {
+    let line = encode_line(packet)?;
+    writer.write_all(&line).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +286,40 @@ mod tests {
         let (mut client, mut server) = duplex(1024);
         write(&mut client, &ping()).await.unwrap();
         assert_eq!(read(&mut server).await.unwrap().unwrap(), ping());
+    }
+
+    #[tokio::test]
+    async fn line_round_trip() {
+        let (mut client, mut server) = duplex(1024);
+        write_line(&mut client, &ping()).await.unwrap();
+        assert_eq!(read_line(&mut server).await.unwrap().unwrap(), ping());
+    }
+
+    #[tokio::test]
+    async fn line_has_no_length_prefix() {
+        let line = encode_line(&ping()).unwrap();
+        assert_eq!(line.first(), Some(&b'{'), "the line starts with JSON");
+        assert_eq!(line.last(), Some(&b'\n'), "the line ends with a newline");
+    }
+
+    #[tokio::test]
+    async fn line_without_a_newline_is_rejected() {
+        let (mut client, mut server) = duplex(1024);
+        client
+            .write_all(br#"{"id":0,"type":"kdeconnect.ping","body":{}}"#)
+            .await
+            .unwrap();
+        drop(client);
+        assert!(read_line(&mut server).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn line_over_the_cap_is_rejected() {
+        let (mut client, mut server) = duplex(MAX_HELLO_LINE + 2);
+        client
+            .write_all(&vec![b'x'; MAX_HELLO_LINE + 1])
+            .await
+            .unwrap();
+        assert!(read_line(&mut server).await.is_err());
     }
 }

@@ -70,12 +70,12 @@ The current discovery parser is a compatibility bug. `Identity::from_packet` req
 
 ### Protocol sequence (re-grounded against real clients)
 
-The following is verified from the Android `LanLinkProvider.kt`, `DeviceInfo.kt` and `SslHelper.kt`, and the desktop `lanlinkprovider.cpp` and `deviceinfo.h`.
+The following is verified from the Android `NetworkPacket.kt`, `LanLinkProvider.kt`, `DeviceInfo.kt` and `SslHelper.kt`, and the desktop `lanlinkprovider.cpp` and `deviceinfo.h`.
 
 ```
 A (discovered B)                                      B (listener)
   TCP connect  -------------------------------------->
-  plaintext identity hello {A full + target B} ------>  validate targetDeviceId and targetProtocolVersion
+  plaintext hello line {A full + target B} + "\n" --->  validate targetDeviceId and targetProtocolVersion
   TLS handshake, A = server, B = client  <----------->
   encrypted identity {A full} ----------------------->  compare A deviceId/protocolVersion to hello
   <----------------------- encrypted identity {B full}  compare B deviceId/protocolVersion to discovery/hello
@@ -84,7 +84,7 @@ A (discovered B)                                      B (listener)
 
 Facts that drive the design:
 
-- **One plaintext hello, from the dialer only.** Android's `udpPacketReceived` dials, builds its full identity, adds `targetDeviceId` and `targetProtocolVersion` as strings, writes it, and then starts TLS. Desktop's `tcpSocketConnected` writes `toConnectionPacket` with numeric target fields and then starts server encryption. The listener never sends a plaintext identity of its own.
+- **One plaintext hello, from the dialer only.** Android's `udpPacketReceived` dials, builds its full identity, adds `targetDeviceId` and `targetProtocolVersion` as strings, writes it, and then starts TLS. Desktop's `tcpSocketConnected` writes `toConnectionPacket` with numeric target fields and then starts server encryption. The listener never sends a plaintext identity of its own. The hello is one compact JSON line, not a length-prefixed frame. `NetworkPacket.serialize()` returns `json.encodeToString(...) + "\n"`, and `LanLinkProvider` writes those bytes to the socket directly. The listener reads byte by byte until `\n` with a 512 KiB cap (`readLineBounded`), so it never buffers the TLS ClientHello that follows.
 - **The dialer is the TLS server.** Android sets `clientMode = (connectionStarted == Locally)`, so a dialed connection is server mode. Desktop calls `startServerEncryption` on the dialed socket. The accepted side is the TLS client.
 - **The hello shapes differ.** Android sends the full identity plus target fields. Desktop sends only `deviceId`, `deviceName`, `protocolVersion`, `targetDeviceId` and `targetProtocolVersion`. The listener must accept both. Accepting the smaller packet means `deviceType` and the capability arrays are optional in the hello. The encrypted identity remains full.
 - **Target protocol version is a string on Android and a number on desktop.** `targetProtocolVersion` must parse from both a JSON string and a JSON number. The value must be 8.
@@ -359,7 +359,7 @@ impl DiscoveryAnnouncement {
 }
 ```
 
-`IdentityHello::to_packet` starts from the full `Identity` body and inserts `targetDeviceId` and a numeric `targetProtocolVersion`. `IdentityHello::from_packet` requires `kdeconnect.identity`, a valid `deviceId`, protocol version 8, and a valid target device ID. `deviceName` is optional and sanitized; `deviceType` and both capability arrays are optional and default to `Unknown` and empty. `targetProtocolVersion` accepts a JSON number or a string and must be 8. `device_id` must differ from `target_device_id`. This accepts the Android full hello and the desktop connection packet.
+`IdentityHello::to_packet` starts from the full `Identity` body and inserts `targetDeviceId` and a numeric `targetProtocolVersion`. `IdentityHello::from_packet` requires `kdeconnect.identity`, a valid `deviceId`, protocol version 8, and a valid target device ID. `deviceName` is optional and sanitized; `deviceType` and both capability arrays are optional and default to `Unknown` and empty. `targetProtocolVersion` accepts a JSON number or a string and must be 8. `device_id` must differ from `target_device_id`. This accepts the Android full hello and the desktop connection packet. On the wire the hello is one compact JSON line terminated by `\n`, not a 4-byte length-prefixed frame. Android's `NetworkPacket.serialize()` appends the newline and `LanLinkProvider` writes the bytes directly; the listener reads until `\n` with the same 512 KiB bound, one byte at a time, so no TLS handshake byte is buffered away. The encrypted identity exchange after TLS stays framed.
 
 `DiscoveryAnnouncement::from_packet` requires `kdeconnect.identity`, a valid `deviceId`, `protocolVersion` 8 and a `tcpPort` in 1716-1764. It reads `deviceName` and `deviceType` if present and defaults to `Unnamed device` and `Unknown`. It ignores capability fields. `to_packet` emits the minimal desktop shape: `deviceId`, `deviceName`, `protocolVersion` and `tcpPort`. The encrypted identity parser stays strict; only discovery and the plaintext hello are permissive.
 
@@ -778,7 +778,7 @@ The public API has one `connect` and one `accept`. Callers do not coordinate sta
 
 1. `TcpStream::connect` with `connect_timeout`; set `TCP_NODELAY`; apply keepalive.
 2. Reject `expected == local.device_id()`.
-3. Send `IdentityHello` built from `local.identity()` with the target `expected`.
+3. Send `IdentityHello` built from `local.identity()` with the target `expected` as one compact JSON line plus `\n`.
 4. Start the TLS server handshake with the local certificate. TLS 1.2 and 1.3 are enabled.
 5. Read the peer certificate and run `PeerCertificate::check(expected, trust)`.
 6. Send the local full `Identity` from `local.identity()` over TLS.
@@ -789,7 +789,7 @@ The public API has one `connect` and one `accept`. Callers do not coordinate sta
 `accept`:
 
 1. Accept TCP; set `TCP_NODELAY` and apply keepalive.
-2. Read the plaintext `IdentityHello` with `handshake_timeout`.
+2. Read the plaintext `IdentityHello` as one newline-terminated JSON line with `handshake_timeout` and a 512 KiB cap, one byte at a time so the TLS ClientHello that follows stays unread.
 3. Require `target_device_id == local.device_id()`, `target_protocol_version == 8`, and `hello.identity.device_id != local.device_id()`.
 4. Resolve `trust = trust_table.trust(&hello.identity.device_id)`.
 5. Ask `policy.reserve_incoming(address, &hello.identity.device_id, trust)` for an admission permit. A rejection closes before TLS.
@@ -1002,6 +1002,7 @@ Only protocol 8 is accepted. The identity parser already rejects other versions.
 | Discovery has an out-of-range `tcpPort` | Ignore the announcement. | Parser test. |
 | Connect refused or timed out | Log, back off per peer, retry on later discovery. | Manager test. |
 | Plaintext hello malformed | Close before TLS. | Link test. |
+| Plaintext hello has no newline or exceeds 512 KiB | Close before TLS. | Link test. |
 | Hello target ID or version mismatch | Close before TLS. | Link test. |
 | Hello target version is a string | Accept `"8"` as 8. | Proto test with Android fixture. |
 | Hello omits type or capabilities | Accept; defaults to Unknown and empty. | Proto test with desktop fixture. |
@@ -1098,6 +1099,10 @@ These use the independent testkit TLS peer, not a second copy of the production 
 - A testkit peer restricted to TLS 1.3 completes the same sequence.
 - A testkit peer with an RSA certificate completes the full link over TLS 1.2 and TLS 1.3.
 - The dialer's hello contains the full identity and the target fields. The listener accepts it.
+- A raw Android-shaped hello line, written byte for byte with a string target version, is accepted.
+- A raw desktop-shaped hello line, written byte for byte with a numeric target version, is accepted.
+- A hello line without a newline or over 512 KiB is rejected before TLS.
+- The dialer writes one newline-terminated JSON line with no length prefix.
 - A desktop-shaped hello with no type or capabilities is accepted.
 - A listener presents a certificate whose CN is a different device ID. The dialer closes before identity.
 - A dialer presents a certificate whose CN is a different device ID. The listener closes.
@@ -1401,7 +1406,8 @@ Local:
 Real KDE Connect sources, read for protocol behavior only. No KDE code is copied into Handfast.
 
 - Android `SslHelper.kt`: `SSLContext("TLSv1.2")`, client/server mode, client auth for trusted and untrusted devices, certificate generation with CN = device ID and a one-year-back to ten-year-ahead validity window, SHA-256 certificate hash.
-- Android `LanLinkProvider.kt`: UDP and TCP handshake order, one plaintext hello from the dialer, full identity plus string target fields, TLS server on dial, TLS client on accept, 1716-1764 port scan, 42 unpaired cap, 1 s per-IP rate limit, encrypted identity device ID and protocol version correlation, last-successful-link replacement.
+- Android `NetworkPacket.kt`: `serialize()` returns compact JSON plus a trailing newline.
+- Android `LanLinkProvider.kt`: UDP and TCP handshake order, one plaintext hello from the dialer, the raw hello bytes written with no length prefix, `readLineBounded` with a 512 KiB cap, full identity plus string target fields, TLS server on dial, TLS client on accept, 1716-1764 port scan, 42 unpaired cap, 1 s per-IP rate limit, encrypted identity device ID and protocol version correlation, last-successful-link replacement.
 - Android `DeviceInfo.kt`: full identity packet fields, minimal validation requiring a non-blank device name and a valid device ID.
 - Desktop `lanlinkprovider.cpp`: UDP minimal discovery packet, TLS server on dial, TLS client on accept, connection packet fields, port range, 42 unpaired cap, 500 ms per-IP rate limit, encrypted identity correlation, last-successful-link replacement, keepalive values.
 - Desktop `deviceinfo.h`: `toUdpDiscoveryPacket`, `toConnectionPacket` and `toIdentityPacket` field sets, validation rules.

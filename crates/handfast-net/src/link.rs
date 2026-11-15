@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use handfast_proto::{
-    frame, DeviceId, Identity, IdentityHello, Packet, MAX_TCP_PORT, MIN_TCP_PORT,
+    frame, DeviceId, Identity, IdentityHello, Packet, ProtoError, MAX_TCP_PORT, MIN_TCP_PORT,
 };
 use rustls::pki_types::ServerName;
 use socket2::{SockRef, TcpKeepalive};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
@@ -296,12 +296,9 @@ pub async fn connect(
     configure_socket(&tcp, limits)?;
 
     let hello = IdentityHello::new(local.identity().clone(), expected.clone()).to_packet()?;
-    timeout(
-        limits.handshake_timeout,
-        frame::write_frame(&mut tcp, &hello),
-    )
-    .await
-    .map_err(|_| NetError::Timeout("plaintext hello"))??;
+    timeout(limits.handshake_timeout, write_hello(&mut tcp, &hello))
+        .await
+        .map_err(|_| NetError::Timeout("plaintext hello"))??;
 
     let acceptor = TlsAcceptor::from(server_config(local.tls())?);
     let stream = timeout(limits.handshake_timeout, acceptor.accept(tcp))
@@ -442,15 +439,54 @@ async fn send_frame<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Maximum plaintext hello line, matching Android's `readLineBounded` cap.
+const MAX_HELLO_LINE: usize = 512 * 1024;
+
+/// Write the plaintext hello as one compact JSON line.
+///
+/// Android's `NetworkPacket.serialize()` appends `\n` and `LanLinkProvider`
+/// writes those bytes with no length prefix.
+async fn write_hello<W: AsyncWrite + Unpin>(writer: &mut W, packet: &Packet) -> Result<()> {
+    let mut line = serde_json::to_vec(packet)?;
+    line.push(b'\n');
+    writer.write_all(&line).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
 async fn read_hello<R: AsyncRead + Unpin>(
     reader: &mut R,
     limits: &LinkLimits,
 ) -> Result<IdentityHello> {
-    let packet = timeout(limits.handshake_timeout, frame::read_frame(reader))
+    let packet = timeout(limits.handshake_timeout, read_hello_line(reader))
         .await
         .map_err(|_| NetError::Timeout("plaintext hello"))??;
-    let packet = packet.ok_or(NetError::LinkClosed)?;
     Ok(IdentityHello::from_packet(&packet)?)
+}
+
+/// Read one newline-terminated JSON line, one byte at a time.
+///
+/// A buffered reader could consume the TLS ClientHello that follows.
+async fn read_hello_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Packet> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if reader.read(&mut byte).await? == 0 {
+            return Err(NetError::LinkClosed);
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        if line.len() >= MAX_HELLO_LINE {
+            return Err(NetError::Proto(ProtoError::Identity(format!(
+                "plaintext hello exceeds {MAX_HELLO_LINE} bytes"
+            ))));
+        }
+        line.push(byte[0]);
+    }
+    let packet: Packet = serde_json::from_slice(&line).map_err(ProtoError::from)?;
+    packet.validate()?;
+    Ok(packet)
 }
 
 async fn exchange_identity(
@@ -531,6 +567,13 @@ mod tests {
         r#""targetDeviceId":"00112233445566778899aabbccddeeff","targetProtocolVersion":"8"}}"#,
     );
 
+    /// The desktop connection packet, from `toConnectionPacket`.
+    const DESKTOP_HELLO_LINE: &str = concat!(
+        r#"{"id":0,"type":"kdeconnect.identity","body":{"deviceId":"fedcba9876543210fedcba9876543210","#,
+        r#""deviceName":"Desktop","protocolVersion":8,"#,
+        r#""targetDeviceId":"00112233445566778899aabbccddeeff","targetProtocolVersion":8}}"#,
+    );
+
     fn ping_packet() -> Packet {
         Packet::from_body(types::PING, &json!({ "message": "hello" })).expect("build a ping")
     }
@@ -577,6 +620,55 @@ mod tests {
         );
         assert_eq!(hello.identity.device_type.as_str(), "phone");
         assert_eq!(hello.target_protocol_version, 8);
+    }
+
+    #[tokio::test]
+    async fn read_hello_accepts_a_raw_desktop_line() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        client
+            .write_all(format!("{DESKTOP_HELLO_LINE}\n").as_bytes())
+            .await
+            .expect("write the desktop hello line");
+
+        let hello = read_hello(&mut server, &LinkLimits::default())
+            .await
+            .expect("the listener reads the desktop newline-terminated hello");
+
+        assert_eq!(hello.identity.device_type.as_str(), "unknown");
+        assert!(hello.identity.capabilities.incoming().is_empty());
+        assert_eq!(hello.target_protocol_version, 8);
+    }
+
+    #[tokio::test]
+    async fn read_hello_rejects_a_line_without_a_newline() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        client
+            .write_all(DESKTOP_HELLO_LINE.as_bytes())
+            .await
+            .expect("write the desktop hello without its newline");
+        drop(client);
+
+        let error = read_hello(&mut server, &LinkLimits::default())
+            .await
+            .expect_err("a hello without a newline is rejected");
+        assert!(matches!(error, NetError::LinkClosed), "{error}");
+    }
+
+    #[tokio::test]
+    async fn read_hello_rejects_a_line_over_the_cap() {
+        let (mut client, mut server) = tokio::io::duplex(MAX_HELLO_LINE + 2);
+        client
+            .write_all(&vec![b'x'; MAX_HELLO_LINE + 1])
+            .await
+            .expect("write an over-cap hello line");
+
+        let error = read_hello(&mut server, &LinkLimits::default())
+            .await
+            .expect_err("an over-cap hello line is rejected");
+        assert!(
+            matches!(error, NetError::Proto(ProtoError::Identity(_))),
+            "{error}"
+        );
     }
 
     #[cfg(target_os = "linux")]
