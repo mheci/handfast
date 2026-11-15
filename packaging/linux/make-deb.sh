@@ -18,9 +18,15 @@ trap 'rm -rf "$root"' EXIT
 install -d "$root/DEBIAN" \
     "$root/usr/bin" \
     "$root/usr/lib/systemd/user" \
+    "$root/usr/share/applications" \
     "$root/usr/share/doc/handfast"
 install -m 0755 target/release/handfast "$root/usr/bin/handfast"
 install -m 0644 packaging/linux/handfast.service "$root/usr/lib/systemd/user/handfast.service"
+install -m 0644 packaging/linux/handfast.desktop "$root/usr/share/applications/handfast.desktop"
+for size in 16 24 32 48 64 128 256 512; do
+    install -Dm644 "assets/branding/handfast-${size}.png" \
+        "$root/usr/share/icons/hicolor/${size}x${size}/apps/handfast.png"
+done
 install -m 0644 README.md "$root/usr/share/doc/handfast/README.md"
 install -m 0644 LICENSE-MIT "$root/usr/share/doc/handfast/copyright"
 install -m 0644 THIRD-PARTY-NOTICES.md "$root/usr/share/doc/handfast/THIRD-PARTY-NOTICES.md"

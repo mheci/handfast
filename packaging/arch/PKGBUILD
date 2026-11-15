@@ -10,12 +10,19 @@ provides=('handfast')
 conflicts=('handfastd-bin')
 replaces=('handfastd-bin')
 options=('!debug')
-source=('handfast' 'README.md' 'LICENSE-MIT' 'THIRD-PARTY-NOTICES.md' 'handfast.service')
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+source=('handfast' 'README.md' 'LICENSE-MIT' 'THIRD-PARTY-NOTICES.md' 'handfast.service' 'handfast.desktop'
+        'handfast-16.png' 'handfast-24.png' 'handfast-32.png' 'handfast-48.png'
+        'handfast-64.png' 'handfast-128.png' 'handfast-256.png' 'handfast-512.png')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
     install -Dm755 "$srcdir/handfast" "$pkgdir/usr/bin/handfast"
     install -Dm644 "$srcdir/handfast.service" "$pkgdir/usr/lib/systemd/user/handfast.service"
+    install -Dm644 "$srcdir/handfast.desktop" "$pkgdir/usr/share/applications/handfast.desktop"
+    for size in 16 24 32 48 64 128 256 512; do
+        install -Dm644 "$srcdir/handfast-${size}.png" \
+            "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/handfast.png"
+    done
     install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/handfast-bin/README.md"
     install -Dm644 "$srcdir/LICENSE-MIT" "$pkgdir/usr/share/licenses/handfast-bin/LICENSE-MIT"
     install -Dm644 "$srcdir/THIRD-PARTY-NOTICES.md" "$pkgdir/usr/share/licenses/handfast-bin/THIRD-PARTY-NOTICES.md"

@@ -115,6 +115,8 @@ jobs:
           cp /home/builder/handfast/target/release/handfast /home/builder/pkg/
           cp /home/builder/handfast/README.md /home/builder/handfast/LICENSE-MIT /home/builder/handfast/THIRD-PARTY-NOTICES.md /home/builder/pkg/
           cp /home/builder/handfast/packaging/linux/handfast.service /home/builder/pkg/
+          cp /home/builder/handfast/packaging/linux/handfast.desktop /home/builder/pkg/
+          cp /home/builder/handfast/assets/branding/handfast-*.png /home/builder/pkg/
           sed "s/__VERSION__/${pkgver}/" "$template" > /home/builder/pkg/PKGBUILD
           chown -R builder:builder /home/builder/pkg
           su builder -c 'cd /home/builder/pkg && makepkg -f --noconfirm'

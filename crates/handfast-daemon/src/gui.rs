@@ -26,6 +26,17 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 const LOG_FILE: &str = "handfast.log";
 
+const ICON_RGBA: &[u8] = include_bytes!("../../../assets/branding/handfast-128.rgba");
+const ICON_SIZE: u32 = 128;
+
+fn icon() -> egui::IconData {
+    egui::IconData {
+        rgba: ICON_RGBA.to_vec(),
+        width: ICON_SIZE,
+        height: ICON_SIZE,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DaemonState {
     Unknown,
@@ -164,7 +175,9 @@ pub fn run(data_dir: PathBuf, hide_console: bool) -> ExitCode {
         state: DaemonState::Unknown,
     };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 620.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([760.0, 620.0])
+            .with_icon(icon()),
         ..Default::default()
     };
     match eframe::run_native("Handfast", options, Box::new(move |_cc| Ok(Box::new(app)))) {
@@ -483,6 +496,20 @@ mod tests {
 
     fn device_id() -> DeviceId {
         DeviceId::new("0123456789abcdef0123456789abcdef").expect("a valid device id")
+    }
+
+    #[test]
+    fn the_window_icon_is_a_square_rgba_image() {
+        let icon = icon();
+        assert_eq!(icon.width, 128);
+        assert_eq!(icon.height, 128);
+        assert_eq!(icon.rgba.len(), (128 * 128 * 4) as usize);
+        assert!(icon
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0));
     }
 
     // Serializes the process-global `XDG_RUNTIME_DIR` change.

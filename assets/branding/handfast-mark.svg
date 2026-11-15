@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Handfast</title>
+  <g transform="rotate(-18 256 256)" fill="none" stroke-width="50">
+    <circle cx="341" cy="256" r="91" stroke="#e8833a"/>
+    <circle cx="171" cy="256" r="91" stroke="#128c7e"/>
+  </g>
+</svg>

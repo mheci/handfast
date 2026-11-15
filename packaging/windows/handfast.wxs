@@ -18,6 +18,9 @@
                   DowngradeErrorMessage="A newer version of Handfast is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
+    <Icon Id="HandfastIcon" Source="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="HandfastIcon" />
+
     <!-- A per-user install cannot add the firewall rule, which needs an
          administrator. The daemon cannot discover peers until the rule exists,
          so the Add or Remove Programs entry carries the command. -->
@@ -63,6 +66,7 @@
                Guid="B2A5B0A4-6E39-4F6B-9F0C-7A2C8B3D9E41">
       <Shortcut Id="HandfastShortcut" Name="Handfast"
                 Description="Open the Handfast window"
+                Icon="HandfastIcon"
                 Target="HandfastExe" Arguments="gui" WorkingDirectory="INSTALLFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\Handfast" Name="StartMenuShortcut"
                      Type="integer" Value="1" KeyPath="yes" />

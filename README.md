@@ -1,6 +1,12 @@
 # Handfast
 
+<img src="assets/branding/handfast-mark.svg" alt="Handfast" width="96" height="96" align="right">
+
 Clean-room, Rust-native KDE Connect implementation.
+
+The mark is two interlocking rings: one teal for the desktop, one copper for
+the phone, woven on a single axis. See [docs/branding.md](docs/branding.md) for
+the palette, files and usage rules.
 
 > **0.3.0 ships one binary.** `handfast` starts the daemon, talks to it, installs
 > its own autostart, updates itself and opens a window. `handfastd` and `hfctl`
