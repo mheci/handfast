@@ -123,7 +123,9 @@ Windows 11: open the MSI. It installs `handfast.exe` to
 `%LOCALAPPDATA%\Handfast`, adds a Start Menu shortcut named `Handfast` that runs
 `handfast gui`, and writes state to `%LOCALAPPDATA%\handfast`. Run
 `handfast service install` once to register the logon task. It prints the
-administrator command for the firewall rule:
+administrator command for the firewall rule. The MSI does not run that step: a
+per-user install cannot add the firewall rule, and a custom action that failed
+would fail the install.
 
 ```text
 netsh advfirewall firewall add rule name=Handfast dir=in action=allow program="C:\Users\<you>\AppData\Local\Handfast\handfast.exe" enable=yes
