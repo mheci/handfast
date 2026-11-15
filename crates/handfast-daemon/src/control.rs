@@ -108,8 +108,7 @@ pub enum ControlError {
     #[error("control timeout: {0}")]
     Timeout(&'static str),
 
-    /// The daemon replied with an error. `handfast share` prints the message
-    /// as is.
+    /// The daemon replied with an error.
     #[error("{0}")]
     Remote(String),
 }
@@ -121,8 +120,8 @@ impl ControlServer {
     /// Start the local control server for `data_dir`.
     ///
     /// Unix binds `$XDG_RUNTIME_DIR/handfast/handfast.sock` when
-    /// `XDG_RUNTIME_DIR` is set, else `<data_dir>/handfast.sock`. Windows
-    /// creates `\\.\pipe\handfast-<user>`.
+    /// `XDG_RUNTIME_DIR` is set and non-empty, else `<data_dir>/handfast.sock`.
+    /// Windows creates `\\.\pipe\handfast-<user>`.
     ///
     /// # Errors
     ///

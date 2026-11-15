@@ -1,5 +1,3 @@
-//! The `handfast` binary: daemon, control client and identity.
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
@@ -14,7 +12,6 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-/// Rotate the log file once it passes this size.
 const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
@@ -155,7 +152,6 @@ fn fail(error: impl std::fmt::Display) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Install the tracing subscriber, optionally teeing the same lines to a file.
 fn init_tracing(log_file: Option<&Path>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let stderr_layer = tracing_subscriber::fmt::layer()
@@ -190,7 +186,6 @@ fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
-/// Rotate an oversized log file to `<name>.1` before the daemon appends.
 fn rotate_log(path: &Path) {
     let oversized = path
         .metadata()

@@ -1,10 +1,5 @@
 #![cfg(unix)]
 
-//! `handfast share` round trips over the Unix control socket.
-//!
-//! Each test runs a `ControlServer` plus a scripted command loop, then spawns
-//! the real `handfast` binary.
-
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;

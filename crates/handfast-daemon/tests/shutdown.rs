@@ -1,5 +1,3 @@
-//! The composition root returns when the caller's shutdown future completes.
-
 use std::time::{Duration, Instant};
 
 use handfast_daemon::{run, DaemonArgs};

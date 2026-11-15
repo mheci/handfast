@@ -1,7 +1,6 @@
 //! Shared library surface for the Handfast daemon.
 //!
-//! [`run`] is the daemon composition root. `handfast daemon`, the future
-//! service entry and the GUI call it with their own shutdown source.
+//! [`run`] is the daemon composition root.
 
 pub mod control;
 

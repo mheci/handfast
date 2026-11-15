@@ -1,5 +1,3 @@
-//! Monolithic `handfast` CLI tests.
-//!
 //! Every test spawns the real binary, so the subcommand surface, the exit
 //! codes and the printed packets are the contract a user sees.
 

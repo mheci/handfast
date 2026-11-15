@@ -1,7 +1,6 @@
 //! Daemon composition root.
 //!
-//! `handfast daemon` calls [`run`] with the caller's shutdown future. The
-//! daemon owns the store, the local TLS identity, the TCP listener, the
+//! The daemon owns the store, the local TLS identity, the TCP listener, the
 //! discovery socket, the link manager, one session per paired connected device,
 //! the pairing prompt and shutdown ordering. The link layer owns admission and
 //! the unpaired gate; the daemon never creates a `DeviceHost` for an unpaired
@@ -65,7 +64,6 @@ pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// The default KDE Connect TCP port.
 pub const DEFAULT_TCP_PORT: u16 = 1716;
 
-/// Daemon flags, shared by the CLI, the service entry and the GUI.
 #[derive(Debug, Parser)]
 pub struct DaemonArgs {
     /// State directory. Defaults to the platform data directory.
@@ -87,8 +85,8 @@ pub struct DaemonArgs {
     #[arg(long, default_value_t = handfast_net::DISCOVERY_PORT)]
     pub discovery_port: u16,
 
-    /// Write daemon diagnostics to this file. A file over 5 MiB rotates to
-    /// `<name>.1`.
+    /// Write daemon diagnostics to this file. The log file rotates when it
+    /// reaches the size limit.
     #[arg(long)]
     pub log_file: Option<PathBuf>,
 
@@ -112,9 +110,7 @@ impl Default for DaemonArgs {
 
 /// Run the daemon until `shutdown` completes.
 ///
-/// The caller installs the tracing subscriber and supplies the shutdown source,
-/// so the CLI, the service entry, the GUI and a test share one composition
-/// root.
+/// The caller installs the tracing subscriber.
 ///
 /// # Errors
 ///
@@ -801,7 +797,7 @@ impl Daemon {
 ///
 /// # Errors
 ///
-/// Fails when the value is not a number or outside 1716-1764.
+/// Fails when the value is not a number or outside the KDE Connect TCP range.
 pub fn parse_tcp_port(value: &str) -> Result<u16, String> {
     let port: u16 = value
         .parse()
