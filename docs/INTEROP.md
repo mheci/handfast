@@ -33,9 +33,11 @@ On Windows, allow `handfast.exe` on private networks for UDP 1716 and TCP
 A package installs the same binary, so the run below works without a build step.
 Use the installed path in place of `./target/release/handfast`:
 
-- Debian and Ubuntu: `sudo apt install ./handfast_<version>_debian12_amd64.deb`
-  installs `/usr/bin/handfast` and the unit at
+- Debian 12: `sudo apt install ./handfast_<version>_debian12_amd64.deb` installs
+  `/usr/bin/handfast` and the unit at
   `/usr/lib/systemd/user/handfast.service`.
+- Ubuntu 24.04: `sudo apt install ./handfast_<version>_ubuntu24.04_amd64.deb`
+  installs the same files.
 - Arch Linux: `sudo pacman -U handfast-bin-<version>-1-x86_64.pkg.tar.zst`
   installs the same two files.
 - Windows 11: the MSI installs `%LOCALAPPDATA%\Handfast\handfast.exe` and keeps

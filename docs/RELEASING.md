@@ -13,6 +13,7 @@ Releases are cut from a tag. The tag must match the workspace version in
 | Windows 11, x64 | `handfast-<msi-version>-x64.msi` | `windows-latest` |
 | Linux x86_64, portable | `handfast-x86_64-unknown-linux-gnu` | `ubuntu-latest` |
 | Windows x64, portable | `handfast-x86_64-pc-windows-msvc.exe` | `windows-latest` |
+| All platforms | `THIRD-PARTY-NOTICES.md` | `ubuntu-latest` |
 | Every file above | `SHA256SUMS` | `ubuntu-latest` |
 
 The Debian package version replaces `-` with `~`. The Arch package version
@@ -98,10 +99,17 @@ Ubuntu package. `xtask msi` needs WiX 3.11 and resolves `candle.exe` and
 
 ## Install
 
-Debian and Ubuntu:
+Debian 12:
 
 ```sh
 sudo apt install ./handfast_0.3.0_debian12_amd64.deb
+systemctl --user enable --now handfast
+```
+
+Ubuntu 24.04:
+
+```sh
+sudo apt install ./handfast_0.3.0_ubuntu24.04_amd64.deb
 systemctl --user enable --now handfast
 ```
 
