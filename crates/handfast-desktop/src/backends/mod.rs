@@ -108,8 +108,8 @@ pub fn power() -> Arc<dyn Power> {
 /// Add every Windows backend that does not need an external install to
 /// `desktop`.
 ///
-/// The toast and SMTC adapters need the in-box Windows PowerShell. The others
-/// use System32 executables or a safe crate, so they are always present.
+/// The toast, SMTC and battery adapters need the in-box Windows PowerShell. The
+/// others use System32 executables or a safe crate, so they are always present.
 #[cfg(windows)]
 #[must_use]
 pub fn windows(mut desktop: crate::Desktop) -> crate::Desktop {

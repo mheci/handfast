@@ -28,7 +28,7 @@ pub fn system32(program: &str) -> PathBuf {
     root.join("System32").join(program)
 }
 
-/// The in-box Windows PowerShell, used for toast and SMTC calls.
+/// The in-box Windows PowerShell, used for toast, SMTC and battery calls.
 #[must_use]
 pub fn powershell() -> PathBuf {
     system32("WindowsPowerShell")
