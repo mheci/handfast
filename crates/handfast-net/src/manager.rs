@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -189,6 +190,7 @@ pub struct PendingLink {
 pub struct LinkManagerHandle {
     commands: mpsc::Sender<ManagerCommand>,
     shutdown: watch::Sender<bool>,
+    active_links: Arc<AtomicUsize>,
 }
 
 impl LinkManagerHandle {
@@ -249,6 +251,16 @@ impl LinkManagerHandle {
     pub fn shutdown(&self) {
         let _ = self.shutdown.send(true);
     }
+
+    /// How many links are installed right now.
+    ///
+    /// Discovery pauses announcements while this is non-zero. The official
+    /// clients dial on every announcement and replace their live link, which
+    /// drops in-flight packets.
+    #[must_use]
+    pub fn active_links(&self) -> usize {
+        self.active_links.load(Ordering::Relaxed)
+    }
 }
 
 /// The single-owner link manager.
@@ -291,6 +303,7 @@ impl LinkManager {
         let (shutdown, shutdown_rx) = watch::channel(false);
         let policy = LinkPolicy::new(limits.clone());
         let pending_slots = Arc::new(Semaphore::new(limits.max_pending));
+        let active_links = Arc::new(AtomicUsize::new(0));
         let tls = Arc::clone(listener.tls());
         let state = ManagerState {
             tls,
@@ -303,6 +316,7 @@ impl LinkManager {
             messages,
             peers: HashMap::new(),
             active: HashMap::new(),
+            active_links: Arc::clone(&active_links),
             pending_outbound: HashMap::new(),
             generation: 0,
             dial_generation: 0,
@@ -314,7 +328,14 @@ impl LinkManager {
                 .run(listener, command_rx, message_rx, shutdown_rx, tick)
                 .await
         });
-        (LinkManagerHandle { commands, shutdown }, task)
+        (
+            LinkManagerHandle {
+                commands,
+                shutdown,
+                active_links,
+            },
+            task,
+        )
     }
 }
 
@@ -404,6 +425,7 @@ struct ManagerState {
     messages: mpsc::Sender<ManagerMessage>,
     peers: HashMap<DeviceId, PeerState>,
     active: HashMap<DeviceId, ActiveLink>,
+    active_links: Arc<AtomicUsize>,
     pending_outbound: HashMap<DeviceId, PendingDial>,
     generation: u64,
     dial_generation: u64,
@@ -412,6 +434,15 @@ struct ManagerState {
 }
 
 impl ManagerState {
+    /// Publish the installed link count after a change to the active map.
+    ///
+    /// A replacement keeps the old count until the new link is in the map, so
+    /// discovery never sees a gap while one link hands over to another.
+    fn sync_active_links(&self) {
+        self.active_links
+            .store(self.active.len(), Ordering::Relaxed);
+    }
+
     async fn run(
         mut self,
         listener: LinkListener,
@@ -731,6 +762,7 @@ impl ManagerState {
                 permit,
             },
         );
+        self.sync_active_links();
         self.emit(LinkEvent::Connected {
             peer: identity,
             certificate,
@@ -863,6 +895,7 @@ impl ManagerState {
             return;
         }
         self.active.remove(&device_id);
+        self.sync_active_links();
         self.emit(LinkEvent::Disconnected { device_id, reason })
             .await;
     }
@@ -955,6 +988,7 @@ impl ManagerState {
         }
         while link_tasks.join_next().await.is_some() {}
         self.active.clear();
+        self.sync_active_links();
     }
 }
 
@@ -1089,6 +1123,7 @@ mod tests {
             messages,
             peers: HashMap::new(),
             active: HashMap::new(),
+            active_links: Arc::new(AtomicUsize::new(0)),
             pending_outbound: HashMap::new(),
             generation: 0,
             dial_generation: 0,
@@ -1167,6 +1202,7 @@ mod tests {
             messages,
             peers: HashMap::new(),
             active: HashMap::new(),
+            active_links: Arc::new(AtomicUsize::new(0)),
             pending_outbound: HashMap::new(),
             generation: 0,
             dial_generation: 0,

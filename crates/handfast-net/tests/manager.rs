@@ -277,6 +277,67 @@ async fn replacing_peer_with_the_same_certificate_emits_disconnect_before_connec
 }
 
 #[tokio::test]
+async fn active_links_track_install_replace_and_close() {
+    let mut harness = start(
+        LOCAL_ID,
+        TrustTable::default(),
+        no_inbound_rate_limit(),
+        Duration::from_millis(100),
+    )
+    .await;
+    assert_eq!(
+        harness.handle.active_links(),
+        0,
+        "an idle manager holds no links"
+    );
+
+    let config = peer(PEER_ID);
+    let first = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the first link is admitted");
+    assert!(!expect_connected(&mut harness.events).await);
+    assert_eq!(
+        harness.handle.active_links(),
+        1,
+        "installing a link counts it"
+    );
+
+    let second = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the replacement link is admitted");
+    expect_disconnected(&mut harness.events).await;
+    assert!(!expect_connected(&mut harness.events).await);
+    assert_eq!(
+        harness.handle.active_links(),
+        1,
+        "a replacement leaves one link installed"
+    );
+    drop(first);
+
+    second.close().await.expect("close the live link");
+    expect_disconnected(&mut harness.events).await;
+    assert_eq!(
+        harness.handle.active_links(),
+        0,
+        "closing the last link clears the count"
+    );
+
+    let _third = dial(harness.address, LOCAL_ID, &config)
+        .await
+        .expect("the third link is admitted");
+    assert!(!expect_connected(&mut harness.events).await);
+    assert_eq!(harness.handle.active_links(), 1);
+
+    harness.handle.shutdown();
+    let _ = harness.task.await;
+    assert_eq!(
+        harness.handle.active_links(),
+        0,
+        "manager shutdown clears the count"
+    );
+}
+
+#[tokio::test]
 async fn different_certificate_for_the_same_device_is_rejected() {
     let mut harness = start(
         LOCAL_ID,
