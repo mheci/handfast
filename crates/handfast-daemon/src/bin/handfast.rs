@@ -140,14 +140,12 @@ fn main() -> ExitCode {
     }
 }
 
-/// Open the window, or say why this build cannot.
 #[cfg(feature = "gui")]
 fn run_gui(data_dir: Option<PathBuf>, hide_console: bool) -> ExitCode {
     let data_dir = data_dir.unwrap_or_else(default_data_dir);
     handfast_daemon::gui::run(data_dir, hide_console)
 }
 
-/// Open the window, or say why this build cannot.
 #[cfg(not(feature = "gui"))]
 fn run_gui(_data_dir: Option<PathBuf>, _hide_console: bool) -> ExitCode {
     eprintln!("handfast: this build has no GUI; build with --features gui");

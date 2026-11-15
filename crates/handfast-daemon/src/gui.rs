@@ -21,29 +21,18 @@ use eframe::egui;
 use crate::control::{ControlError, DaemonStatus};
 use crate::service::{DaemonControl, LocalControl};
 
-/// How often the worker reads one status snapshot.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The daemon log file inside the data directory.
 const LOG_FILE: &str = "handfast.log";
 
-/// One daemon snapshot, as the window renders it.
-///
-/// `Running` always carries a status, so the window cannot draw a running
-/// daemon with no data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DaemonState {
-    /// No snapshot has arrived yet.
     Unknown,
-    /// No daemon answers on the control channel.
     Stopped,
-    /// A daemon answered with this snapshot.
     Running(Box<DaemonStatus>),
-    /// The control channel failed for a reason other than "not running".
     Unreachable(String),
 }
 
-/// The reducer from one control result to the window state.
 fn reduce(result: Result<DaemonStatus, ControlError>) -> DaemonState {
     match result {
         Ok(status) => DaemonState::Running(Box::new(status)),
@@ -52,18 +41,13 @@ fn reduce(result: Result<DaemonStatus, ControlError>) -> DaemonState {
     }
 }
 
-/// One command from the UI to the worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerCommand {
-    /// Spawn `handfast daemon` when no daemon answers.
     Start,
-    /// Ask the running daemon to shut down.
     Stop,
-    /// Poll now instead of waiting for the next tick.
     Refresh,
 }
 
-/// The child command that starts the daemon for `data_dir`.
 fn daemon_command(exe: &Path, data_dir: &Path) -> Command {
     let mut command = Command::new(exe);
     command
@@ -83,12 +67,10 @@ fn daemon_command(exe: &Path, data_dir: &Path) -> Command {
     command
 }
 
-/// Spawn the daemon child for `data_dir`.
 fn spawn_daemon(exe: &Path, data_dir: &Path) -> io::Result<Child> {
     daemon_command(exe, data_dir).spawn()
 }
 
-/// Start the worker thread and return its two channel ends.
 fn spawn_worker(exe: PathBuf, data_dir: PathBuf) -> (Sender<WorkerCommand>, Receiver<DaemonState>) {
     let (commands, command_rx) = mpsc::channel();
     let (states, state_rx) = mpsc::channel();
@@ -96,7 +78,6 @@ fn spawn_worker(exe: PathBuf, data_dir: PathBuf) -> (Sender<WorkerCommand>, Rece
     (commands, state_rx)
 }
 
-/// Poll the daemon, apply commands and publish each snapshot.
 fn worker(
     exe: &Path,
     data_dir: &Path,
@@ -114,8 +95,6 @@ fn worker(
     };
     let mut child: Option<Child> = None;
     loop {
-        // Reap the child this window spawned. A daemon it did not spawn is
-        // never signalled here; Stop goes through the control channel.
         if let Some(spawned) = child.as_mut() {
             if !matches!(spawned.try_wait(), Ok(None)) {
                 child = None;
@@ -182,8 +161,6 @@ pub fn run(data_dir: PathBuf, hide_console: bool) -> ExitCode {
     }
 }
 
-/// Hide the console window when this process is its only attached client.
-///
 /// A double-clicked `handfast.exe` gets a fresh console with one attached
 /// process. A launch from a terminal attaches the shell too, so the console
 /// stays and `handfast daemon` keeps logging to it.
@@ -205,7 +182,6 @@ fn hide_console_when_alone() {
     unsafe { ShowWindow(GetConsoleWindow(), SW_HIDE) };
 }
 
-/// Open `path` in the platform file manager.
 fn open_folder(path: &Path) {
     #[cfg(windows)]
     let program = "explorer.exe";
@@ -216,7 +192,6 @@ fn open_folder(path: &Path) {
     }
 }
 
-/// The window state and its two channel ends.
 struct HandfastApp {
     commands: Sender<WorkerCommand>,
     states: Receiver<DaemonState>,
@@ -396,7 +371,6 @@ impl eframe::App for HandfastApp {
     }
 }
 
-/// The status label for one window state.
 fn status_label(state: &DaemonState) -> &'static str {
     match state {
         DaemonState::Unknown => "Connecting",
@@ -406,7 +380,6 @@ fn status_label(state: &DaemonState) -> &'static str {
     }
 }
 
-/// The running snapshot, if the daemon answered.
 fn running_status(state: &DaemonState) -> Option<&DaemonStatus> {
     match state {
         DaemonState::Running(status) => Some(status.as_ref()),

@@ -77,8 +77,6 @@ fn service_help_lists_the_five_commands() {
 #[cfg(not(feature = "gui"))]
 #[test]
 fn no_subcommand_prints_help_and_exits_two() {
-    // A GUI build opens the window here instead, so only the headless build
-    // can run this rule.
     let output = handfast(&[]);
     assert_eq!(output.status.code(), Some(2));
     let text = format!("{}{}", stdout(&output), stderr(&output));

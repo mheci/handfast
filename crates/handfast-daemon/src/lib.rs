@@ -27,8 +27,7 @@ pub enum NoSubcommand {
     Help,
 }
 
-/// The no-subcommand rule: a GUI build opens a window, a headless build prints
-/// help. The daemon is never the default, so a typo cannot start a process that
+/// The daemon is never the default, so a typo cannot start a process that
 /// holds the store lock.
 #[must_use]
 pub const fn no_subcommand() -> NoSubcommand {
