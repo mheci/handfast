@@ -488,21 +488,29 @@ impl<'a> Updater<'a> {
 
         let temp = temp_path(exe);
         self.prepare(asset, sums, &temp)?;
+        match self.install(exe, &temp) {
+            Ok(restarted) => Ok(Applied {
+                version: check.latest,
+                asset: asset.name.clone(),
+                restarted,
+            }),
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp);
+                Err(error)
+            }
+        }
+    }
+
+    fn install(&self, exe: &Path, temp: &Path) -> Result<bool, UpdateError> {
         let was_running = self.stop_daemon()?;
-        replace(exe, &temp)?;
-        let restarted = if was_running {
-            self.service
-                .start(self.control)
-                .map_err(|error| UpdateError::Restart(error.to_string()))?;
-            true
-        } else {
-            false
-        };
-        Ok(Applied {
-            version: check.latest,
-            asset: asset.name.clone(),
-            restarted,
-        })
+        replace(exe, temp)?;
+        if !was_running {
+            return Ok(false);
+        }
+        self.service
+            .start(self.control)
+            .map_err(|error| UpdateError::Restart(error.to_string()))?;
+        Ok(true)
     }
 
     fn prepare(&self, asset: &Asset, sums: &Asset, temp: &Path) -> Result<(), UpdateError> {
@@ -552,6 +560,8 @@ impl<'a> Updater<'a> {
             Err(ControlError::NotRunning) => return Ok(false),
             Err(error) => return Err(UpdateError::Control(error.to_string())),
         }
+        // A status call carries its own control timeout, so the wait is
+        // bounded by STOP_TIMEOUT plus one control timeout, not by STOP_TIMEOUT.
         let deadline = Instant::now() + STOP_TIMEOUT;
         loop {
             if matches!(self.control.status(), Err(ControlError::NotRunning)) {
@@ -980,6 +990,41 @@ mod tests {
             check.to_string(),
             format!("up to date ({})", env!("CARGO_PKG_VERSION"))
         );
+    }
+
+    #[test]
+    fn replace_rolls_back_when_the_new_file_cannot_land() {
+        let (_directory, exe) = test_exe();
+        let missing = exe.with_file_name("missing-update");
+
+        let error = replace(&exe, &missing).expect_err("refuse a missing download");
+
+        assert!(matches!(error, UpdateError::Rename { .. }), "{error}");
+        assert_eq!(
+            std::fs::read(&exe).expect("read the exe"),
+            b"old",
+            "the rollback restores the executable name"
+        );
+        assert!(!old_path(&exe).exists(), "the old copy is renamed back");
+    }
+
+    #[test]
+    fn apply_refuses_a_busy_old_copy_and_removes_the_temp() {
+        let name = asset_name(env!("HANDFAST_TARGET"));
+        let source = fake("v99.0.0", &name, b"new", Some(sums_for(&name, b"new")));
+        let (_directory, exe) = test_exe();
+        std::fs::create_dir(old_path(&exe)).expect("block the old path");
+
+        let error = with_updater(&source, &Verifier(Ok(())), &exe, |updater| {
+            updater.apply(&exe).expect_err("refuse the busy old path")
+        });
+
+        assert!(matches!(error, UpdateError::OldBusy(_)), "{error}");
+        assert!(
+            !temp_path(&exe).exists(),
+            "a failed replace removes the download"
+        );
+        assert_eq!(std::fs::read(&exe).expect("read the exe"), b"old");
     }
 
     #[test]
