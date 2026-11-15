@@ -29,8 +29,8 @@ Hardening queue, 2026-11-14:
 - Autostart service merged as `1600294`: Windows Task Scheduler XML, systemd user unit, install/uninstall/start/stop/status, checked stop with a 10 s deadline, absolute paths, unique unit temp, `%` escaping.
 - GUI merged as `6190e1f`: `gui` feature with eframe 0.33, the window, child daemon, status polling, Start/Stop/Open/Refresh, no-subcommand rule, tenth `gui` CI job with clippy, xtask `--all-features` removal, corrected deny chains and `unused-ignored-advisory = "deny"`. The manual window check is a release gate; the release stays headless until packaging.
 - Update merged as `7da6fc7`: verified check/apply, FFI module split, rollback/temp tests, Debian 12 portable asset, unsigned Windows asset guard, bounded wait. The real apply happy path still needs a signed 0.3.0 draft release.
-- Packaging PR `#270` is retargeting onto main with the MSI `ProgramMenuFolder`, the two `service install`/`uninstall` custom actions, the new component GUID, the deb/Arch packages, the notices and 0.3.0.
-- After packaging merges: manual GUI window, update from a signed 0.3.0 draft release, package installs, P1 Android/desktop gate, then tag 0.3.0.
+- Packaging PR `#270` is at `8909609`, base main, 10 checks green, re-verifying: MSI `ProgramMenuFolder`, deferred impersonated `service install`/`uninstall` actions, new component GUID, rebased update guards, deb runtime libs, Arch licenses, notices asset, 0.3.0.
+- After packaging merges: manual MSI/deb/Arch installs, GUI window, update from a signed 0.3.0 draft release, P1 Android/desktop gate, then tag 0.3.0.
 - The daemon is stopped; rebuild the new `handfast` after packaging. Release packaging now ships `handfast`, not `handfastd`.
 - The daemon must run in the user session, not as a SYSTEM service, because the desktop adapters need the user's clipboard, notifications, MPRIS, volume, shell and screensaver.
 - Manual gate paused while the user is at work. The phone remains paired; the daemon can reconnect without a prompt. Continue code, automated checks and the monolithic binary.
