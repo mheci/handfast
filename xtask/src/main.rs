@@ -141,7 +141,7 @@ fn run_cargo(task: &Task) -> bool {
         | Task::Portable
         | Task::Deb { .. }
         | Task::Msi { .. }
-        | Task::Package
+        | Task::Package { .. }
         | Task::Checksums => return false,
     }
     println!("running {task:?}");
