@@ -29,6 +29,17 @@
     <util:CloseApplication Id="CloseHandfast" Target="handfast.exe"
                            CloseMessage="yes" PromptToContinue="no" RebootPrompt="no" />
 
+    <!-- Both actions run as the installing user and log a failure without
+         failing the install: a missing autostart is repairable. -->
+    <CustomAction Id="ServiceInstall" FileKey="HandfastExe" ExeCommand="service install"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="ServiceUninstall" FileKey="HandfastExe" ExeCommand="service uninstall"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="ServiceInstall" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="ServiceUninstall" Before="RemoveFiles">REMOVE="ALL"</Custom>
+    </InstallExecuteSequence>
+
     <Feature Id="ProductFeature" Title="Handfast" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
       <ComponentRef Id="StartMenuShortcut" />
@@ -38,10 +49,11 @@
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLFOLDER" Name="Handfast" />
       </Directory>
+      <Directory Id="ProgramMenuFolder" />
     </Directory>
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-      <Component Id="HandfastExe" Guid="4D6C071F-0764-4CD7-BC4D-F297B909216A">
+      <Component Id="HandfastExe" Guid="C3B8E0D2-5F4A-4A97-8B6E-1D2F3C4A5B60">
         <File Id="HandfastExe" Source="$(var.BinaryPath)" KeyPath="yes" />
         <File Id="ThirdPartyNotices" Source="$(var.NoticesPath)" />
       </Component>
