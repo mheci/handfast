@@ -2,13 +2,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use handfast_daemon::control::{
     send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::{
-    default_data_dir, parse_tcp_port, run, DaemonArgs, DEFAULT_TCP_PORT, SHUTDOWN_GRACE,
+    default_data_dir, no_subcommand, parse_tcp_port, run, DaemonArgs, NoSubcommand,
+    DEFAULT_TCP_PORT, SHUTDOWN_GRACE,
 };
 use handfast_proto::DeviceId;
 use tracing_subscriber::layer::SubscriberExt;
@@ -18,19 +19,14 @@ use tracing_subscriber::EnvFilter;
 const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "handfast",
-    version,
-    about = "Handfast KDE Connect client",
-    arg_required_else_help = true
-)]
+#[command(name = "handfast", version, about = "Handfast KDE Connect client")]
 struct Cli {
     /// State directory. Defaults to the platform data directory.
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -43,6 +39,8 @@ enum Command {
     Status(StatusArgs),
     /// Install and control the per-user autostart service.
     Service(ServiceArgs),
+    /// Open the Handfast window.
+    Gui,
     /// Print this device's identity packet and exit.
     Identity(IdentityArgs),
     /// Print the version.
@@ -99,7 +97,13 @@ fn parse_device_id(value: &str) -> Result<DeviceId, String> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match cli.command {
+    let Some(command) = cli.command else {
+        return match no_subcommand() {
+            NoSubcommand::Gui => run_gui(cli.data_dir, true),
+            NoSubcommand::Help => print_help(),
+        };
+    };
+    match command {
         Command::Version => {
             println!("handfast {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -132,7 +136,28 @@ fn main() -> ExitCode {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_service(args, data_dir)
         }
+        Command::Gui => run_gui(cli.data_dir, false),
     }
+}
+
+#[cfg(feature = "gui")]
+fn run_gui(data_dir: Option<PathBuf>, hide_console: bool) -> ExitCode {
+    let data_dir = data_dir.unwrap_or_else(default_data_dir);
+    handfast_daemon::gui::run(data_dir, hide_console)
+}
+
+#[cfg(not(feature = "gui"))]
+fn run_gui(_data_dir: Option<PathBuf>, _hide_console: bool) -> ExitCode {
+    eprintln!("handfast: this build has no GUI; build with --features gui");
+    ExitCode::from(2)
+}
+
+/// Print the command help to stderr and exit 2, as clap does for a missing
+/// subcommand.
+fn print_help() -> ExitCode {
+    let mut command = Cli::command();
+    let _ = command.write_help(&mut std::io::stderr());
+    ExitCode::from(2)
 }
 
 fn run_daemon(args: DaemonArgs) -> ExitCode {

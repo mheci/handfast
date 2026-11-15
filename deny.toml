@@ -3,6 +3,20 @@ all-features = true
 
 [advisories]
 yanked = "warn"
+unused-ignored-advisory = "deny"
+# The GUI tree. Each entry is an unmaintained advisory with no upgrade path
+# inside eframe 0.33, and none of them is a vulnerability.
+ignore = [
+    # epaint -> ab_glyph -> owned_ttf_parser -> ttf-parser. The window only
+    # renders the font bundled in epaint_default_fonts, so no untrusted font is
+    # parsed.
+    "RUSTSEC-2026-0192",
+    # accesskit_unix 0.17.2 -> atspi 0.25 -> zbus 5.5, and accesskit_unix pins
+    # zbus 5.5 itself. zbus 6 moves these crates in-tree.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+]
 
 [licenses]
 allow = [
@@ -11,10 +25,13 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "BSL-1.0",
     "ISC",
     "Unicode-3.0",
+    "Ubuntu-font-1.0",
     "Zlib",
     "MPL-2.0",
+    "OFL-1.1",
     "CC0-1.0",
 ]
 

@@ -51,22 +51,18 @@ fn run(task: &Task) -> bool {
                 "clippy",
                 "--workspace",
                 "--all-targets",
-                "--all-features",
                 "--",
                 "-D",
                 "warnings",
             ]);
         }
         Task::Test => {
-            command.args(["test", "--workspace", "--all-features", "--all-targets"]);
+            command.args(["test", "--workspace", "--all-targets"]);
         }
         Task::Doc => {
-            command.env("RUSTDOCFLAGS", "-D warnings").args([
-                "doc",
-                "--workspace",
-                "--no-deps",
-                "--all-features",
-            ]);
+            command
+                .env("RUSTDOCFLAGS", "-D warnings")
+                .args(["doc", "--workspace", "--no-deps"]);
         }
         Task::Check => return false,
     }

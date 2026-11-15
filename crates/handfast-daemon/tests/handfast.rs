@@ -74,6 +74,7 @@ fn service_help_lists_the_five_commands() {
     }
 }
 
+#[cfg(not(feature = "gui"))]
 #[test]
 fn no_subcommand_prints_help_and_exits_two() {
     let output = handfast(&[]);
