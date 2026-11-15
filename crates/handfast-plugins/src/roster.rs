@@ -118,7 +118,7 @@ pub const MPRISCONTROL: PluginMeta = PluginMeta {
     title: "Multimedia control receiver",
     status: IMPLEMENTED,
     incoming: &[types::MPRIS_REQUEST],
-    outgoing: &[],
+    outgoing: &[types::MPRIS],
     desktop: DesktopRequirement::Media,
 };
 
@@ -317,10 +317,10 @@ pub const SYSTEMVOLUME: PluginMeta = PluginMeta {
 pub const TELEPHONY: PluginMeta = PluginMeta {
     name: "telephony",
     title: "Telephony integration",
-    status: PLANNED,
-    incoming: &[types::TELEPHONY, types::TELEPHONY_REQUEST_MUTE],
+    status: IMPLEMENTED,
+    incoming: &[types::TELEPHONY],
     outgoing: &[types::TELEPHONY_REQUEST_MUTE],
-    desktop: DesktopRequirement::Telephony,
+    desktop: DesktopRequirement::Notifications,
 };
 
 /// Use the phone as a virtual monitor.

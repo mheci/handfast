@@ -24,7 +24,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 8 | `lockdevice` | phone -> desktop | `kdeconnect.lock`, `.lock.request` | `loginctl` | P2 | yes | yes | no |
 | 9 | `mmtelephony` | ModemManager -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | ModemManager DBus | P4 | no | no | no |
 | 10 | `mousepad` | phone -> desktop | `kdeconnect.mousepad.request`, `.echo`, `.keyboardstate` | libei pointer + keyboard | P3 | no | no | no |
-| 11 | `mpriscontrol` | phone -> desktop | `kdeconnect.mpris`, `.mpris.request` | `playerctl` | P2 | yes | yes | no |
+| 11 | `mpriscontrol` | bidirectional | `kdeconnect.mpris`, `.mpris.request` | `playerctl` | P2 | yes | yes | no |
 | 12 | `mprisremote` | desktop -> phone | `kdeconnect.mpris`, `.mpris.request` | MPRIS DBus (remote players) | P2 | no | no | no |
 | 13 | `notifications` | phone -> desktop | `kdeconnect.notification`, `.notification.action`, `.notification.reply`, `.notification.request` | `notify-send`, `gdbus` close | P2 | yes | yes | no |
 | 14 | `pausemusic` | phone -> desktop | `kdeconnect.telephony`, `kdeconnect.mpris.request` | `playerctl` | P2 | yes | yes | no |
@@ -43,7 +43,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 27 | `shareinputdevicesremote` | remote -> desktop | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input injection | P4 | no | no | no |
 | 28 | `sms` | bidirectional | `kdeconnect.sms.messages`, `.sms.request`, `.sms.request_conversation`, `.sms.request_conversations`, `.sms.request_attachment`, `.sms.attachment_file` | phone-owned data, desktop UI | P2 | no | no | no |
 | 29 | `systemvolume` | phone -> desktop | `kdeconnect.systemvolume`, `.systemvolume.request` | `wpctl` | P2 | yes | yes | no |
-| 30 | `telephony` | phone -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | DBus notifications | P2 | no | no | no |
+| 30 | `telephony` | phone -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | `notify-send`; toast on Windows | P2 | yes | yes | no |
 | 31 | `virtualmonitor` | phone -> desktop | `kdeconnect.virtualmonitor`, `.virtualmonitor.request` | Wayland virtual-output protocol | P4 | no | no | no |
 
 ## Platform notes
@@ -63,6 +63,9 @@ have.
 - **Clipboard images**: the wire protocol carries text. File clipboard entries
   use `kdeconnect.clipboard.file` and are a v2 extension target, not a v1
   requirement.
+- **Telephony**: the desktop shows incoming, missed and active call
+  notifications and closes them on cancel. The phone-side mute action is not
+  implemented yet.
 
 ## Windows 11 backends
 

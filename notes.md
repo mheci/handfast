@@ -253,3 +253,16 @@ Parity wave 2, 2026-11-16, same branch:
 - The roster test now accepts an implemented plugin with either an incoming or an outgoing contract; screensaver stays exempt because it is connection-driven.
 - Evidence: plugins 133 pass, daemon lib 131 pass (including a ring-to-an-offline-device error test), bin 4 pass, fmt and clippy clean. The Unix ring CLI test compiles here and runs in CI.
 - PR #272 CI first run: fmt, test, msrv, deny, docs, windows, testkit and fuzz passed; clippy and gui failed on an unused `FileLimits` import that was only used by a Windows test. Fixed by moving the import into the test module.
+
+Parity wave 3, 2026-11-16, same branch:
+
+- `mpriscontrol` now sends `kdeconnect.mpris` state to the phone: one packet per player on connect, on `requestPlayerList`, and on `requestNowPlaying`, with `player`, `playerList`, `title`, `artist`, `length`, `pos`, `isPlaying` and `volume`. The roster advertises `kdeconnect.mpris` outgoing.
+- Evidence: plugins 137 pass, including connect, player-list and now-playing state tests; clippy clean.
+- Still missing for full MPRIS parity: `Seek`, `SetPosition`, `requestVolume` and `albumArtUrl` handling, and the separate `mprisremote` plugin for phone media.
+
+Parity wave 4, 2026-11-16, same branch:
+
+- `telephony` is implemented and registered: ringing, missed and talking calls become desktop notifications with a stable per-number ID; `isCancel` closes the notification; the old `sms` event is left to the SMS plugin. The roster now requires `Notifications`, not the unimplemented `Telephony` capability.
+- Evidence: plugins 147 pass, daemon 132 pass, clippy clean. The phone-side mute action is still missing and is named in `docs/PARITY.md`.
+- MPRIS `requestVolume` is handled by sending the player state, which includes the volume.
+- CI on `3754865` is fully green: all 10 checks pass. The MPRIS and telephony commits will trigger one more run.

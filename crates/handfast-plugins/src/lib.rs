@@ -22,6 +22,7 @@ pub mod roster;
 pub mod screensaver_inhibit;
 pub mod share;
 pub mod systemvolume;
+pub mod telephony;
 
 use handfast_runtime::{PluginMeta, Registry};
 
@@ -40,6 +41,7 @@ pub use presenter::{PresenterFactory, PresenterPlugin};
 pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
 pub use share::{ShareFactory, SharePlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
+pub use telephony::{TelephonyFactory, TelephonyPlugin};
 
 /// Build the registry of implemented plugins.
 #[must_use]
@@ -59,6 +61,7 @@ pub fn registry() -> Registry {
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
         Box::new(lockdevice::LockDeviceFactory),
         Box::new(presenter::PresenterFactory),
+        Box::new(telephony::TelephonyFactory),
     ])
 }
 
