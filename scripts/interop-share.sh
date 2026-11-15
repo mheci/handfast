@@ -10,52 +10,47 @@ fail() {
     exit 1
 }
 
-find_binary() {
-    local name=$1
-    local override=$2
-    local required=${3:-required}
+find_handfast() {
+    local override=$1
     if [ -n "$override" ]; then
-        [ -x "$override" ] || fail "$name override is not executable: $override"
+        [ -x "$override" ] || fail "HANDFAST override is not executable: $override"
         printf '%s\n' "$override"
         return
     fi
     local configuration suffix candidate
     for configuration in release debug; do
         for suffix in '' '.exe'; do
-            candidate="$repo_root/target/$configuration/$name$suffix"
+            candidate="$repo_root/target/$configuration/handfast$suffix"
             if [ -x "$candidate" ]; then
                 printf '%s\n' "$candidate"
                 return
             fi
         done
     done
-    if [ "$required" = optional ]; then
-        return 1
-    fi
-    fail "$name not found under $repo_root/target. Build both binaries first:
-  cargo build --release -p handfast-daemon --bin handfastd --bin hfctl
-Set HANDFASTD or HFCTL to use another path."
+    fail "handfast not found under $repo_root/target. Build it first:
+  cargo build --release -p handfast-daemon --bin handfast
+Set HANDFAST to use another path."
 }
 
-daemon=$(find_binary handfastd "${HANDFASTD:-}")
+handfast=$(find_handfast "${HANDFAST:-}")
 
 run_dir=$(mktemp -d "${TMPDIR:-/tmp}/handfast-interop.XXXXXX")
 data_dir="$run_dir/data"
 incoming_dir="$run_dir/incoming"
-log="$run_dir/handfastd.log"
+log="$run_dir/handfast.log"
 mkdir -p "$data_dir" "$incoming_dir"
 
-identity=$("$daemon" --print-identity --data-dir "$data_dir") ||
-    fail "handfastd --print-identity failed. State dir: $data_dir"
+identity=$("$handfast" identity --data-dir "$data_dir") ||
+    fail "handfast identity failed. State dir: $data_dir"
 device_id=$(printf '%s\n' "$identity" |
     sed -n 's/.*"deviceId": *"\([^"]*\)".*/\1/p' | head -n 1)
-[ -n "$device_id" ] || fail "could not read body.deviceId from --print-identity output"
+[ -n "$device_id" ] || fail "could not read body.deviceId from identity output"
 
 daemon_pid=""
 cleanup() {
     if [ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null; then
         kill -INT "$daemon_pid" 2>/dev/null || true
-        # handfastd's own shutdown grace is 5 s, plus the runtime's 5 s timeout.
+        # The daemon's own shutdown grace is 5 s, plus the runtime's 5 s timeout.
         waited=0
         while [ "$waited" -lt 100 ]; do
             kill -0 "$daemon_pid" 2>/dev/null || break
@@ -72,8 +67,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-daemon_args=(--data-dir "$data_dir" --incoming-dir "$incoming_dir")
-RUST_LOG=debug "$daemon" "${daemon_args[@]}" >"$log" 2>&1 &
+daemon_args=(daemon --data-dir "$data_dir" --incoming-dir "$incoming_dir")
+RUST_LOG=debug "$handfast" "${daemon_args[@]}" >"$log" 2>&1 &
 daemon_pid=$!
 
 started=0
@@ -88,7 +83,7 @@ while [ "$waited" -lt 300 ]; do
     waited=$((waited + 1))
 done
 if [ "$started" -ne 1 ]; then
-    printf 'interop-share: handfastd did not start. Log: %s\n' "$log" >&2
+    printf 'interop-share: handfast daemon did not start. Log: %s\n' "$log" >&2
     tail -n 30 "$log" >&2 || true
     exit 1
 fi
@@ -96,9 +91,9 @@ fi
 tcp_port=$(sed -n 's/.*TCP listener bound tcp_port=\([0-9]*\).*/\1/p' "$log" | tail -n 1)
 fingerprint=$(sed -n 's/.*TLS identity loaded fingerprint=\([0-9a-f]*\).*/\1/p' "$log" | head -n 1)
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-    control_path="$XDG_RUNTIME_DIR/handfast/handfastd.sock"
+    control_path="$XDG_RUNTIME_DIR/handfast/handfast.sock"
 else
-    control_path="$data_dir/handfastd.sock"
+    control_path="$data_dir/handfast.sock"
 fi
 
 printf '\nHandfast share interop run\n'
@@ -136,30 +131,20 @@ Inbound from the desktop KDE Connect client:
   Expect the same log lines, both files in order, and no partial file.
   The payload TLS version is TLS 1.2 for Android and TLS 1.3 for the desktop.
 
-EOF
-
-if [ -n "${HFCTL:-}" ]; then
-    [ -x "$HFCTL" ] || fail "HFCTL override is not executable: $HFCTL"
-fi
-if hfctl=$(find_binary hfctl "${HFCTL:-}" optional); then
-    cat <<EOF
 Outbound to a paired peer:
 
-  "$hfctl" share --device <peer-id> --data-dir "$data_dir" <file>
+  "$handfast" share --device <peer-id> --data-dir "$data_dir" <file>
 
   Expect "sent <n> bytes to <peer-id>" and exit 0. A remote or IO error
   exits 1, a usage error exits 2.
 
 EOF
-else
-    printf 'Outbound step skipped because hfctl is missing. Build it or set HFCTL. The inbound steps are unaffected.\n\n'
-fi
 
-printf 'Press Enter to stop handfastd: '
+printf 'Press Enter to stop handfast daemon: '
 read -r _ || true
 cleanup
 
-printf '\nhandfastd stopped.\n'
+printf '\nhandfast daemon stopped.\n'
 printf '  log:            %s\n' "$log"
 printf '  data dir:       %s\n' "$data_dir"
 printf '  incoming dir:   %s\n' "$incoming_dir"

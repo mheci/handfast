@@ -2,7 +2,7 @@
 
 Clean-room, Rust-native KDE Connect implementation.
 
-> **P1 link milestone on `main`.** `handfastd` now discovers peers, binds a
+> **P1 link milestone on `main`.** `handfast daemon` now discovers peers, binds a
 > KDE Connect TCP port, completes a TLS 1.2 or TLS 1.3 link with certificate
 > pinning and protocol-8 identity re-exchange, prompts for pairing and runs the
 > ping and battery plugins for paired devices. Payload and file transfer,
@@ -49,6 +49,10 @@ handfastd --print-identity
 handfastd
 ```
 
+The 0.2.0 packages install `handfastd`. On `main`, one `handfast` binary
+replaces it: `handfast identity` prints the packet and `handfast daemon` runs
+the daemon.
+
 Linux state lives in `$XDG_DATA_HOME/handfast`, or
 `~/.local/share/handfast` when `XDG_DATA_HOME` is unset. Use `--data-dir` to
 override it.
@@ -90,9 +94,8 @@ cargo run -p handfast-testkit -- self-test
   the daemon TLS identity. Trust and pairing updates are atomic.
 - Independent testkit with TLS 1.2 and 1.3 peers, golden vectors and four fuzz
   targets.
-- `handfastd --print-identity` and a stable, persisted device ID and
-  certificate.
-- UDP discovery in `handfastd`: identity announcements, peer receive and
+- `handfast identity` and a stable, persisted device ID and certificate.
+- UDP discovery in `handfast daemon`: identity announcements, peer receive and
   device persistence. A peer that announces this daemon's own ID is ignored.
 
 Not wired yet:
@@ -104,10 +107,10 @@ Not wired yet:
 - The real Android and desktop interop run. The checklist is in
   [docs/INTEROP.md](docs/INTEROP.md); it is the P1 exit gate.
 
-The 0.2.0 packages open no network sockets. On `main`, `handfastd` announces
-its identity over UDP discovery on port 1716, binds a TCP port in 1716-1764,
-accepts or dials peers, runs the TLS link and pairing prompt, and persists
-discovered and authenticated devices until Ctrl+C.
+The 0.2.0 packages open no network sockets. On `main`, `handfast daemon`
+announces its identity over UDP discovery on port 1716, binds a TCP port in
+1716-1764, accepts or dials peers, runs the TLS link and pairing prompt, and
+persists discovered and authenticated devices until Ctrl+C.
 
 ## Architecture
 
@@ -120,7 +123,7 @@ discovered and authenticated devices until Ctrl+C.
 | `handfast-desktop` | Desktop adapter traits and the mock backend |
 | `handfast-store` | redb state, settings and migrations |
 | `handfast-testkit` | Independent wire peer, TLS peers, golden vectors and self-test |
-| `handfast-daemon` | The `handfastd` binary and the pairing prompt |
+| `handfast-daemon` | The `handfast` binary, daemon composition root and control client |
 | `xtask` | Local fmt, clippy, test and doc tasks |
 | `fuzz` | Separate cargo-fuzz workspace for the frame and permissive parsers |
 

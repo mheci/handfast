@@ -7,21 +7,21 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-function Find-Binary {
-    param([string]$Name, [string]$Override)
+function Find-Handfast {
+    param([string]$Override)
     if ($Override) {
         if (-not (Test-Path -LiteralPath $Override -PathType Leaf)) {
-            throw "$Name override not found: $Override"
+            throw "HANDFAST override not found: $Override"
         }
         return $Override
     }
     foreach ($configuration in 'release', 'debug') {
         foreach ($suffix in '', '.exe') {
-            $candidate = "$repoRoot/target/$configuration/$Name$suffix"
+            $candidate = "$repoRoot/target/$configuration/handfast$suffix"
             if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
         }
     }
-    throw "$Name not found under $repoRoot\target. Build both binaries first:`n  cargo build --release -p handfast-daemon --bin handfastd --bin hfctl`nSet HANDFASTD or HFCTL to use another path."
+    throw "handfast not found under $repoRoot\target. Build it first:`n  cargo build --release -p handfast-daemon --bin handfast`nSet HANDFAST to use another path."
 }
 
 function Read-Log {
@@ -39,28 +39,28 @@ function Read-Log {
 $process = $null
 
 try {
-    $daemon = Find-Binary -Name 'handfastd' -Override $env:HANDFASTD
+    $handfast = Find-Handfast -Override $env:HANDFAST
 
     $runDir = Join-Path ([System.IO.Path]::GetTempPath()) ("handfast-interop-{0}" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
     $dataDir = Join-Path $runDir 'data'
     $incomingDir = Join-Path $runDir 'incoming'
-    $log = Join-Path $runDir 'handfastd.log'
-    $stdoutLog = Join-Path $runDir 'handfastd.stdout.log'
+    $log = Join-Path $runDir 'handfast.log'
+    $stdoutLog = Join-Path $runDir 'handfast.stdout.log'
     New-Item -ItemType Directory -Path $dataDir, $incomingDir -Force | Out-Null
 
-    $identityOutput = & $daemon --print-identity --data-dir $dataDir
+    $identityOutput = & $handfast identity --data-dir $dataDir
     if ($LASTEXITCODE -ne 0) {
-        throw "handfastd --print-identity failed with exit code $LASTEXITCODE. State dir: $dataDir"
+        throw "handfast identity failed with exit code $LASTEXITCODE. State dir: $dataDir"
     }
     $identityJson = $identityOutput -join "`n"
     $identity = $identityJson | ConvertFrom-Json
     $deviceId = $identity.body.deviceId
-    if (-not $deviceId) { throw 'could not read body.deviceId from --print-identity output' }
+    if (-not $deviceId) { throw 'could not read body.deviceId from identity output' }
 
-    $daemonArgs = @('--data-dir', $dataDir, '--incoming-dir', $incomingDir)
+    $daemonArgs = @('daemon', '--data-dir', $dataDir, '--incoming-dir', $incomingDir)
     $quotedArgs = $daemonArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
     $env:RUST_LOG = 'debug'
-    $process = Start-Process -FilePath $daemon -ArgumentList $quotedArgs -RedirectStandardOutput $stdoutLog -RedirectStandardError $log -NoNewWindow -PassThru
+    $process = Start-Process -FilePath $handfast -ArgumentList $quotedArgs -RedirectStandardOutput $stdoutLog -RedirectStandardError $log -NoNewWindow -PassThru
 
     $started = $false
     for ($i = 0; $i -lt 300; $i++) {
@@ -69,10 +69,10 @@ try {
         Start-Sleep -Milliseconds 100
     }
     if (-not $started) {
-        [Console]::Error.WriteLine("handfastd did not start. Log: $log")
+        [Console]::Error.WriteLine("handfast daemon did not start. Log: $log")
         $tail = (Read-Log $log).TrimEnd() -split "`r?`n" | Select-Object -Last 30
         if ($tail) { [Console]::Error.WriteLine(($tail -join "`n")) }
-        throw 'handfastd did not start.'
+        throw 'handfast daemon did not start.'
     }
 
     $logText = Read-Log $log
@@ -81,11 +81,11 @@ try {
 
     if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
         $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $controlPath = "\\.\pipe\handfastd-$sid"
+        $controlPath = "\\.\pipe\handfast-$sid"
     } elseif ([string]::IsNullOrEmpty($env:XDG_RUNTIME_DIR)) {
-        $controlPath = Join-Path $dataDir 'handfastd.sock'
+        $controlPath = Join-Path $dataDir 'handfast.sock'
     } else {
-        $controlPath = Join-Path (Join-Path $env:XDG_RUNTIME_DIR 'handfast') 'handfastd.sock'
+        $controlPath = Join-Path (Join-Path $env:XDG_RUNTIME_DIR 'handfast') 'handfast.sock'
     }
 
     Write-Output ''
@@ -123,26 +123,15 @@ try {
     Write-Output '  Expect the same log lines, both files in order, and no partial file.'
     Write-Output '  The payload TLS version is TLS 1.2 for Android and TLS 1.3 for the desktop.'
     Write-Output ''
-    $hfctl = $null
-    try {
-        $hfctl = Find-Binary -Name 'hfctl' -Override $env:HFCTL
-    } catch {
-        if ($env:HFCTL) { throw }
-    }
-    if ($hfctl) {
-        Write-Output 'Outbound to a paired peer:'
-        Write-Output ''
-        Write-Output "  & '$hfctl' share --device <peer-id> --data-dir '$dataDir' <file>"
-        Write-Output ''
-        Write-Output '  Expect "sent <n> bytes to <peer-id>" and exit 0. A remote or IO error'
-        Write-Output '  exits 1, a usage error exits 2.'
-        Write-Output ''
-    } else {
-        Write-Output 'Outbound step skipped because hfctl is missing. Build it or set HFCTL. The inbound steps are unaffected.'
-        Write-Output ''
-    }
+    Write-Output 'Outbound to a paired peer:'
+    Write-Output ''
+    Write-Output "  & '$handfast' share --device <peer-id> --data-dir '$dataDir' <file>"
+    Write-Output ''
+    Write-Output '  Expect "sent <n> bytes to <peer-id>" and exit 0. A remote or IO error'
+    Write-Output '  exits 1, a usage error exits 2.'
+    Write-Output ''
 
-    Read-Host 'Press Enter to stop handfastd' | Out-Null
+    Read-Host 'Press Enter to stop handfast daemon' | Out-Null
 }
 catch {
     [Console]::Error.WriteLine("interop-share: $($_.Exception.Message)")
@@ -163,7 +152,7 @@ finally {
 }
 
 Write-Output ''
-Write-Output 'handfastd stopped.'
+Write-Output 'handfast daemon stopped.'
 Write-Output "  log:            $log"
 Write-Output "  data dir:       $dataDir"
 Write-Output "  incoming dir:   $incomingDir"

@@ -52,11 +52,11 @@ production codec must not be the only implementation used to test itself.
 | `handfast-desktop` | Desktop adapter traits, mock backend, Linux backends | protocol |
 | `handfast-store` | redb tables, settings, device and plugin state | runtime |
 | `handfast-testkit` | Independent wire peer, golden vectors, conformance harness | production codec (dev-dependency only) |
-| `handfast-daemon` | `handfastd` composition root | UI |
+| `handfast-daemon` | `handfast` composition root and control client | UI |
 | `xtask` | Format, lint, test and packaging entry points | runtime |
 
-Planned: `handfast-ipc` (Unix socket frames), `handfast-cli` (`hfctl`),
-`handfast-tui` (ratatui), `handfast-gui` (iced).
+Planned: `handfast-ipc` (Unix socket frames), `handfast-tui` (ratatui),
+`handfast-gui` (iced).
 
 Dependency direction is enforced by review and by crate boundaries, not by a
 cycle-checking tool.
@@ -84,7 +84,7 @@ cycle-checking tool.
        +-------------------+               +-------------------+
 ```
 
-One `handfastd` process owns:
+One `handfast daemon` process owns:
 
 - the discovery socket and all device links;
 - one `LinkManager` actor, which owns the TCP listener, admission policy, trust
@@ -93,7 +93,7 @@ One `handfastd` process owns:
 - the plugin registry and enabled-plugin set;
 - the redb store;
 - the desktop adapters;
-- the IPC socket for `hfctl` and the GUI.
+- the control socket for `handfast share` and the GUI.
 
 Each device link is a Tokio task. Each plugin invocation is bounded by a timeout
 and wrapped in `catch_unwind`; a panicking plugin is disabled for that device
@@ -119,23 +119,23 @@ A paired link runs one session task with a `DeviceHost` and calls
 
 ### Share composition
 
-`handfastd` composes the share path before it builds its identity. `LocalFiles`
+`handfast daemon` composes the share path before it builds its identity. `LocalFiles`
 creates the incoming root and its private `.handfast-tmp` directory, and the
 startup sweep removes `.part` files older than 24 h from that directory only.
 The root defaults to `$XDG_DOWNLOAD_DIR/Handfast`, else `~/Downloads/Handfast`,
 and `--incoming-dir` overrides it. The desktop is then rebuilt with `files`, and
 the plugin registry recomputes the capabilities, so the announced identity
-advertises `kdeconnect.share.request`. `--print-identity` returns before this
-step: it keeps the default desktop, does not create the incoming directory and
-opens no control socket.
+advertises `kdeconnect.share.request`. `handfast identity` and `--print-identity`
+return before this step: they keep the default desktop, do not create the
+incoming directory and open no control socket.
 
 One `TlsIdentity` serves both the control links and the payload connections;
 `PayloadService` never generates a second certificate. `ShareLimits` is the one
 owner of the file size, extra-byte, free-space, filename and queue bounds, and
 `files()` and `payloads()` derive both adapters from it. The local control
 channel is an adapter over `SessionHandle::share_file`: it adds the same-user
-check and framing, not a second transfer path. `hfctl` is a temporary binary in
-the daemon crate until the full IPC replaces the control channel.
+check and framing, not a second transfer path. `handfast share` is the control
+client in the same binary.
 
 ## Plugin model
 
@@ -198,11 +198,11 @@ announced to a peer and never receives packets.
 
 Traits return `Result` and are `Send + Sync`. The daemon composes a `Desktop`
 from optional adapters. A plugin whose required adapter is missing is not
-advertised on that host. The registry already filters by `Desktop`. `handfastd`
-installs the `Files` adapter and, when their CLI tools are present, the
+advertised on that host. The registry already filters by `Desktop`. `handfast
+daemon` installs the `Files` adapter and, when their CLI tools are present, the
 clipboard, notifications, MPRIS, volume, shell, lock and screensaver adapters.
 Capabilities are recomputed after installation, so the identity advertises only
-the installed adapters. `--print-identity` stays on the default desktop and
+the installed adapters. `handfast identity` stays on the default desktop and
 creates nothing.
 
 `MockDesktop` implements every trait except `Files` with in-memory recording.
@@ -234,7 +234,7 @@ user; see [Windows state-file and incoming-file ACLs](#windows-state-file-and-in
 
 ## IPC
 
-Planned: a Unix domain socket at `$XDG_RUNTIME_DIR/handfast/handfastd.sock`,
+Planned: a Unix domain socket at `$XDG_RUNTIME_DIR/handfast/handfast.sock`,
 peer-credential checked. Frames are 4-byte length-prefixed JSON with a 64 KiB
 limit. The control channel has its own codec and schema; it does not use the
 wire protocol's newline JSON. Requests are idempotent; events are broadcast.
@@ -303,8 +303,8 @@ is a manual step because CI has no second interactive account:
 1. Create a standard local user.
 2. As an administrator, create `C:\acl-test` and grant the second user read
    access to that folder only. Do not let the grant inherit.
-3. As the primary user, run `handfastd --data-dir C:\acl-test\data` and stop it
-   after `state.db` exists.
+3. As the primary user, run `handfast daemon --data-dir C:\acl-test\data` and
+   stop it after `state.db` exists.
 4. As the second user, `type C:\acl-test\data\state.db` and
    `dir C:\acl-test\data` must both be denied. The second user can read
    `C:\acl-test`, so the denial comes from the state DACL.

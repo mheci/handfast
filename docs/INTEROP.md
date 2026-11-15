@@ -11,7 +11,7 @@ the production code; it does not prove real-client interop.
 
 ## Prerequisites
 
-- A Linux host for `handfastd` and, optionally, the KDE Connect desktop client.
+- A Linux host for `handfast` and, optionally, the KDE Connect desktop client.
   The Windows build has the same link code but no desktop backend.
 - An Android phone with the official KDE Connect app on the same LAN.
 - A firewall that allows UDP 1716 and TCP 1716-1764 between the peers.
@@ -25,7 +25,7 @@ sudo ufw allow 1716/udp
 sudo ufw allow 1716:1764/tcp
 ```
 
-On Windows, allow `handfastd.exe` on private networks for UDP 1716 and TCP
+On Windows, allow `handfast.exe` on private networks for UDP 1716 and TCP
 1716-1764.
 
 ## Build and start
@@ -33,7 +33,7 @@ On Windows, allow `handfastd.exe` on private networks for UDP 1716 and TCP
 ```sh
 cargo build --release -p handfast-daemon
 mkdir -p /tmp/handfast-interop
-RUST_LOG=debug ./target/release/handfastd --data-dir /tmp/handfast-interop
+RUST_LOG=debug ./target/release/handfast daemon --data-dir /tmp/handfast-interop
 ```
 
 `RUST_LOG=debug` shows the link handshake, the negotiated TLS version and the
@@ -43,7 +43,7 @@ pairing outcome. The daemon writes logs to stderr and the state to
 Read the local identity before starting, or in a second terminal:
 
 ```sh
-./target/release/handfastd --print-identity --data-dir /tmp/handfast-interop
+./target/release/handfast identity --data-dir /tmp/handfast-interop
 ```
 
 The printed packet has the device ID in `body.deviceId` and the advertised TCP
@@ -77,7 +77,7 @@ The fingerprint is public. The private key never appears in a log.
 
 ## Android checklist
 
-1. Start `handfastd` with `RUST_LOG=debug` and a fresh `--data-dir`.
+1. Start `handfast daemon` with `RUST_LOG=debug` and a fresh `--data-dir`.
 2. Open KDE Connect on the phone. Confirm the Handfast device appears.
 3. Confirm the Handfast log shows `discovered device` for the phone and the
    `devices_v1` record is created.
@@ -90,7 +90,7 @@ The fingerprint is public. The private key never appears in a log.
 8. Confirm the phone shows Handfast as paired and a ping from the phone reaches
    the Handfast log as `plugin events` with `Ping`.
 9. Confirm the Handfast debug log shows `version=Some(TLSv1_2)` for this link.
-10. Stop and restart `handfastd` with the same `--data-dir`. Confirm the
+10. Stop and restart `handfast daemon` with the same `--data-dir`. Confirm the
     fingerprint is unchanged and the phone reconnects without a new prompt.
 11. Send a ping from Handfast by using a paired peer action if the peer UI
     offers one, or confirm the phone receives the session's `on_connect`
@@ -98,7 +98,7 @@ The fingerprint is public. The private key never appears in a log.
 
 ## Desktop checklist
 
-1. Start `handfastd` with `RUST_LOG=debug`.
+1. Start `handfast daemon` with `RUST_LOG=debug`.
 2. Start `kdeconnectd` on the desktop, or open the KDE Connect settings app.
 3. Confirm each client sees the other.
 4. Request pairing from the KDE Connect desktop device page.
@@ -126,7 +126,7 @@ The fingerprint is public. The private key never appears in a log.
 
 Capture all of the following for a failed step:
 
-- The full `handfastd` stderr with `RUST_LOG=debug`. Do not truncate the first
+- The full `handfast daemon` stderr with `RUST_LOG=debug`. Do not truncate the first
   handshake lines.
 - The peer logs. Android: `adb logcat -d | grep -i kdeconnect > android.log`.
   Desktop: `journalctl --user -u kdeconnectd -b > kdeconnectd.log` or run
@@ -134,7 +134,7 @@ Capture all of the following for a failed step:
   `QT_LOGGING_RULES="kdeconnect.*=true"`.
 - A packet capture. On the Handfast host:
   `sudo tcpdump -i any -s 0 -w handfast-p1.pcap 'udp port 1716 or tcp portrange 1716-1764'`.
-- The local identity packet from `--print-identity`.
+- The local identity packet from `handfast identity`.
 - The peer device ID, peer certificate CN and the fingerprint shown in the
   Handfast prompt.
 - The Handfast version or commit SHA, the peer app version and the OS versions.
@@ -184,7 +184,7 @@ sudo tcpdump -i any -s 0 -w share.pcap 'tcp portrange 1716-1764'
 Start the daemon with both directories set:
 
 ```sh
-RUST_LOG=debug ./target/release/handfastd \
+RUST_LOG=debug ./target/release/handfast daemon \
   --data-dir /tmp/handfast-share \
   --incoming-dir /tmp/handfast-share-incoming
 ```
@@ -231,15 +231,17 @@ sweeps only that directory.
 
 ### Handfast to a real client
 
-1. Start `handfastd` with the same `--data-dir`.
-2. Run `hfctl share --device <peer-id> /path/to/file`.
-3. Confirm the phone or desktop receives the file and `hfctl` exits zero.
-4. Run `hfctl share` with a zero-byte file. Confirm the peer creates an empty
-   file and Handfast binds no payload port.
-5. Run `hfctl share` with a directory or a special file. Confirm it exits
-   non-zero and sends no packet.
-6. Run `hfctl share` as a different local user on Unix. Confirm the peer
-   credential check rejects it.
+1. Start `handfast daemon` with the same `--data-dir`.
+2. Run
+   `handfast share --device <peer-id> --data-dir /tmp/handfast-share /path/to/file`.
+3. Confirm the phone or desktop receives the file and `handfast share` exits
+   zero.
+4. Run `handfast share --data-dir /tmp/handfast-share` with a zero-byte file.
+   Confirm the peer creates an empty file and Handfast binds no payload port.
+5. Run `handfast share --data-dir /tmp/handfast-share` with a directory or a
+   special file. Confirm it exits non-zero and sends no packet.
+6. Run `handfast share --data-dir /tmp/handfast-share` as a different local user
+   on Unix. Confirm the peer credential check rejects it.
 
 ### Expected logs and events
 
@@ -262,7 +264,7 @@ Completion and failure events are not.
 
 Capture all of the following for a failed step:
 
-- The full `handfastd` stderr with `RUST_LOG=debug`.
+- The full `handfast daemon` stderr with `RUST_LOG=debug`.
 - Android: `adb logcat -d | grep -i kdeconnect > android.log`.
 - Desktop: `journalctl --user -u kdeconnectd -b > kdeconnectd.log` or a
   `kdeconnectd` terminal with `QT_LOGGING_RULES="kdeconnect.*=true"`.
@@ -286,7 +288,7 @@ The P1 share gate passes when:
 - A payload connection with a wrong certificate is rejected.
 - The payload TLS version is 1.2 for Android and 1.3 for the desktop when
   offered.
-- `hfctl share` completes the outbound file, empty-file and invalid-path checks
+- `handfast share` completes the outbound file, empty-file and invalid-path checks
   against both clients.
 - A full share channel or session queue closes the link and reports a failure
   rather than hanging the peer.
