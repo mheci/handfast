@@ -136,6 +136,10 @@ fn production_and_testkit_line_caps_agree() {
         handfast_testkit::frame::MAX_HELLO_LINE
     );
     assert_eq!(
+        handfast_net::MAX_IDENTITY_LINE,
+        handfast_testkit::frame::MAX_IDENTITY_LINE
+    );
+    assert_eq!(
         handfast_net::MAX_LINK_LINE,
         handfast_testkit::frame::MAX_LINK_LINE
     );

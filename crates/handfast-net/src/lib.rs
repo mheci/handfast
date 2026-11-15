@@ -27,7 +27,7 @@ pub use identity::{
 };
 pub use link::{
     connect, Link, LinkLimits, LinkListener, LinkReader, LinkWriter, LinkedPeer, MAX_HELLO_LINE,
-    MAX_LINK_LINE,
+    MAX_IDENTITY_LINE, MAX_LINK_LINE,
 };
 pub use manager::{
     is_unpaired_allowed, LinkEvent, LinkHandle, LinkManager, LinkManagerHandle, PendingLink,

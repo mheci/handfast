@@ -518,7 +518,7 @@ pub async fn dial_with_raw_hello(
 
     let local_identity = config.local_identity_packet();
     within_timeout(frame::write_line(&mut stream, &local_identity)).await?;
-    let peer_identity = within_timeout(frame::read_line(&mut stream, frame::MAX_LINK_LINE))
+    let peer_identity = within_timeout(frame::read_line(&mut stream, frame::MAX_IDENTITY_LINE))
         .await?
         .ok_or_else(|| TestkitError::Protocol("peer closed before its identity".to_string()))?;
     check_identity(&peer_identity, expected_device_id)?;
@@ -567,7 +567,7 @@ pub async fn accept(listener: &TcpListener, config: &TlsPeerConfig) -> Result<Tl
     let mut stream: tokio_rustls::TlsStream<TcpStream> = stream.into();
     let protocol_version = negotiated_version(&stream)?;
 
-    let peer_identity = within_timeout(frame::read_line(&mut stream, frame::MAX_LINK_LINE))
+    let peer_identity = within_timeout(frame::read_line(&mut stream, frame::MAX_IDENTITY_LINE))
         .await?
         .ok_or_else(|| TestkitError::Protocol("dialer closed before its identity".to_string()))?;
     check_identity(&peer_identity, &hello_device_id)?;

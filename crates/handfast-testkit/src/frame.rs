@@ -186,6 +186,9 @@ pub async fn write<W: AsyncWrite + Unpin>(writer: &mut W, packet: &WirePacket) -
 /// Maximum plaintext hello line accepted by the peer.
 pub const MAX_HELLO_LINE: usize = 512 * 1024;
 
+/// Maximum secure identity line accepted by the peer.
+pub const MAX_IDENTITY_LINE: usize = 512 * 1024;
+
 /// Maximum link packet line accepted by the peer.
 pub const MAX_LINK_LINE: usize = 1024 * 1024;
 
@@ -297,8 +300,9 @@ mod tests {
     }
 
     #[test]
-    fn hello_line_cap_matches_android() {
+    fn hello_and_identity_line_caps_match_android() {
         assert_eq!(MAX_HELLO_LINE, 512 * 1024);
+        assert_eq!(MAX_IDENTITY_LINE, 512 * 1024);
     }
 
     #[tokio::test]

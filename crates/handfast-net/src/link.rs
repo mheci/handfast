@@ -439,6 +439,9 @@ impl LinkWriter {
 /// Maximum plaintext hello line, matching Android's `readLineBounded` cap.
 pub const MAX_HELLO_LINE: usize = 512 * 1024;
 
+/// Maximum secure identity line, matching Android's `readLineBounded` cap.
+pub const MAX_IDENTITY_LINE: usize = 512 * 1024;
+
 /// Maximum packet line accepted after the hello.
 pub const MAX_LINK_LINE: usize = 1024 * 1024;
 
@@ -565,13 +568,13 @@ async fn exchange_identity(
     let mut line = Vec::new();
     timeout(
         limits.identity_timeout,
-        send_line(stream, &mut line, &packet, MAX_LINK_LINE),
+        send_line(stream, &mut line, &packet, MAX_IDENTITY_LINE),
     )
     .await
     .map_err(|_| NetError::Timeout("identity write"))??;
     let packet = timeout(
         limits.identity_timeout,
-        read_line_unbuffered(stream, MAX_LINK_LINE),
+        read_line_unbuffered(stream, MAX_IDENTITY_LINE),
     )
     .await
     .map_err(|_| NetError::Timeout("identity read"))??;
@@ -657,8 +660,9 @@ mod tests {
     }
 
     #[test]
-    fn hello_and_link_line_caps_are_pinned() {
+    fn line_caps_are_pinned() {
         assert_eq!(MAX_HELLO_LINE, 512 * 1024);
+        assert_eq!(MAX_IDENTITY_LINE, 512 * 1024);
         assert_eq!(MAX_LINK_LINE, 1024 * 1024);
     }
 
@@ -714,7 +718,7 @@ mod tests {
             .await
             .expect("write the phone's identity line");
 
-        let packet = read_line_unbuffered(&mut server, MAX_LINK_LINE)
+        let packet = read_line_unbuffered(&mut server, MAX_IDENTITY_LINE)
             .await
             .expect("the listener reads the phone's identity line");
         let identity = Identity::from_packet(&packet).expect("the line is a secure identity");

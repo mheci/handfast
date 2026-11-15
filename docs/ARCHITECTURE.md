@@ -24,8 +24,9 @@ The wire contract is frozen independently of the implementation:
 
 - Protocol version 8.
 - LAN link packet: one UTF-8 JSON line terminated by `\n`. Maximum line size
-  1 MiB. The local control channel keeps 4-byte big-endian length framing with
-  a 1 MiB cap; it is not part of the KDE Connect wire protocol.
+  1 MiB, or 512 KiB for the plaintext hello and secure identity. The local
+  control channel has its own 4-byte big-endian length codec with a 64 KiB cap;
+  it is not part of the KDE Connect wire protocol.
 - UDP discovery on port 1716. TCP control and payload links use the 1716-1764
   range.
 - TLS 1.2 and TLS 1.3. Certificates are self-signed, the device ID is the
@@ -44,7 +45,7 @@ production codec must not be the only implementation used to test itself.
 
 | Crate | Responsibility | Must not depend on |
 | --- | --- | --- |
-| `handfast-proto` | Packet model, local IPC framing, identity, capabilities | networking, desktop |
+| `handfast-proto` | Packet model, test frame codec, identity, capabilities | networking, desktop |
 | `handfast-net` | UDP discovery, TCP links, pairing state machine | plugins, desktop |
 | `handfast-runtime` | Plugin trait, registry, per-device host, events, supervision | concrete plugins |
 | `handfast-plugins` | 31-plugin roster and plugin implementations | daemon, UI |
@@ -233,9 +234,9 @@ user; see [Windows state-file and incoming-file ACLs](#windows-state-file-and-in
 ## IPC
 
 Planned: a Unix domain socket at `$XDG_RUNTIME_DIR/handfast/handfastd.sock`,
-peer-credential checked. Frames are 4-byte length-prefixed JSON with a 1 MiB
-limit, reusing the same envelope rules as the wire protocol but a separate
-schema. Requests are idempotent; events are broadcast.
+peer-credential checked. Frames are 4-byte length-prefixed JSON with a 64 KiB
+limit. The control channel has its own codec and schema; it does not use the
+wire protocol's newline JSON. Requests are idempotent; events are broadcast.
 
 ## Security
 

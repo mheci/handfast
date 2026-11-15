@@ -55,7 +55,7 @@ The grounding pass read `handfast-net`, `handfast-store`, `handfast-daemon`, `ha
 
 | Crate | Current behavior | Constraint for this design |
 | --- | --- | --- |
-| `handfast-proto` | Packet model, local IPC 1 MiB framing, `Identity`, `PairingRequest`, capability sets. Transport-free by doc and by dependency choice. | May gain the plaintext identity hello and the minimal discovery announcement. Must not gain TLS, certificate bytes or fingerprints. |
+| `handfast-proto` | Packet model, 1 MiB frame codec for tests and fuzzing, `Identity`, `PairingRequest`, capability sets. Transport-free by doc and by dependency choice. | May gain the plaintext identity hello and the minimal discovery announcement. Must not gain TLS, certificate bytes or fingerprints. |
 | `handfast-net` | UDP discovery on 1716, plain TCP `Link`, pure pairing state machine. | Owns the TCP listener, TLS roles, identity re-exchange and link lifecycle. Must not depend on `handfast-store`. |
 | `handfast-store` | redb tables for devices, plugin state and settings. Device ID lives in `settings_v1`. No identity table. | Owns opaque DER and fingerprint persistence. No crypto, no TLS policy. |
 | `handfast-runtime` | `Device`, `DeviceHost`, plugin dispatch, panic isolation, 5 s plugin timeout. No sockets. | Stays transport-free. The daemon builds one host per paired connected device. `DeviceHost::new` borrows `&Registry`. |
@@ -85,7 +85,7 @@ A (discovered B)                                      B (listener)
 Facts that drive the design:
 
 - **One plaintext hello, from the dialer only.** Android's `udpPacketReceived` dials, builds its full identity, adds `targetDeviceId` and `targetProtocolVersion` as strings, writes it, and then starts TLS. Desktop's `tcpSocketConnected` writes `toConnectionPacket` with numeric target fields and then starts server encryption. The listener never sends a plaintext identity of its own. The hello is one compact JSON line, not a length-prefixed frame. `NetworkPacket.serialize()` returns `json.encodeToString(...) + "\n"`, and `LanLinkProvider` writes those bytes to the socket directly. The listener reads byte by byte until `\n` with a 512 KiB cap (`readLineBounded`), then hands the same socket to rustls, so the read stops exactly at the newline.
-- **The whole post-TLS link is newline-delimited JSON.** Android's `LanLink.sendPacket` writes `NetworkPacket.serialize()`, compact JSON plus `\n`, and `LanLink.startListening` reads every packet with `readLineBounded(stream, 32 MiB)`. `LanLinkProvider` reads and writes the secure identity the same way. Handfast uses lines for the encrypted identity and every later packet, with a 1 MiB cap. The 4-byte length frame remains only in the local control channel.
+- **The whole post-TLS link is newline-delimited JSON.** Android's `LanLink.sendPacket` writes `NetworkPacket.serialize()`, compact JSON plus `\n`, and `LanLink.startListening` reads every packet with `readLineBounded(stream, 32 MiB)`. `LanLinkProvider` reads and writes the secure identity the same way. Handfast uses lines for the encrypted identity with a 512 KiB cap, and for every later packet with a 1 MiB cap. The 4-byte length frame remains only in the local control channel.
 - **The dialer is the TLS server.** Android sets `clientMode = (connectionStarted == Locally)`, so a dialed connection is server mode. Desktop calls `startServerEncryption` on the dialed socket. The accepted side is the TLS client.
 - **The hello shapes differ.** Android sends the full identity plus target fields. Desktop sends only `deviceId`, `deviceName`, `protocolVersion`, `targetDeviceId` and `targetProtocolVersion`. The listener must accept both. Accepting the smaller packet means `deviceType` and the capability arrays are optional in the hello. The encrypted identity remains full.
 - **Target protocol version is a string on Android and a number on desktop.** `targetProtocolVersion` must parse from both a JSON string and a JSON number. The value must be 8.
@@ -360,7 +360,7 @@ impl DiscoveryAnnouncement {
 }
 ```
 
-`IdentityHello::to_packet` starts from the full `Identity` body and inserts `targetDeviceId` and a numeric `targetProtocolVersion`. `IdentityHello::from_packet` requires `kdeconnect.identity`, a valid `deviceId`, protocol version 8, and a valid target device ID. `deviceName` is optional and sanitized; `deviceType` and both capability arrays are optional and default to `Unknown` and empty. `targetProtocolVersion` accepts a JSON number or a string and must be 8. `device_id` must differ from `target_device_id`. This accepts the Android full hello and the desktop connection packet. On the wire the hello is one compact JSON line terminated by `\n`, not a 4-byte length-prefixed frame. Android's `NetworkPacket.serialize()` appends the newline and `LanLinkProvider` writes the bytes directly; the listener reads until `\n` with the same 512 KiB bound, one byte at a time, then hands the socket to rustls. The encrypted identity and every later packet use the same line format with a 1 MiB cap.
+`IdentityHello::to_packet` starts from the full `Identity` body and inserts `targetDeviceId` and a numeric `targetProtocolVersion`. `IdentityHello::from_packet` requires `kdeconnect.identity`, a valid `deviceId`, protocol version 8, and a valid target device ID. `deviceName` is optional and sanitized; `deviceType` and both capability arrays are optional and default to `Unknown` and empty. `targetProtocolVersion` accepts a JSON number or a string and must be 8. `device_id` must differ from `target_device_id`. This accepts the Android full hello and the desktop connection packet. On the wire the hello is one compact JSON line terminated by `\n`, not a 4-byte length-prefixed frame. Android's `NetworkPacket.serialize()` appends the newline and `LanLinkProvider` writes the bytes directly; the listener reads until `\n` with the same 512 KiB bound, one byte at a time, then hands the socket to rustls. The encrypted identity and every later packet use the same line format. The identity cap is 512 KiB and later packets use 1 MiB.
 
 `DiscoveryAnnouncement::from_packet` requires `kdeconnect.identity`, a valid `deviceId`, `protocolVersion` 8 and a `tcpPort` in 1716-1764. It reads `deviceName` and `deviceType` if present and defaults to `Unnamed device` and `Unknown`. It ignores capability fields. `to_packet` emits the minimal desktop shape: `deviceId`, `deviceName`, `protocolVersion` and `tcpPort`. The encrypted identity parser stays strict; only discovery and the plaintext hello are permissive.
 
@@ -1018,7 +1018,7 @@ Only protocol 8 is accepted. The identity parser already rejects other versions.
 | Encrypted identity ID differs from hello or CN | Close; security event. This is the CVE-2025-66270 regression. | Link test. |
 | Encrypted identity version is not 8 | Close; security event. | Link test. |
 | Malformed pair body | Close; protocol violation. | Manager test. |
-| Line over 1 MiB, malformed JSON or deeply nested JSON | Proto or serde error; close. The 1 MiB line cap bounds the allocation. | Link test. |
+| Line over its cap (512 KiB identity, 1 MiB later), malformed JSON or deeply nested JSON | Proto or serde error; close. The line cap bounds the allocation. | Link test. |
 | Duplicate connection with the same certificate | Replace the old link; last successful handshake wins. | Manager test with a replacer peer. |
 | Duplicate connection with a different certificate | Close the new link. | Manager test. |
 | Silent peer after TCP accept | Handshake timeout; pending permit released. | Link test with a silent peer. |
@@ -1115,7 +1115,7 @@ These use the independent testkit TLS peer, not a second copy of the production 
 - A pinned peer is accepted when the certificate matches.
 - A pinned peer is rejected when the certificate changes, and the pin remains in the trust table.
 - A peer that connects and sends nothing hits the handshake timeout.
-- A peer that sends a partial identity line hits the identity timeout. After establishment there is no idle read timeout for paired links; the 1 MiB cap and keepalive bound the damage.
+- A peer that sends a partial identity line hits the identity timeout. The identity cap is 512 KiB. After establishment there is no idle read timeout for paired links; the 1 MiB packet cap and keepalive bound the damage.
 - A peer that sends a line larger than 1 MiB is closed before a larger allocation.
 - An unpaired peer can complete the link, but a ping is dropped and a pair request is emitted.
 - An unpaired link creates no `DeviceHost` and receives no `on_connect` callback.
