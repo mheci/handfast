@@ -12,7 +12,7 @@ mod pairing;
 mod redact;
 mod session;
 
-pub use daemon::{run, DaemonArgs, SHUTDOWN_GRACE};
+pub use daemon::{parse_tcp_port, run, DaemonArgs, DEFAULT_TCP_PORT, SHUTDOWN_GRACE};
 
 use std::path::PathBuf;
 

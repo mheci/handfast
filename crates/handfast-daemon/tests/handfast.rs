@@ -104,18 +104,31 @@ fn identity_matches_the_daemon_print_path_byte_for_byte() {
     let directory = tempfile::tempdir().unwrap();
     let data_dir = directory.path().to_str().unwrap();
 
-    let identity = handfast(&["identity", "--data-dir", data_dir]);
-    assert!(identity.status.success(), "stderr: {}", stderr(&identity));
-    let printed = handfast(&["daemon", "--print-identity", "--data-dir", data_dir]);
-    assert!(printed.status.success(), "stderr: {}", stderr(&printed));
+    for tcp_port in [None, Some("1721")] {
+        let expected = tcp_port.unwrap_or("1716");
+        let mut identity_args = vec!["identity", "--data-dir", data_dir];
+        let mut printed_args = vec!["daemon", "--print-identity", "--data-dir", data_dir];
+        if let Some(port) = tcp_port {
+            identity_args.extend(["--tcp-port", port]);
+            printed_args.extend(["--tcp-port", port]);
+        }
 
-    assert_eq!(
-        identity.stdout, printed.stdout,
-        "handfast identity and handfast daemon --print-identity print the same packet"
-    );
-    let packet: Value = serde_json::from_slice(&identity.stdout).expect("a JSON packet");
-    assert_eq!(packet["body"]["tcpPort"], serde_json::json!(1716));
-    assert!(packet["body"]["deviceId"].as_str().is_some(), "{packet}");
+        let identity = handfast(&identity_args);
+        assert!(identity.status.success(), "stderr: {}", stderr(&identity));
+        let printed = handfast(&printed_args);
+        assert!(printed.status.success(), "stderr: {}", stderr(&printed));
+
+        assert_eq!(
+            identity.stdout, printed.stdout,
+            "handfast identity and handfast daemon --print-identity print the same packet at {expected}"
+        );
+        let packet: Value = serde_json::from_slice(&identity.stdout).expect("a JSON packet");
+        assert_eq!(
+            packet["body"]["tcpPort"],
+            serde_json::json!(expected.parse::<u16>().unwrap())
+        );
+        assert!(packet["body"]["deviceId"].as_str().is_some(), "{packet}");
+    }
 }
 
 #[test]

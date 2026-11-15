@@ -6,7 +6,9 @@ use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
 use handfast_daemon::control::{send_request, ControlError, ControlRequest, ControlResponse};
-use handfast_daemon::{default_data_dir, run, DaemonArgs, SHUTDOWN_GRACE};
+use handfast_daemon::{
+    default_data_dir, parse_tcp_port, run, DaemonArgs, DEFAULT_TCP_PORT, SHUTDOWN_GRACE,
+};
 use handfast_proto::DeviceId;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -38,7 +40,7 @@ enum Command {
     /// Send a file to a connected device.
     Share(ShareArgs),
     /// Print this device's identity packet and exit.
-    Identity,
+    Identity(IdentityArgs),
     /// Print the version.
     Version,
 }
@@ -53,6 +55,13 @@ struct ShareArgs {
     path: PathBuf,
 }
 
+#[derive(Debug, Parser)]
+struct IdentityArgs {
+    /// TCP port advertised in the packet, in the KDE Connect range 1716-1764.
+    #[arg(long, default_value_t = DEFAULT_TCP_PORT, value_parser = parse_tcp_port)]
+    tcp_port: u16,
+}
+
 fn parse_device_id(value: &str) -> Result<DeviceId, String> {
     DeviceId::new(value).map_err(|error| error.to_string())
 }
@@ -64,9 +73,10 @@ fn main() -> ExitCode {
             println!("handfast {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Command::Identity => {
+        Command::Identity(args) => {
             let args = DaemonArgs {
                 data_dir: cli.data_dir,
+                tcp_port: args.tcp_port,
                 print_identity: true,
                 ..DaemonArgs::default()
             };

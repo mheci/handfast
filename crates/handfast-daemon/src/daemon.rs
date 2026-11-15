@@ -63,7 +63,7 @@ const COMMAND_QUEUE: usize = 16;
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// The default KDE Connect TCP port.
-const DEFAULT_TCP_PORT: u16 = 1716;
+pub const DEFAULT_TCP_PORT: u16 = 1716;
 
 /// Daemon flags, shared by the CLI, the service entry and the GUI.
 #[derive(Debug, Parser)]
@@ -797,7 +797,12 @@ impl Daemon {
     }
 }
 
-fn parse_tcp_port(value: &str) -> Result<u16, String> {
+/// Parse and range-check a KDE Connect TCP port.
+///
+/// # Errors
+///
+/// Fails when the value is not a number or outside 1716-1764.
+pub fn parse_tcp_port(value: &str) -> Result<u16, String> {
     let port: u16 = value
         .parse()
         .map_err(|_| format!("TCP port {value} is not a number"))?;
