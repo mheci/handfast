@@ -7,6 +7,7 @@ use handfast_daemon::control::{
     send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
+use handfast_daemon::update::{Authenticode, GitHub, Updater};
 use handfast_daemon::{
     default_data_dir, no_subcommand, parse_tcp_port, run, DaemonArgs, NoSubcommand,
     DEFAULT_TCP_PORT, SHUTDOWN_GRACE,
@@ -39,6 +40,8 @@ enum Command {
     Status(StatusArgs),
     /// Install and control the per-user autostart service.
     Service(ServiceArgs),
+    /// Check for and install a newer release.
+    Update(UpdateArgs),
     /// Open the Handfast window.
     Gui,
     /// Print this device's identity packet and exit.
@@ -91,12 +94,30 @@ enum ServiceCommand {
     Status,
 }
 
+#[derive(Debug, Parser)]
+struct UpdateArgs {
+    #[command(subcommand)]
+    command: UpdateCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum UpdateCommand {
+    /// Print whether a newer release exists.
+    Check,
+    /// Download, verify and install the latest release.
+    Apply,
+}
+
 fn parse_device_id(value: &str) -> Result<DeviceId, String> {
     DeviceId::new(value).map_err(|error| error.to_string())
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // A crashed update leaves the previous exe beside the current one.
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = handfast_daemon::update::cleanup_old(&exe);
+    }
     let Some(command) = cli.command else {
         return match no_subcommand() {
             NoSubcommand::Gui => run_gui(cli.data_dir, true),
@@ -105,7 +126,11 @@ fn main() -> ExitCode {
     };
     match command {
         Command::Version => {
-            println!("handfast {}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "handfast {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("HANDFAST_TARGET")
+            );
             ExitCode::SUCCESS
         }
         Command::Identity(args) => {
@@ -135,6 +160,10 @@ fn main() -> ExitCode {
         Command::Service(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_service(args, data_dir)
+        }
+        Command::Update(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_update(args, data_dir)
         }
         Command::Gui => run_gui(cli.data_dir, false),
     }
@@ -343,6 +372,35 @@ fn run_service(args: ServiceArgs, data_dir: PathBuf) -> ExitCode {
                 ExitCode::FAILURE
             };
         }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(error),
+    }
+}
+
+fn run_update(args: UpdateArgs, data_dir: PathBuf) -> ExitCode {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => return fail(error),
+    };
+    let commands = SystemCommands;
+    let log = data_dir.join("handfast.log");
+    let service = match Service::new(exe.clone(), data_dir.clone(), log, &commands) {
+        Ok(service) => service,
+        Err(error) => return fail(error),
+    };
+    let control = match LocalControl::new(data_dir) {
+        Ok(control) => control,
+        Err(error) => return fail(error),
+    };
+    let source = GitHub::new();
+    let verifier = Authenticode;
+    let updater = Updater::new(&source, &verifier, &control, &service);
+
+    let result = match args.command {
+        UpdateCommand::Check => updater.check().map(|check| println!("{check}")),
+        UpdateCommand::Apply => updater.apply(&exe).map(|applied| println!("{applied}")),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

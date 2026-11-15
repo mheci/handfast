@@ -6,6 +6,7 @@ pub mod control;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod service;
+pub mod update;
 
 mod daemon;
 mod identity;

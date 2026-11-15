@@ -26,6 +26,9 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
+    # webpki-roots ships the Mozilla CA bundle as data. ureq reads it through
+    # rustls-webpki-roots.
+    "CDLA-Permissive-2.0",
     "ISC",
     "Unicode-3.0",
     "Ubuntu-font-1.0",
