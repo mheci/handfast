@@ -109,11 +109,13 @@ jobs:
           chown -R builder:builder /home/builder/handfast
           su builder -c 'cd /home/builder/handfast && cargo run -p xtask -- build'
           pkgver=$(printf '%s' "$VERSION" | tr '-' '_')
+          template=/home/builder/handfast/packaging/arch/PKGBUILD
+          grep -qx 'pkgver=__VERSION__' "$template" || { echo "the PKGBUILD must carry pkgver=__VERSION__" >&2; exit 1; }
           mkdir -p /home/builder/pkg
           cp /home/builder/handfast/target/release/handfast /home/builder/pkg/
           cp /home/builder/handfast/README.md /home/builder/handfast/LICENSE-MIT /home/builder/handfast/THIRD-PARTY-NOTICES.md /home/builder/pkg/
           cp /home/builder/handfast/packaging/linux/handfast.service /home/builder/pkg/
-          sed "s/__VERSION__/${pkgver}/" /home/builder/handfast/packaging/arch/PKGBUILD > /home/builder/pkg/PKGBUILD
+          sed "s/__VERSION__/${pkgver}/" "$template" > /home/builder/pkg/PKGBUILD
           chown -R builder:builder /home/builder/pkg
           su builder -c 'cd /home/builder/pkg && makepkg -f --noconfirm'
           mkdir -p dist

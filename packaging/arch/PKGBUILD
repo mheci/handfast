@@ -1,4 +1,3 @@
-# Template. CI replaces __VERSION__ with the Cargo version, using _ for -.
 pkgname=handfast-bin
 pkgver=__VERSION__
 pkgrel=1
