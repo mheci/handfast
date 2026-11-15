@@ -32,7 +32,7 @@ use handfast_desktop::winacl::current_user_sid_string;
 use super::{serve, ControlError, ControlServerHandle, DaemonCommand, CONTROL_IO_TIMEOUT};
 
 /// Named-pipe path prefix. The rest of the name is the current-user SID.
-pub(super) const PIPE_PREFIX: &str = r"\\.\pipe\handfastd-";
+pub(super) const PIPE_PREFIX: &str = r"\\.\pipe\handfast-";
 
 /// The control pipe name for `sid`.
 pub(super) fn pipe_name(sid: &str) -> String {

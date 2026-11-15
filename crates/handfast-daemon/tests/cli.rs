@@ -9,8 +9,9 @@ use serde_json::Value;
 fn print_identity_is_stable_and_advertises_implemented_plugins() {
     let directory = tempfile::tempdir().unwrap();
     let run = || {
-        let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+        let output = Command::new(env!("CARGO_BIN_EXE_handfast"))
             .args([
+                "daemon",
                 "--print-identity",
                 "--data-dir",
                 directory.path().to_str().unwrap(),
@@ -48,8 +49,9 @@ fn print_identity_is_stable_and_advertises_implemented_plugins() {
 fn print_identity_does_not_generate_a_certificate_or_bind_the_port() {
     let directory = tempfile::tempdir().unwrap();
     let (listener, port) = occupy_tcp_port();
-    let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+    let output = Command::new(env!("CARGO_BIN_EXE_handfast"))
         .args([
+            "daemon",
             "--print-identity",
             "--data-dir",
             directory.path().to_str().unwrap(),
@@ -78,8 +80,9 @@ fn print_identity_does_not_generate_a_certificate_or_bind_the_port() {
 fn tcp_port_outside_the_range_is_rejected() {
     let directory = tempfile::tempdir().unwrap();
     for port in ["0", "1700", "1765"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+        let output = Command::new(env!("CARGO_BIN_EXE_handfast"))
             .args([
+                "daemon",
                 "--print-identity",
                 "--data-dir",
                 directory.path().to_str().unwrap(),
@@ -101,8 +104,9 @@ fn tcp_port_outside_the_range_is_rejected() {
 fn print_identity_creates_no_incoming_directory() {
     let directory = tempfile::tempdir().unwrap();
     let incoming = directory.path().join("incoming");
-    let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+    let output = Command::new(env!("CARGO_BIN_EXE_handfast"))
         .args([
+            "daemon",
             "--print-identity",
             "--data-dir",
             directory.path().to_str().unwrap(),
@@ -126,7 +130,7 @@ fn print_identity_creates_no_incoming_directory() {
         "print-identity creates no private temp directory"
     );
     assert!(
-        !directory.path().join("handfastd.sock").exists(),
+        !directory.path().join("handfast.sock").exists(),
         "print-identity opens no control socket"
     );
 }
@@ -134,8 +138,9 @@ fn print_identity_creates_no_incoming_directory() {
 #[test]
 fn print_identity_keeps_share_out_of_capabilities() {
     let directory = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+    let output = Command::new(env!("CARGO_BIN_EXE_handfast"))
         .args([
+            "daemon",
             "--print-identity",
             "--data-dir",
             directory.path().to_str().unwrap(),
@@ -183,10 +188,10 @@ fn occupy_tcp_port() -> (TcpListener, u16) {
 
 #[test]
 fn version_flag_works() {
-    let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+    let output = Command::new(env!("CARGO_BIN_EXE_handfast"))
         .arg("--version")
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("handfastd"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("handfast"));
 }

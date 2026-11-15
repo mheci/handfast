@@ -2,7 +2,7 @@
 
 `scripts/interop-share.sh` and `scripts/interop-share.ps1` run the manual P1
 share gate in `docs/INTEROP.md` against a real Android or KDE Connect desktop
-peer. Each script starts `handfastd` with a throwaway `--data-dir` and
+peer. Each script starts `handfast daemon` with a throwaway `--data-dir` and
 `--incoming-dir`, captures the debug log, prints the local identity, the bound
 TCP port and the control path, and walks the tester through the inbound and
 outbound steps.
@@ -12,14 +12,14 @@ checklist asks for.
 
 ## Prerequisites
 
-- A Linux host for `handfastd` and, optionally, the KDE Connect desktop client.
+- A Linux host for `handfast` and, optionally, the KDE Connect desktop client.
   The Windows build has the same link code but no desktop backend.
 - A paired Android phone and a paired desktop client. The link checklist in
   `docs/INTEROP.md` must pass first.
-- The binaries built in release mode:
+- The binary built in release mode:
 
   ```sh
-  cargo build --release -p handfast-daemon --bin handfastd --bin hfctl
+  cargo build --release -p handfast-daemon --bin handfast
   ```
 
 - UDP 1716 and TCP 1716-1764 open on the Handfast host. For `ufw`:
@@ -34,8 +34,8 @@ checklist asks for.
   PowerShell script.
 
 The scripts look in `target/release` first and `target/debug` second. Set
-`HANDFASTD` or `HFCTL` to use another binary path. They never read or write the
-real profile directory.
+`HANDFAST` to use another binary path. They never read or write the real
+profile directory.
 
 ## Commands
 
@@ -53,22 +53,22 @@ Each run creates a temp directory and prints it at start and after stop:
 | --- | --- |
 | `<run>/data` | `state.db` and the TLS identity. It holds the private key. |
 | `<run>/incoming` | Received files, with `.handfast-tmp` for partials. |
-| `<run>/handfastd.log` | Full `RUST_LOG=debug` stderr. |
-| `<run>/handfastd.stdout.log` | Standard output. PowerShell only. |
+| `<run>/handfast.log` | Full `RUST_LOG=debug` stderr. |
+| `<run>/handfast.stdout.log` | Standard output. PowerShell only. |
 
-The control path is `$XDG_RUNTIME_DIR/handfast/handfastd.sock` when
-`XDG_RUNTIME_DIR` is set, else `<run>/data/handfastd.sock`, on Unix. Windows
-uses the named pipe `\\.\pipe\handfastd-<user SID>`.
+The control path is `$XDG_RUNTIME_DIR/handfast/handfast.sock` when
+`XDG_RUNTIME_DIR` is set, else `<run>/data/handfast.sock`, on Unix. Windows
+uses the named pipe `\\.\pipe\handfast-<user SID>`.
 
 The identity packet's `body.tcpPort` is the configured default, not the bound
 port. The daemon binds the first free port from 1716, so read the `bound TCP
 port` line or the `TCP listener bound` log line for the bound port.
 
-Press Enter in the script terminal to stop `handfastd`. On Unix, the script
-sends SIGINT, waits for the daemon to shut down, and kills it only if it hangs.
-On Windows, the script terminates the process. It then prints the log path, the
-incoming directory and its contents, and a `tcpdump` command for the next
-failed step.
+Press Enter in the script terminal to stop `handfast daemon`. On Unix, the
+script sends SIGINT, waits for the daemon to shut down, and kills it only if it
+hangs. On Windows, the script terminates the process. It then prints the log
+path, the incoming directory and its contents, and a `tcpdump` command for the
+next failed step.
 
 ## Manual steps
 
@@ -99,15 +99,15 @@ Inbound from the desktop client:
 Outbound from Handfast, with a paired peer connected:
 
 ```sh
-target/release/hfctl share --device <peer-id> --data-dir <run>/data /path/to/file
+target/release/handfast share --device <peer-id> --data-dir <run>/data /path/to/file
 ```
 
-`hfctl.exe` is the same command on Windows.
+`handfast.exe` is the same command on Windows.
 
-`hfctl` prints `sent <n> bytes to <peer-id>` and exits 0 on success. A remote or
-IO error exits 1, a usage error exits 2. Repeat with a zero-byte file, then with
-a directory. The empty file must arrive and bind no payload port. The directory
-must exit non-zero and send no packet.
+`handfast share` prints `sent <n> bytes to <peer-id>` and exits 0 on success. A
+remote or IO error exits 1, a usage error exits 2. Repeat with a zero-byte file,
+then with a directory. The empty file must arrive and bind no payload port. The
+directory must exit non-zero and send no packet.
 
 The reject, unpair and changed-certificate steps stay in `docs/INTEROP.md`.
 
@@ -137,7 +137,7 @@ sudo tcpdump -i any -s 0 -w share.pcap 'tcp portrange 1716-1764'
 Attach all of these to the failure record:
 
 - `share.pcap`.
-- `<run>/handfastd.log`, untruncated from the first handshake line.
+- `<run>/handfast.log`, untruncated from the first handshake line.
 - The identity packet printed by the script, and the peer device ID and
   fingerprint.
 - The peer log. Android: `adb logcat -d | grep -i kdeconnect > android.log`.
@@ -149,10 +149,9 @@ fingerprints and the capture are enough for a link diagnosis.
 
 ## Missing binaries and failed starts
 
-A missing `handfastd` fails the script before it starts the daemon. The script
-checks `hfctl` only when the outbound section prints. When `hfctl` is missing,
-the script skips the outbound step and the inbound run still completes. An
-invalid `HANDFASTD` or `HFCTL` path fails the script.
+A missing `handfast` fails the script before it starts the daemon. The script
+uses the same binary for the outbound step, so one build covers both directions.
+An invalid `HANDFAST` path fails the script.
 
 A daemon that does not log `discovery listening` fails the run, and the script
 prints the last 30 log lines.

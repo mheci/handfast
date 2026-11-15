@@ -1,10 +1,17 @@
 //! Shared library surface for the Handfast daemon.
 //!
-//! The daemon binary owns composition. This crate exposes the local control
-//! channel and the state directory default so `handfastd` and `hfctl` resolve
-//! the same endpoint.
+//! [`run`] is the daemon composition root.
 
 pub mod control;
+
+mod daemon;
+mod identity;
+mod limits;
+mod pairing;
+mod redact;
+mod session;
+
+pub use daemon::{parse_tcp_port, run, DaemonArgs, DEFAULT_TCP_PORT, SHUTDOWN_GRACE};
 
 use std::path::PathBuf;
 

@@ -7,8 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "handfastd"
-path = "src/main.rs"
+name = "handfast"
+path = "src/bin/handfast.rs"
 
 [dependencies]
 clap.workspace = true

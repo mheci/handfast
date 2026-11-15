@@ -46,7 +46,7 @@ async fn announced_devices_are_persisted() {
     while Instant::now() < deadline {
         assert!(
             daemon.try_wait().unwrap().is_none(),
-            "handfastd exited before receiving an announcement"
+            "handfast exited before receiving an announcement"
         );
         let _ = sender.announce(target).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -85,7 +85,7 @@ async fn desktop_announcements_are_persisted() {
     while Instant::now() < deadline {
         assert!(
             daemon.try_wait().unwrap().is_none(),
-            "handfastd exited before receiving an announcement"
+            "handfast exited before receiving an announcement"
         );
         let _ = sender.send_to(datagram.as_bytes(), target).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -130,7 +130,7 @@ async fn self_announcements_are_ignored() {
     while Instant::now() < deadline {
         assert!(
             daemon.try_wait().unwrap().is_none(),
-            "handfastd exited before receiving the control announcement"
+            "handfast exited before receiving the control announcement"
         );
         let _ = sender.send_to(control.as_bytes(), target).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -164,8 +164,9 @@ async fn self_announcements_are_ignored() {
 }
 
 fn print_identity(directory: &Path, tcp_port: u16) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+    let output = Command::new(env!("CARGO_BIN_EXE_handfast"))
         .args([
+            "daemon",
             "--print-identity",
             "--data-dir",
             directory.to_str().unwrap(),
@@ -184,7 +185,8 @@ fn print_identity(directory: &Path, tcp_port: u16) -> Value {
 
 fn spawn_daemon(directory: &Path, tcp_port: u16) -> (Child, u16) {
     let port = free_udp_port();
-    let daemon = Command::new(env!("CARGO_BIN_EXE_handfastd"))
+    let daemon = Command::new(env!("CARGO_BIN_EXE_handfast"))
+        .arg("daemon")
         .arg("--data-dir")
         .arg(directory)
         .arg("--discovery-port")
@@ -206,11 +208,11 @@ async fn wait_for_state_file(directory: &Path, daemon: &mut Child) {
     while !directory.join("state.db").exists() {
         assert!(
             daemon.try_wait().unwrap().is_none(),
-            "handfastd exited before opening its state file"
+            "handfast exited before opening its state file"
         );
         assert!(
             Instant::now() < deadline,
-            "handfastd did not open its state file"
+            "handfast did not open its state file"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

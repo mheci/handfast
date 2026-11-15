@@ -1,4 +1,4 @@
-//! `handfastd` composition root.
+//! Daemon composition root.
 //!
 //! The daemon owns the store, the local TLS identity, the TCP listener, the
 //! discovery socket, the link manager, one session per paired connected device,
@@ -10,13 +10,10 @@ use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
-use handfast_daemon::control::{ControlResponse, ControlServer, DaemonCommand};
-use handfast_daemon::default_data_dir;
 use handfast_desktop::{backends, default_incoming_dir, Desktop, Files, LocalFiles};
 use handfast_net::{
     Discovery, Fingerprint, LinkEvent, LinkHandle, LinkLimits, LinkListener, LinkManager,
@@ -31,16 +28,14 @@ use handfast_runtime::{PluginEvent, Registry};
 use handfast_store::Store;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
-use tracing_subscriber::EnvFilter;
 
-mod identity;
-mod limits;
-mod pairing;
-mod redact;
-mod session;
-
-use limits::{ShareLimits, STALE_TEMP_AGE};
-use session::{DaemonEvent, DeviceSession, SessionLimits, TransferSetup};
+use crate::control::{ControlResponse, ControlServer, DaemonCommand};
+use crate::default_data_dir;
+use crate::identity;
+use crate::limits::{ShareLimits, STALE_TEMP_AGE};
+use crate::pairing;
+use crate::redact;
+use crate::session::{DaemonEvent, DeviceSession, SessionLimits, TransferSetup};
 
 /// How often to announce this device over UDP discovery.
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
@@ -64,68 +59,68 @@ const DAEMON_EVENT_QUEUE: usize = 256;
 const COMMAND_QUEUE: usize = 16;
 
 /// How long shutdown waits for tasks before aborting them.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+/// The default KDE Connect TCP port.
+pub const DEFAULT_TCP_PORT: u16 = 1716;
 
 #[derive(Debug, Parser)]
-#[command(name = "handfastd", version, about = "Handfast KDE Connect daemon")]
-struct Args {
+pub struct DaemonArgs {
     /// State directory. Defaults to the platform data directory.
-    #[arg(long)]
-    data_dir: Option<PathBuf>,
+    ///
+    /// The top-level `--data-dir` option fills this; it is not a daemon flag.
+    #[arg(skip)]
+    pub data_dir: Option<PathBuf>,
 
     /// Incoming directory for received files. Defaults to the platform
     /// Downloads path.
     #[arg(long)]
-    incoming_dir: Option<PathBuf>,
+    pub incoming_dir: Option<PathBuf>,
 
     /// TCP control port, in the KDE Connect range 1716-1764.
-    #[arg(long, default_value = "1716", value_parser = parse_tcp_port)]
-    tcp_port: u16,
+    #[arg(long, default_value_t = DEFAULT_TCP_PORT, value_parser = parse_tcp_port)]
+    pub tcp_port: u16,
 
     /// UDP discovery port.
     #[arg(long, default_value_t = handfast_net::DISCOVERY_PORT)]
-    discovery_port: u16,
+    pub discovery_port: u16,
+
+    /// Write daemon diagnostics to this file. The log file rotates when it
+    /// reaches the size limit.
+    #[arg(long)]
+    pub log_file: Option<PathBuf>,
 
     /// Print this device's identity packet and exit.
     #[arg(long)]
-    print_identity: bool,
+    pub print_identity: bool,
 }
 
-fn main() -> ExitCode {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("handfastd: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let result = runtime.block_on(run());
-    // A pending terminal read runs on a blocking thread. Bound runtime
-    // shutdown so a prompt cannot hold the process open.
-    runtime.shutdown_timeout(SHUTDOWN_GRACE);
-
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("handfastd: {error}");
-            ExitCode::FAILURE
+impl Default for DaemonArgs {
+    fn default() -> Self {
+        Self {
+            data_dir: None,
+            incoming_dir: None,
+            tcp_port: DEFAULT_TCP_PORT,
+            discovery_port: handfast_net::DISCOVERY_PORT,
+            log_file: None,
+            print_identity: false,
         }
     }
 }
 
-async fn run() -> Result<(), Box<dyn Error>> {
-    let args = Args::parse();
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .init();
-
+/// Run the daemon until `shutdown` completes.
+///
+/// The caller installs the tracing subscriber.
+///
+/// # Errors
+///
+/// Fails when the state directory, store, TLS identity, listener, discovery
+/// socket or control server cannot be opened, or when a startup identity check
+/// fails. Every error is `Send + Sync`, so a caller may spawn this future.
+pub async fn run(
+    args: DaemonArgs,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let data_dir = args.data_dir.unwrap_or_else(default_data_dir);
     identity::ensure_owned_state_path(&data_dir)?;
     std::fs::create_dir_all(&data_dir)?;
@@ -316,13 +311,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
         prompt_task,
     };
 
+    tokio::pin!(shutdown);
     let mut command_open = true;
     loop {
         // Link events are handled before share events so a Connected event
         // creates the session before a share packet for the same link arrives.
         tokio::select! {
             biased;
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut shutdown => {
                 tracing::info!("shutting down");
                 break;
             }
@@ -797,7 +793,12 @@ impl Daemon {
     }
 }
 
-fn parse_tcp_port(value: &str) -> Result<u16, String> {
+/// Parse and range-check a KDE Connect TCP port.
+///
+/// # Errors
+///
+/// Fails when the value is not a number or outside the KDE Connect TCP range.
+pub fn parse_tcp_port(value: &str) -> Result<u16, String> {
     let port: u16 = value
         .parse()
         .map_err(|_| format!("TCP port {value} is not a number"))?;

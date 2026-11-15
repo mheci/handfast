@@ -93,11 +93,11 @@ pub enum ControlError {
     Json(#[from] serde_json::Error),
 
     /// No daemon is listening on the control endpoint.
-    #[error("handfastd is not running")]
+    #[error("handfast is not running")]
     NotRunning,
 
     /// Another daemon already owns the control endpoint.
-    #[error("another handfastd is already running")]
+    #[error("another handfast is already running")]
     AlreadyRunning,
 
     /// The endpoint path is unsafe or unsupported.
@@ -108,7 +108,7 @@ pub enum ControlError {
     #[error("control timeout: {0}")]
     Timeout(&'static str),
 
-    /// The daemon replied with an error. `hfctl` prints the message as is.
+    /// The daemon replied with an error.
     #[error("{0}")]
     Remote(String),
 }
@@ -119,9 +119,9 @@ pub struct ControlServer;
 impl ControlServer {
     /// Start the local control server for `data_dir`.
     ///
-    /// Unix binds `$XDG_RUNTIME_DIR/handfast/handfastd.sock` when
-    /// `XDG_RUNTIME_DIR` is set, else `<data_dir>/handfastd.sock`. Windows
-    /// creates `\\.\pipe\handfastd-<user>`.
+    /// Unix binds `$XDG_RUNTIME_DIR/handfast/handfast.sock` when
+    /// `XDG_RUNTIME_DIR` is set and non-empty, else `<data_dir>/handfast.sock`.
+    /// Windows creates `\\.\pipe\handfast-<user>`.
     ///
     /// # Errors
     ///
@@ -171,16 +171,16 @@ impl ControlServerHandle {
 
 /// The Unix control socket path for `data_dir`.
 ///
-/// `$XDG_RUNTIME_DIR/handfast/handfastd.sock` when `XDG_RUNTIME_DIR` is set and
-/// non-empty, else `<data_dir>/handfastd.sock`.
+/// `$XDG_RUNTIME_DIR/handfast/handfast.sock` when `XDG_RUNTIME_DIR` is set and
+/// non-empty, else `<data_dir>/handfast.sock`.
 #[cfg(unix)]
 #[must_use]
 pub fn control_path(data_dir: &Path) -> PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty()) {
         Some(runtime) => PathBuf::from(runtime)
             .join("handfast")
-            .join("handfastd.sock"),
-        None => data_dir.join("handfastd.sock"),
+            .join("handfast.sock"),
+        None => data_dir.join("handfast.sock"),
     }
 }
 
@@ -694,7 +694,7 @@ mod tests {
     #[tokio::test]
     async fn stale_socket_is_replaced_and_a_live_socket_is_not() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let path = dir.path().join("handfastd.sock");
+        let path = dir.path().join("handfast.sock");
         let stale = std::os::unix::net::UnixListener::bind(&path).expect("bind a stale socket");
         drop(stale);
         assert!(std::fs::symlink_metadata(&path)
@@ -728,7 +728,7 @@ mod tests {
     #[tokio::test]
     async fn stale_socket_removed_before_metadata_rebinds() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let path = dir.path().join("handfastd.sock");
+        let path = dir.path().join("handfast.sock");
         let stale = std::os::unix::net::UnixListener::bind(&path).expect("bind a stale socket");
         drop(stale);
 
@@ -766,7 +766,7 @@ mod tests {
             .path()
             .join("runtime")
             .join("handfast")
-            .join("handfastd.sock");
+            .join("handfast.sock");
         let (commands, _command_rx) = mpsc::channel(4);
         let server = start_at(path.clone(), commands)
             .await
@@ -805,7 +805,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_json_closes_without_a_response() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let path = dir.path().join("handfastd.sock");
+        let path = dir.path().join("handfast.sock");
         let (commands, mut command_rx) = mpsc::channel(4);
         let server = start_at(path.clone(), commands)
             .await
@@ -835,7 +835,7 @@ mod tests {
     #[tokio::test]
     async fn directory_path_is_relayed_as_an_error() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let path = dir.path().join("handfastd.sock");
+        let path = dir.path().join("handfast.sock");
         let files = LocalFiles::new(dir.path().join("incoming"), FileLimits::default())
             .expect("build the files adapter");
         let (commands, mut command_rx) = mpsc::channel(4);
@@ -875,7 +875,7 @@ mod tests {
     #[tokio::test]
     async fn full_session_queue_is_relayed_as_an_error() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let path = dir.path().join("handfastd.sock");
+        let path = dir.path().join("handfast.sock");
         let (commands, mut command_rx) = mpsc::channel(4);
         let server = start_at(path.clone(), commands)
             .await
@@ -904,7 +904,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_replies_with_an_error_instead_of_hanging() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let path = dir.path().join("handfastd.sock");
+        let path = dir.path().join("handfast.sock");
         let (commands, mut command_rx) = mpsc::channel(4);
         let server = start_at(path.clone(), commands)
             .await

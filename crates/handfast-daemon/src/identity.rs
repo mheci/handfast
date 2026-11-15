@@ -18,7 +18,7 @@ use handfast_store::{IdentityRecord, Store};
 ///
 /// Fails when the setting cannot be read or written or the stored value is not
 /// a valid device ID.
-pub fn load_or_create_device_id(store: &Store) -> Result<DeviceId, Box<dyn Error>> {
+pub fn load_or_create_device_id(store: &Store) -> Result<DeviceId, Box<dyn Error + Send + Sync>> {
     if let Some(value) = store.setting("device_id")? {
         return Ok(DeviceId::new(value)?);
     }
@@ -37,7 +37,7 @@ pub fn load_or_create_device_id(store: &Store) -> Result<DeviceId, Box<dyn Error
 pub fn load_or_generate_tls_identity(
     store: &Store,
     device_id: &DeviceId,
-) -> Result<TlsIdentity, Box<dyn Error>> {
+) -> Result<TlsIdentity, Box<dyn Error + Send + Sync>> {
     let Some(record) = store.identity()? else {
         let tls = TlsIdentity::generate(device_id.clone())?;
         store.set_identity(&IdentityRecord {
