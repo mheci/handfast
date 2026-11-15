@@ -160,6 +160,7 @@ where
         cancel.try_recv(),
         Ok(()) | Err(oneshot::error::TryRecvError::Closed)
     ) {
+        request.decision.close();
         return PairingDecision::Cancelled;
     }
 
@@ -174,13 +175,17 @@ where
     let _ = writer.write_all(text.as_bytes()).await;
     let _ = writer.flush().await;
 
-    tokio::select! {
+    let decision = tokio::select! {
         biased;
         _ = &mut *cancel => PairingDecision::Cancelled,
         // A dropped sender means the daemon withdrew the prompt.
         decision = &mut request.decision => decision.unwrap_or(PairingDecision::Cancelled),
         answer = read_answer(answers, generation, timeout) => answer,
-    }
+    };
+    // The answer is final. A decision that arrives during accept or reject must
+    // fail instead of reporting a success that nothing will act on.
+    request.decision.close();
+    decision
 }
 
 /// Read lines until one belongs to this prompt window. Lines read for an
@@ -474,6 +479,22 @@ mod tests {
             .expect("the decision receiver is open");
         let result = run_prompt(&mut answers, &mut request, 1, PROMPT_TIMEOUT).await;
         assert_eq!(result, PairingDecision::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn a_decision_after_the_terminal_answer_is_refused() {
+        let (lines, mut answers) = mpsc::channel(ANSWER_QUEUE);
+        lines
+            .send((1, "n\n".to_string()))
+            .await
+            .expect("the answer channel is open");
+        let (mut request, _cancel, decision) = prompt_request();
+        let result = run_prompt(&mut answers, &mut request, 1, PROMPT_TIMEOUT).await;
+        assert_eq!(result, PairingDecision::Reject);
+        assert!(
+            decision.send(PairingDecision::Accept).is_err(),
+            "the prompt is final once it returns"
+        );
     }
 
     #[tokio::test]

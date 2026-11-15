@@ -714,7 +714,7 @@ pub enum ControlRequest {
     Share { device_id: DeviceId, path: PathBuf },
     Status,
     Shutdown,
-    PairingDecision { device_id: String, accept: bool },
+    PairingDecision { device_id: String, accept: bool, fingerprint: String },
 }
 
 pub enum ControlResponse {
@@ -842,11 +842,24 @@ close the answer channel and every prompt would reject itself before anyone
 could answer. A stdout write failure is ignored for the same reason: the prompt
 still has to wait for the control or GUI answer.
 
-`PairingDecision { device_id: String, accept: bool }` carries the ID as a string
-so the control boundary can reply `"<value> is not a device ID"` instead of
-failing JSON decode and closing the connection without a response. `dispatch`
-parses it into a `DeviceId` before the daemon sees it, like every other typed
-command.
+`PairingDecision { device_id: String, accept: bool, fingerprint: String }` carries
+the ID as a string so the control boundary can reply `"<value> is not a device
+ID"` instead of failing JSON decode and closing the connection without a
+response. `dispatch` parses it into a `DeviceId` before the daemon sees it, like
+every other typed command.
+
+The fingerprint binds the answer to the certificate the user saw. A decision
+from an older `handfast status` or an older window row can arrive after the same
+device opened a new prompt, and without the check that answer would pin the new
+certificate. `decide_pairing` compares the fingerprint with the open prompt's
+summary before it takes the sender and replies "the pairing request changed;
+refresh and decide again" on a mismatch. `handfast pair` reads the status first
+and sends the fingerprint of the pending row, and errors when no row exists. The
+window sends the fingerprint of the row it drew.
+
+The prompt closes its decision receiver as soon as it resolves. A decision that
+arrives during the accept or reject work then fails its send, and the daemon
+replies an error instead of `Decided` for an answer nothing will act on.
 
 `handfast status` prints the human form. One line per field, then one row per
 device and one per transfer. `--json` prints `DaemonStatus` as JSON. A pending

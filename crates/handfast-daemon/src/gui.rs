@@ -47,7 +47,11 @@ enum WorkerCommand {
     Start,
     Stop,
     Refresh,
-    PairingDecision { device_id: DeviceId, accept: bool },
+    PairingDecision {
+        device_id: DeviceId,
+        accept: bool,
+        fingerprint: String,
+    },
 }
 
 fn daemon_command(exe: &Path, data_dir: &Path) -> Command {
@@ -120,8 +124,12 @@ fn worker(
                 }
             }
             Ok(WorkerCommand::Refresh) | Err(RecvTimeoutError::Timeout) => {}
-            Ok(WorkerCommand::PairingDecision { device_id, accept }) => {
-                if let Err(error) = control.pairing_decision(&device_id, accept) {
+            Ok(WorkerCommand::PairingDecision {
+                device_id,
+                accept,
+                fingerprint,
+            }) => {
+                if let Err(error) = control.pairing_decision(&device_id, accept, &fingerprint) {
                     eprintln!("handfast: cannot answer the pairing request: {error}");
                 }
             }
@@ -357,12 +365,14 @@ impl HandfastApp {
                             self.send(WorkerCommand::PairingDecision {
                                 device_id: pairing.device_id.clone(),
                                 accept: true,
+                                fingerprint: pairing.fingerprint.clone(),
                             });
                         }
                         if ui.button("Reject").clicked() {
                             self.send(WorkerCommand::PairingDecision {
                                 device_id: pairing.device_id.clone(),
                                 accept: false,
+                                fingerprint: pairing.fingerprint.clone(),
                             });
                         }
                     });
@@ -475,6 +485,10 @@ mod tests {
         DeviceId::new("0123456789abcdef0123456789abcdef").expect("a valid device id")
     }
 
+    // Serializes the process-global `XDG_RUNTIME_DIR` change.
+    #[cfg(unix)]
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     fn sample_status() -> DaemonStatus {
         DaemonStatus {
             version: "0.2.0".to_string(),
@@ -546,9 +560,11 @@ mod tests {
         use crate::control::{ControlResponse, ControlServer, DaemonCommand};
         use tokio::sync::{mpsc, oneshot};
 
+        let _env = ENV_LOCK.lock().await;
         let runtime = tempfile::tempdir().expect("a temp runtime dir");
         std::env::set_var("XDG_RUNTIME_DIR", runtime.path());
         let data_dir = tempfile::tempdir().expect("a temp data dir");
+        let row_fingerprint = "cd".repeat(32);
         let (commands, mut command_rx) = mpsc::channel(4);
         let server = ControlServer::start(data_dir.path(), commands)
             .await
@@ -565,9 +581,10 @@ mod tests {
                     DaemonCommand::PairingDecision {
                         device_id,
                         accept,
+                        fingerprint,
                         reply,
                     } => {
-                        let _ = observed.send((device_id, accept));
+                        let _ = observed.send((device_id, accept, fingerprint));
                         let _ = reply.send(ControlResponse::Decided);
                         break;
                     }
@@ -582,15 +599,21 @@ mod tests {
             .send(WorkerCommand::PairingDecision {
                 device_id: device_id(),
                 accept: true,
+                fingerprint: row_fingerprint.clone(),
             })
             .expect("the worker is running");
 
-        let (seen, accept) = tokio::time::timeout(Duration::from_secs(5), observed_rx)
-            .await
-            .expect("the worker sends the decision")
-            .expect("the script observes the request");
+        let (seen, accept, seen_fingerprint) =
+            tokio::time::timeout(Duration::from_secs(5), observed_rx)
+                .await
+                .expect("the worker sends the decision")
+                .expect("the script observes the request");
         assert_eq!(seen, device_id());
         assert!(accept);
+        assert_eq!(
+            seen_fingerprint, row_fingerprint,
+            "the row fingerprint travels"
+        );
 
         drop(worker);
         server.shutdown().await;

@@ -61,7 +61,11 @@ pub enum ControlRequest {
     PairingDecision {
         /// Device ID shown in the pairing prompt. The daemon validates it.
         device_id: String,
+        /// Whether to accept the request.
         accept: bool,
+        /// Fingerprint of the certificate the caller saw, so a stale decision
+        /// cannot answer a newer prompt for the same device.
+        fingerprint: String,
     },
 }
 
@@ -203,7 +207,10 @@ pub enum DaemonCommand {
     PairingDecision {
         /// Device ID of the open prompt.
         device_id: DeviceId,
+        /// Whether to accept the request.
         accept: bool,
+        /// Fingerprint the caller saw, checked against the open prompt.
+        fingerprint: String,
         /// Reply sender.
         reply: oneshot::Sender<ControlResponse>,
     },
@@ -418,7 +425,11 @@ async fn dispatch(
         },
         ControlRequest::Status => DaemonCommand::Status { reply },
         ControlRequest::Shutdown => DaemonCommand::Shutdown { reply },
-        ControlRequest::PairingDecision { device_id, accept } => {
+        ControlRequest::PairingDecision {
+            device_id,
+            accept,
+            fingerprint,
+        } => {
             let Ok(device_id) = DeviceId::new(&device_id) else {
                 return ControlResponse::Err {
                     message: format!("{device_id} is not a device ID"),
@@ -427,6 +438,7 @@ async fn dispatch(
             DaemonCommand::PairingDecision {
                 device_id,
                 accept,
+                fingerprint,
                 reply,
             }
         }
@@ -831,11 +843,13 @@ mod tests {
             round_trip(&ControlRequest::PairingDecision {
                 device_id: "0123456789abcdef0123456789abcdef".to_string(),
                 accept: true,
+                fingerprint: "ab".repeat(32),
             })
             .await,
             ControlRequest::PairingDecision {
                 device_id: "0123456789abcdef0123456789abcdef".to_string(),
                 accept: true,
+                fingerprint: "ab".repeat(32),
             }
         );
         assert_eq!(
@@ -1163,11 +1177,13 @@ mod tests {
             if let Some(DaemonCommand::PairingDecision {
                 device_id,
                 accept,
+                fingerprint,
                 reply,
             }) = command_rx.recv().await
             {
                 assert_eq!(device_id, expected);
                 assert!(accept);
+                assert_eq!(fingerprint, "ab".repeat(32));
                 let _ = reply.send(ControlResponse::Decided);
             }
         });
@@ -1175,6 +1191,7 @@ mod tests {
         let request = ControlRequest::PairingDecision {
             device_id: device_id().as_str().to_string(),
             accept: true,
+            fingerprint: "ab".repeat(32),
         };
         let response = send_to_path(&path, &request)
             .await
@@ -1198,6 +1215,7 @@ mod tests {
         let request = ControlRequest::PairingDecision {
             device_id: "not-a-device".to_string(),
             accept: false,
+            fingerprint: "ab".repeat(32),
         };
         let response = send_to_path(&path, &request)
             .await

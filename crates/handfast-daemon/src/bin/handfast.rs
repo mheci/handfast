@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use handfast_daemon::control::{
-    send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus,
+    send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus, PairingSummary,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::update::{Authenticode, GitHub, Updater};
@@ -311,12 +311,28 @@ async fn send_pair(
     accept: bool,
     data_dir: PathBuf,
 ) -> Result<String, ControlError> {
+    let status = request_status(&data_dir).await?;
+    let Some(fingerprint) = pending_fingerprint(&status.pending_pairings, &device_id) else {
+        return Err(ControlError::Remote(format!(
+            "no pairing request from {device_id}"
+        )));
+    };
     let request = ControlRequest::PairingDecision {
         device_id: device_id.clone(),
         accept,
+        fingerprint: fingerprint.to_string(),
     };
     let response = send_request(&data_dir, &request).await?;
     decision_message(&device_id, accept, response)
+}
+
+/// The fingerprint of the pending row for `device_id`, so a stale command
+/// cannot answer a newer prompt.
+fn pending_fingerprint<'a>(pending: &'a [PairingSummary], device_id: &str) -> Option<&'a str> {
+    pending
+        .iter()
+        .find(|pairing| pairing.device_id.as_str() == device_id)
+        .map(|pairing| pairing.fingerprint.as_str())
 }
 
 fn decision_message(
@@ -351,15 +367,18 @@ fn run_status(args: StatusArgs, data_dir: PathBuf) -> ExitCode {
 }
 
 async fn fetch_status(json: bool, data_dir: PathBuf) -> Result<(), ControlError> {
-    match send_request(&data_dir, &ControlRequest::Status).await? {
-        ControlResponse::Status { status } => {
-            if json {
-                println!("{}", serde_json::to_string_pretty(&status)?);
-            } else {
-                print_status(&status);
-            }
-            Ok(())
-        }
+    let status = request_status(&data_dir).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    } else {
+        print_status(&status);
+    }
+    Ok(())
+}
+
+async fn request_status(data_dir: &Path) -> Result<DaemonStatus, ControlError> {
+    match send_request(data_dir, &ControlRequest::Status).await? {
+        ControlResponse::Status { status } => Ok(*status),
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
         ControlResponse::Ok { .. } | ControlResponse::ShuttingDown | ControlResponse::Decided => {
             Err(ControlError::Remote(
@@ -608,6 +627,27 @@ mod tests {
                 .expect("a decided response is a success"),
             format!("pairing rejected for {DEVICE}")
         );
+    }
+
+    #[test]
+    fn the_cli_takes_the_fingerprint_from_the_pending_row() {
+        let device = DeviceId::new(DEVICE).expect("a valid device id");
+        let fingerprint = "cd".repeat(32);
+        let rows = vec![PairingSummary {
+            device_id: device,
+            device_name: "Tablet".to_string(),
+            fingerprint: fingerprint.clone(),
+        }];
+        assert_eq!(
+            pending_fingerprint(&rows, DEVICE),
+            Some(fingerprint.as_str())
+        );
+        assert_eq!(
+            pending_fingerprint(&rows, "fedcba9876543210fedcba9876543210"),
+            None,
+            "another device has no row"
+        );
+        assert_eq!(pending_fingerprint(&[], DEVICE), None, "no prompt is open");
     }
 
     #[test]

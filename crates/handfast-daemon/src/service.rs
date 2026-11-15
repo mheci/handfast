@@ -192,12 +192,19 @@ impl LocalControl {
     ///
     /// # Errors
     ///
-    /// Fails when no daemon answers, the request is unknown or answered, or the
-    /// response is not an acknowledgement.
-    pub fn pairing_decision(&self, device_id: &DeviceId, accept: bool) -> Result<(), ControlError> {
+    /// Fails when no daemon answers, the request is unknown or answered, the
+    /// fingerprint no longer matches the open prompt, or the response is not an
+    /// acknowledgement.
+    pub fn pairing_decision(
+        &self,
+        device_id: &DeviceId,
+        accept: bool,
+        fingerprint: &str,
+    ) -> Result<(), ControlError> {
         let request = ControlRequest::PairingDecision {
             device_id: device_id.as_str().to_string(),
             accept,
+            fingerprint: fingerprint.to_string(),
         };
         match self.request(&request)? {
             ControlResponse::Decided => Ok(()),
