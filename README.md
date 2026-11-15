@@ -21,10 +21,10 @@ handfast-0.3.0-x64.msi
 Open the MSI. It installs per user to `%LOCALAPPDATA%\Handfast`, adds a Start
 Menu shortcut named `Handfast` that runs `handfast gui`, and writes state to
 `%LOCALAPPDATA%\handfast`. The 0.3.0 MSI is signed when the Windows signing
-secrets are configured. Run `handfast service install` once: it registers the
-logon task and prints the administrator command for the firewall rule when the
-rule is missing. The MSI leaves that step to you, because a per-user install
-cannot add the firewall rule.
+secrets are configured. The MSI registers the logon task with
+`handfast service install` and removes it on uninstall. Run
+`handfast service install` once after the install to print the administrator
+command for the firewall rule: a per-user install cannot add the rule itself.
 
 Debian 12, amd64:
 

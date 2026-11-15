@@ -88,7 +88,7 @@ cargo run -p xtask -- build      # target/release/handfast with the GUI
 cargo run -p xtask -- portable   # dist/handfast-<target>(.exe)
 cargo run -p xtask -- deb        # dist/handfast_<version>_debian12_amd64.deb
 cargo run -p xtask -- msi        # dist/handfast-<version>-x64.msi
-cargo run -p xtask -- package    # portable plus the host's native package
+cargo run -p xtask -- package --glibc 2.36 --label debian12  # portable plus the host's deb
 cargo run -p xtask -- checksums  # dist/SHA256SUMS
 ```
 
@@ -129,11 +129,12 @@ is what a portable install under `~/.local/bin` needs.
 
 Windows 11: open the MSI. It installs `handfast.exe` to
 `%LOCALAPPDATA%\Handfast`, adds a Start Menu shortcut named `Handfast` that runs
-`handfast gui`, and writes state to `%LOCALAPPDATA%\handfast`. Run
-`handfast service install` once to register the logon task. It prints the
-administrator command for the firewall rule. The MSI does not run that step: a
-per-user install cannot add the firewall rule, and a custom action that failed
-would fail the install.
+`handfast gui`, and writes state to `%LOCALAPPDATA%\handfast`. The MSI runs
+`handfast service install` after the files land and `handfast service uninstall`
+before removal. Both actions log a failure and do not fail the install, so check
+`handfast service status`. The MSI cannot add the firewall rule, which needs an
+administrator. Run `handfast service install` once after the install to print
+the exact command, then run it elevated.
 
 ```text
 netsh advfirewall firewall add rule name=Handfast dir=in action=allow program="C:\Users\<you>\AppData\Local\Handfast\handfast.exe" enable=yes
@@ -161,10 +162,10 @@ and its pairings.
 The workflow cannot prove these, so run them on the release candidate:
 
 - Install the MSI on Windows 11, open the Start Menu shortcut, confirm the
-  window opens, run `handfast service install`, add the printed firewall rule as
-  an administrator, confirm the logon task and the rule, then uninstall. Upgrade
-  0.3.0 to the next build with the daemon running to exercise
-  `CloseApplication`.
+  window opens and `handfast service status` shows the installed task. Run
+  `handfast service install` once to print the firewall command, add it as an
+  administrator, then uninstall and confirm the task is gone. Upgrade 0.3.0 to
+  the next build with the daemon running to exercise `CloseApplication`.
 - `dpkg-deb -I` and `dpkg-deb -c` on both debs. Confirm `handfast`, the unit and
   the notices, and no `handfastd`.
 - `makepkg` in an `archlinux` container. Confirm the same file list.

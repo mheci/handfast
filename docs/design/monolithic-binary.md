@@ -831,10 +831,10 @@ Rejected:
 | `check` | `fmt`, `clippy`, `test`, `doc` |
 | `build` | `cargo build --release --locked -p handfast-daemon --features gui` |
 | `portable` | Copy the release binary to `dist/handfast-<target>(.exe)` |
-| `deb` | Build the deb tree and call `dpkg-deb --build` |
+| `deb` | Call `packaging/linux/make-deb.sh`, which builds the deb tree and calls `dpkg-deb --build` |
 | `msi` | Call `candle` and `light` on `packaging/windows/handfast.wxs` |
 | `checksums` | Write `dist/SHA256SUMS` over every file in `dist/` except `SHA256SUMS` itself |
-| `package` | `portable` plus the host's native package |
+| `package` | `portable` plus the host's native package; the deb needs `--glibc` and `--label` |
 
 The `clippy`, `test` and `doc` tasks drop `--all-features` for the same reason the
 CI jobs do. A developer without the X11 and Wayland packages can still run the
@@ -843,10 +843,10 @@ portable asset and every package carry the window. The three Linux release jobs
 install the same X11 and Wayland packages as the `gui` CI job before they run
 `xtask build`. The Windows runner needs none.
 
-`packaging/linux/make-deb.sh` is deleted. `ARCHITECTURE.md` goal 4 already says
-no shell packaging scripts in the critical path, and the script is 38 lines that
-xtask can own. The Arch PKGBUILD stays, because `makepkg` must run inside an Arch
-container and rewriting it in Rust buys nothing.
+`packaging/linux/make-deb.sh` stays and owns the deb tree. `xtask deb` calls it,
+so one implementation builds the package. The Arch PKGBUILD stays, because
+`makepkg` must run inside an Arch container and rewriting it in Rust buys
+nothing.
 
 ### Packages
 
@@ -855,8 +855,9 @@ container and rewriting it in Rust buys nothing.
 | `handfast_<version>_debian12_amd64.deb` | Package `handfast`, `/usr/bin/handfast`, `/usr/lib/systemd/user/handfast.service`, `Conflicts`, `Replaces` and `Provides` on `handfastd` |
 | `handfast_<version>_ubuntu24.04_amd64.deb` | Same |
 | `handfast-bin-<pkgver>-1-x86_64.pkg.tar.zst` | `provides=('handfast')`, `conflicts=('handfastd-bin')`, `replaces=('handfastd-bin')`, the same unit |
-| `handfast-<version>-x64.msi` | Per-user install to `%LOCALAPPDATA%\Programs\Handfast`, Start Menu shortcut, logon task, `CloseApplication` on the running exe |
+| `handfast-<version>-x64.msi` | Per-user install to `%LOCALAPPDATA%\Handfast`, Start Menu shortcut, logon task, `CloseApplication` on the running exe |
 | `handfast-<target>(.exe)` | Bare binary for the updater and for a portable install |
+| `THIRD-PARTY-NOTICES.md` | The BSL-1.0, OFL-1.1 and Ubuntu-font-1.0 texts, also inside the deb, Arch package and MSI |
 | `SHA256SUMS` | Every file above |
 
 The MSI changes from `perMachine` to `perUser`. A per-machine install puts the exe

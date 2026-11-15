@@ -369,11 +369,11 @@ The Linux packages install `/usr/bin/handfast`, the systemd user unit at
 notices under `/usr/share/doc/handfast` or `/usr/share/licenses/handfast-bin`.
 They conflict with, replace and provide the retired `handfastd` package names.
 The MSI installs per user under `%LOCALAPPDATA%\Handfast`, adds a Start Menu
-shortcut that runs `handfast gui`, and carries the 0.2.0 `UpgradeCode`. It does
-not run `service install`, because a per-user MSI cannot add the firewall rule
-and a failing custom action would fail the install. The user runs
-`handfast service install` once, which prints the administrator `netsh` command
-when the rule is missing.
+shortcut that runs `handfast gui`, and carries the 0.2.0 `UpgradeCode`. It runs
+`handfast.exe service install` after the files land and `service uninstall`
+before removal, as deferred impersonated actions that log a failure and do not
+fail the install. It cannot add the firewall rule, which needs an administrator,
+so the user runs `handfast service install` once to print the `netsh` command.
 
 The Windows job signs `handfast.exe` and the MSI when the signing secrets are
 configured, verifies both signatures and otherwise publishes an unsigned MSI.
