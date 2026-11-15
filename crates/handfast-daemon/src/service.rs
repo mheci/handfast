@@ -543,8 +543,8 @@ pub fn task_xml(exe: &Path, data_dir: &Path, log: &Path, sid: &str) -> String {
 
 /// Write a task definition as UTF-16 with a byte-order mark.
 ///
-/// Task Scheduler reads its own exports, which are UTF-16, and `schtasks
-/// /Create /XML` reads the declaration.
+/// Task Scheduler exports its own definitions in that shape, so
+/// `schtasks /Create /XML` receives the same bytes it writes.
 ///
 /// # Errors
 ///
@@ -877,13 +877,13 @@ WantedBy=default.target
     #[test]
     fn task_xml_escapes_markup() {
         let xml = task_xml(
-            Path::new(r"C:\Tools & More\handfast.exe"),
+            Path::new(r"C:\Tools & More's\handfast.exe"),
             Path::new(r"C:\Data <1>"),
             Path::new(r"C:\Data <1>\handfast.log"),
             "S-1-5-21-1-2-3-1001",
         );
         assert!(
-            xml.contains(r"<Command>C:\Tools &amp; More\handfast.exe</Command>"),
+            xml.contains(r"<Command>C:\Tools &amp; More&apos;s\handfast.exe</Command>"),
             "{xml}"
         );
         assert!(
