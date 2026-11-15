@@ -149,7 +149,6 @@ fn run_cargo(task: &Task) -> bool {
     }
 }
 
-/// The workspace version, which every package carries.
 fn workspace_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -182,6 +181,12 @@ fn msi(out: &Path) -> bool {
         .split('-')
         .next()
         .unwrap_or(workspace_version());
+    let wxs = Path::new("packaging/windows/handfast.wxs");
+    let notices = Path::new("THIRD-PARTY-NOTICES.md");
+    if !wxs.is_file() || !notices.is_file() {
+        eprintln!("run xtask from the repository root");
+        return false;
+    }
     let binary = Path::new("target")
         .join("release")
         .join(format!("handfast{}", std::env::consts::EXE_SUFFIX));
@@ -208,14 +213,11 @@ fn msi(out: &Path) -> bool {
         "-ext".to_string(),
         "WixUtilExtension".to_string(),
         format!("-dVersion={version}"),
-        format!("-dBinaryPath={}", absolute(&binary).display()),
-        format!(
-            "-dNoticesPath={}",
-            absolute(Path::new("THIRD-PARTY-NOTICES.md")).display()
-        ),
+        format!("-dBinaryPath={}", binary.display()),
+        format!("-dNoticesPath={}", notices.display()),
         "-out".to_string(),
         wixobj.display().to_string(),
-        "packaging/windows/handfast.wxs".to_string(),
+        wxs.display().to_string(),
     ];
     if !run_tool(&candle, &candle_args) {
         return false;
@@ -245,19 +247,10 @@ fn run_tool(tool: &Path, args: &[String]) -> bool {
     }
 }
 
-/// WiX tools live in `WIX_BIN` on the release runner and on `PATH` elsewhere.
 fn wix_tool(name: &str) -> PathBuf {
     match std::env::var_os("WIX_BIN") {
         Some(directory) if !directory.is_empty() => PathBuf::from(directory).join(name),
         _ => PathBuf::from(name),
-    }
-}
-
-/// Candle resolves relative sources against the process directory.
-fn absolute(path: &Path) -> PathBuf {
-    match std::env::current_dir() {
-        Ok(directory) => directory.join(path),
-        Err(_) => path.to_path_buf(),
     }
 }
 

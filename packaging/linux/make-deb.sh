@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Build a native .deb from target/release/handfast.
 set -euo pipefail
 
 if [ "$#" -ne 4 ]; then
