@@ -190,6 +190,7 @@ announced to a peer and never receives packets.
 | `Volume` | systemvolume, remotesystemvolume | `wpctl` |
 | `Input` | mousepad, presenter, digitizer, remotecontrol, remotekeyboard | none |
 | `Screensaver` | screensaver-inhibit | `systemd-inhibit` |
+| `Lock` | lockdevice | `loginctl` |
 | `Shell` | share URL | `xdg-open` |
 | `Files` | share | `LocalFiles` under the incoming root |
 
@@ -197,7 +198,7 @@ Traits return `Result` and are `Send + Sync`. The daemon composes a `Desktop`
 from optional adapters. A plugin whose required adapter is missing is not
 advertised on that host. The registry already filters by `Desktop`. `handfastd`
 installs the `Files` adapter and, when their CLI tools are present, the
-clipboard, notifications, MPRIS, volume, shell and screensaver adapters.
+clipboard, notifications, MPRIS, volume, shell, lock and screensaver adapters.
 Capabilities are recomputed after installation, so the identity advertises only
 the installed adapters. `--print-identity` stays on the default desktop and
 creates nothing.

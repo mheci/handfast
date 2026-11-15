@@ -82,14 +82,14 @@ pub const FINDTHISDEVICE: PluginMeta = PluginMeta {
     desktop: DesktopRequirement::Notifications,
 };
 
-/// Remote lock and unlock.
+/// Remote lock. Unlock is refused.
 pub const LOCKDEVICE: PluginMeta = PluginMeta {
     name: "lockdevice",
     title: "Lock device",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::LOCK_REQUEST],
-    outgoing: &[types::LOCK],
-    desktop: DesktopRequirement::Screensaver,
+    outgoing: &[],
+    desktop: DesktopRequirement::Lock,
 };
 
 /// ModemManager telephony.

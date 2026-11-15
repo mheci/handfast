@@ -4,6 +4,7 @@
 //! others.
 
 pub mod clipboard;
+pub mod lock;
 pub mod mpris;
 pub mod notifications;
 pub mod screensaver;
@@ -13,7 +14,7 @@ pub mod volume;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::traits::{Clipboard, Media, Notifier, Screensaver, Shell, Volume};
+use crate::traits::{Clipboard, Lock, Media, Notifier, Screensaver, Shell, Volume};
 
 /// Whether `program` resolves to a regular file on `PATH`.
 ///
@@ -86,6 +87,12 @@ pub fn shell() -> Arc<dyn Shell> {
 #[must_use]
 pub fn screensaver() -> Arc<dyn Screensaver> {
     Arc::new(screensaver::SystemdInhibitor::new())
+}
+
+/// Build the host session lock backend.
+#[must_use]
+pub fn lock() -> Arc<dyn Lock> {
+    Arc::new(lock::LoginctlLock::new())
 }
 
 #[cfg(test)]

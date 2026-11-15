@@ -71,6 +71,16 @@ pub trait Screensaver: Send + Sync {
     async fn release(&self) -> Result<()>;
 }
 
+/// Desktop session locking.
+///
+/// Lock only. Unlocking is not exposed, so a remote peer can never take over an
+/// unattended session.
+#[async_trait]
+pub trait Lock: Send + Sync {
+    /// Lock the current desktop session.
+    async fn lock(&self) -> Result<()>;
+}
+
 /// Opening URLs and files through the desktop session.
 #[async_trait]
 pub trait Shell: Send + Sync {

@@ -35,6 +35,8 @@ pub enum DesktopRequirement {
     Input,
     /// Screensaver inhibition.
     Screensaver,
+    /// Desktop session locking.
+    Lock,
     /// URL or file opening.
     Shell,
     /// User files or SFTP.
@@ -214,6 +216,7 @@ pub(crate) fn desktop_available(desktop: &Desktop, requirement: DesktopRequireme
         DesktopRequirement::Volume => desktop.volume.is_some(),
         DesktopRequirement::Input => desktop.input.is_some(),
         DesktopRequirement::Screensaver => desktop.screensaver.is_some(),
+        DesktopRequirement::Lock => desktop.lock.is_some(),
         DesktopRequirement::Shell => desktop.shell.is_some(),
         DesktopRequirement::Files => desktop.files.is_some(),
         DesktopRequirement::Telephony

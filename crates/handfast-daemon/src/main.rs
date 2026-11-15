@@ -892,6 +892,9 @@ fn install_backends(
     if available("systemd-inhibit") {
         desktop.screensaver = Some(backends::screensaver());
     }
+    if available("loginctl") {
+        desktop.lock = Some(backends::lock());
+    }
     desktop
 }
 
@@ -930,6 +933,7 @@ mod tests {
                 volume: true,
                 input: false,
                 screensaver: true,
+                lock: true,
                 shell: true,
                 files: false,
             }
@@ -970,6 +974,7 @@ mod tests {
                 "wpctl",
                 &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST][..],
             ),
+            ("loginctl", &[types::LOCK_REQUEST][..]),
         ];
 
         for (tool, accepted) in packets {

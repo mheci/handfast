@@ -10,6 +10,7 @@ pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
 pub mod findthisdevice;
+pub mod lockdevice;
 pub mod mousepad;
 pub mod mpriscontrol;
 pub mod notifications;
@@ -27,6 +28,7 @@ pub use battery::{BatteryFactory, BatteryPlugin};
 pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
 pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
+pub use lockdevice::{LockDeviceFactory, LockDevicePlugin};
 pub use mousepad::{MousepadFactory, MousepadPlugin};
 pub use mpriscontrol::{MprisControlFactory, MprisControlPlugin};
 pub use notifications::{NotificationsFactory, NotificationsPlugin};
@@ -52,6 +54,7 @@ pub fn registry() -> Registry {
         Box::new(findthisdevice::FindThisDeviceFactory),
         Box::new(systemvolume::SystemVolumeFactory),
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
+        Box::new(lockdevice::LockDeviceFactory),
         Box::new(presenter::PresenterFactory),
     ])
 }

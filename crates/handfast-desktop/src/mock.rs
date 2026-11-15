@@ -1,6 +1,7 @@
 //! In-memory desktop backend for contract tests.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -8,7 +9,7 @@ use async_trait::async_trait;
 use crate::error::{DesktopError, Result};
 use crate::files::{FileLimits, Files, FilesError, LocalFiles};
 use crate::model::{KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, VolumeState};
-use crate::traits::{Clipboard, Input, Media, Notifier, Screensaver, Shell, Volume};
+use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
 use crate::Desktop;
 
 /// Recorded synthetic input.
@@ -18,6 +19,28 @@ pub enum InputEvent {
     Pointer(PointerEvent),
     /// Keyboard event.
     Key(KeyEvent),
+}
+
+/// Counts lock calls made through the mock desktop.
+#[derive(Debug, Default)]
+pub struct MockLock {
+    calls: AtomicUsize,
+}
+
+impl MockLock {
+    /// Number of lock calls recorded.
+    #[must_use]
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl Lock for MockLock {
+    async fn lock(&self) -> Result<()> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -37,6 +60,7 @@ pub struct MockDesktop {
     state: Arc<MockState>,
     desktop: Desktop,
     files_root: Option<Arc<tempfile::TempDir>>,
+    lock: Arc<MockLock>,
 }
 
 impl MockDesktop {
@@ -45,6 +69,7 @@ impl MockDesktop {
     pub fn new() -> Self {
         let state = Arc::new(MockState::default());
         let backend = Arc::new(MockBackend(Arc::clone(&state)));
+        let lock = Arc::new(MockLock::default());
         let desktop = Desktop {
             clipboard: Some(Arc::clone(&backend) as Arc<dyn Clipboard>),
             notifier: Some(Arc::clone(&backend) as Arc<dyn Notifier>),
@@ -54,11 +79,13 @@ impl MockDesktop {
             screensaver: Some(Arc::clone(&backend) as Arc<dyn Screensaver>),
             shell: Some(Arc::clone(&backend) as Arc<dyn Shell>),
             files: None,
+            lock: Some(Arc::clone(&lock) as Arc<dyn Lock>),
         };
         Self {
             state,
             desktop,
             files_root: None,
+            lock,
         }
     }
 
@@ -178,6 +205,12 @@ impl MockDesktop {
             .inhibited
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Lock calls recorded by the mock lock adapter.
+    #[must_use]
+    pub fn lock_calls(&self) -> usize {
+        self.lock.calls()
     }
 }
 
@@ -406,7 +439,18 @@ mod tests {
     fn empty_desktop_has_no_capabilities() {
         assert_eq!(Desktop::default().capabilities(), Default::default());
         assert!(MockDesktop::new().desktop().capabilities().clipboard);
+        assert!(MockDesktop::new().desktop().capabilities().lock);
         assert!(!MockDesktop::new().desktop().capabilities().files);
+    }
+
+    #[tokio::test]
+    async fn lock_calls_are_counted() {
+        let desktop = MockDesktop::new();
+        assert_eq!(desktop.lock_calls(), 0);
+        let lock = desktop.desktop().lock.unwrap();
+        lock.lock().await.unwrap();
+        lock.lock().await.unwrap();
+        assert_eq!(desktop.lock_calls(), 2);
     }
 
     #[tokio::test]
