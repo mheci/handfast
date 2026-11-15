@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use handfast_daemon::control::{
     send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus,
 };
+use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::{
     default_data_dir, parse_tcp_port, run, DaemonArgs, DEFAULT_TCP_PORT, SHUTDOWN_GRACE,
 };
@@ -40,6 +41,8 @@ enum Command {
     Share(ShareArgs),
     /// Print the running daemon's status.
     Status(StatusArgs),
+    /// Install and control the per-user autostart service.
+    Service(ServiceArgs),
     /// Print this device's identity packet and exit.
     Identity(IdentityArgs),
     /// Print the version.
@@ -68,6 +71,26 @@ struct IdentityArgs {
     /// TCP port advertised in the packet, in the KDE Connect range 1716-1764.
     #[arg(long, default_value_t = DEFAULT_TCP_PORT, value_parser = parse_tcp_port)]
     tcp_port: u16,
+}
+
+#[derive(Debug, Parser)]
+struct ServiceArgs {
+    #[command(subcommand)]
+    command: ServiceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ServiceCommand {
+    /// Install the per-user autostart service and start it.
+    Install,
+    /// Stop and remove the per-user autostart service.
+    Uninstall,
+    /// Start the installed service.
+    Start,
+    /// Stop the daemon and the service.
+    Stop,
+    /// Print whether the service is installed and running.
+    Status,
 }
 
 fn parse_device_id(value: &str) -> Result<DeviceId, String> {
@@ -104,6 +127,10 @@ fn main() -> ExitCode {
         Command::Status(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_status(args, data_dir)
+        }
+        Command::Service(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_service(args, data_dir)
         }
     }
 }
@@ -257,6 +284,47 @@ fn print_status(status: &DaemonStatus) {
     }
 }
 
+fn run_service(args: ServiceArgs, data_dir: PathBuf) -> ExitCode {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => return fail(error),
+    };
+    let log = data_dir.join("handfast.log");
+    let commands = SystemCommands;
+    let service = match Service::new(exe, data_dir.clone(), log, &commands) {
+        Ok(service) => service,
+        Err(error) => return fail(error),
+    };
+    let control = match LocalControl::new(data_dir) {
+        Ok(control) => control,
+        Err(error) => return fail(error),
+    };
+
+    let result = match args.command {
+        ServiceCommand::Install => service.install(&control).map(|notes| {
+            for note in notes {
+                println!("{note}");
+            }
+        }),
+        ServiceCommand::Uninstall => service.uninstall(),
+        ServiceCommand::Start => service.start(&control),
+        ServiceCommand::Stop => service.stop(&control),
+        ServiceCommand::Status => {
+            let status = service.status(&control);
+            println!("{status}");
+            return if status.running {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(error),
+    }
+}
+
 fn report(result: Result<(), Box<dyn std::error::Error + Send + Sync>>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -296,6 +364,12 @@ fn init_tracing(log_file: Option<&Path>) -> Result<(), Box<dyn std::error::Error
 }
 
 fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     rotate_log(path);
     std::fs::OpenOptions::new()
         .create(true)
