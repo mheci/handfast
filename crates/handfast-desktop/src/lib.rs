@@ -27,7 +27,7 @@ pub use model::{
     KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerEvent, Urgency,
     VolumeState,
 };
-pub use traits::{Clipboard, Input, Media, Notifier, Screensaver, Shell, Volume};
+pub use traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
 
 /// Presence of desktop adapters on the current host.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -44,6 +44,8 @@ pub struct DesktopCapabilities {
     pub input: bool,
     /// Screensaver inhibition is available.
     pub screensaver: bool,
+    /// Desktop session locking is available.
+    pub lock: bool,
     /// URL and file opening is available.
     pub shell: bool,
     /// File receive and send is available.
@@ -65,6 +67,8 @@ pub struct Desktop {
     pub input: Option<Arc<dyn Input>>,
     /// Screensaver adapter.
     pub screensaver: Option<Arc<dyn Screensaver>>,
+    /// Session lock adapter.
+    pub lock: Option<Arc<dyn Lock>>,
     /// Shell integration adapter.
     pub shell: Option<Arc<dyn Shell>>,
     /// File receive and send adapter.
@@ -122,6 +126,13 @@ impl Desktop {
         self
     }
 
+    /// Install a session lock adapter.
+    #[must_use]
+    pub fn with_lock(mut self, lock: Arc<dyn Lock>) -> Self {
+        self.lock = Some(lock);
+        self
+    }
+
     /// Report which adapters are present.
     #[must_use]
     pub fn capabilities(&self) -> DesktopCapabilities {
@@ -132,6 +143,7 @@ impl Desktop {
             volume: self.volume.is_some(),
             input: self.input.is_some(),
             screensaver: self.screensaver.is_some(),
+            lock: self.lock.is_some(),
             shell: self.shell.is_some(),
             files: self.files.is_some(),
         }

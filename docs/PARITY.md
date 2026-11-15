@@ -21,7 +21,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 5 | `digitizer` | phone -> desktop | `kdeconnect.digitizer`, `.digitizer.session` | libei absolute pointer with pressure | P4 | no | no | no |
 | 6 | `findmyphone` | desktop -> phone | `kdeconnect.findmyphone.request` | none | P2 | no | n/a | no |
 | 7 | `findthisdevice` | phone -> desktop | `kdeconnect.findmyphone.request`, `.private.findthisdevice` | `notify-send` | P2 | yes | yes | no |
-| 8 | `lockdevice` | phone -> desktop | `kdeconnect.lock`, `.lock.request` | logind / DBus screensaver | P2 | no | no | no |
+| 8 | `lockdevice` | phone -> desktop | `kdeconnect.lock`, `.lock.request` | `loginctl` | P2 | yes | yes | no |
 | 9 | `mmtelephony` | ModemManager -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | ModemManager DBus | P4 | no | no | no |
 | 10 | `mousepad` | phone -> desktop | `kdeconnect.mousepad.request`, `.echo`, `.keyboardstate` | libei pointer + keyboard | P3 | no | no | no |
 | 11 | `mpriscontrol` | phone -> desktop | `kdeconnect.mpris`, `.mpris.request` | `playerctl` | P2 | yes | yes | no |
