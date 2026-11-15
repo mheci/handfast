@@ -182,13 +182,35 @@ fn hide_console_when_alone() {
     unsafe { ShowWindow(GetConsoleWindow(), SW_HIDE) };
 }
 
-fn open_folder(path: &Path) {
+fn open_command(path: &Path) -> Command {
     #[cfg(windows)]
     let program = "explorer.exe";
     #[cfg(not(windows))]
     let program = "xdg-open";
-    if let Err(error) = Command::new(program).arg(path).spawn() {
-        eprintln!("handfast: cannot open {}: {error}", path.display());
+    let mut command = Command::new(program);
+    command.arg(path);
+    command
+}
+
+fn open_folder(path: &Path) {
+    let mut command = open_command(path);
+    let program = command.get_program().to_owned();
+    match command.spawn() {
+        Ok(mut child) => {
+            // The opener hands off and exits, and a Linux click would otherwise
+            // leave a zombie. The wait runs off the UI thread.
+            std::thread::spawn(move || match child.wait() {
+                Ok(status) if !status.success() => {
+                    eprintln!(
+                        "handfast: {} exited with {status}",
+                        program.to_string_lossy()
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("handfast: cannot reap the opener: {error}"),
+            });
+        }
+        Err(error) => eprintln!("handfast: cannot open {}: {error}", path.display()),
     }
 }
 
@@ -208,13 +230,15 @@ impl HandfastApp {
             self.state = state;
         }
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.header(ui);
-            ui.separator();
-            self.identity(ui);
-            ui.separator();
-            self.devices(ui);
-            ui.separator();
-            self.transfers(ui);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                self.header(ui);
+                ui.separator();
+                self.identity(ui);
+                ui.separator();
+                self.devices(ui);
+                ui.separator();
+                self.transfers(ui);
+            });
         });
     }
 
@@ -481,5 +505,21 @@ mod tests {
                 data_dir.join(LOG_FILE).to_string_lossy().into_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn open_command_uses_the_platform_opener_and_the_folder() {
+        let path = Path::new("/home/me/Downloads/Handfast");
+        let command = open_command(path);
+        #[cfg(windows)]
+        let expected = "explorer.exe";
+        #[cfg(not(windows))]
+        let expected = "xdg-open";
+        assert_eq!(command.get_program(), std::ffi::OsStr::new(expected));
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec![path.to_string_lossy().into_owned()]);
     }
 }
