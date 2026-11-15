@@ -196,6 +196,7 @@ announced to a peer and never receives packets.
 | `Screensaver` | screensaver-inhibit | `systemd-inhibit` | `SetThreadExecutionState` through `keepawake` |
 | `Lock` | lockdevice | `loginctl` | `rundll32.exe user32.dll,LockWorkStation` |
 | `Shell` | share URL | `xdg-open` | `explorer.exe` for http and https |
+| `Power` | battery self-report | `/sys/class/power_supply` | `Win32_Battery` through in-box PowerShell |
 | `Files` | share | `LocalFiles` under the incoming root | `LocalFiles` plus a protected DACL |
 
 Traits return `Result` and are `Send + Sync`. The daemon composes a `Desktop`

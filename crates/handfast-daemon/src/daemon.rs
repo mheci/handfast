@@ -1157,6 +1157,7 @@ fn install_backends(
     if available("loginctl") {
         desktop.lock = Some(backends::lock());
     }
+    desktop.power = Some(backends::power());
     desktop
 }
 
@@ -1267,7 +1268,7 @@ mod tests {
                     types::FINDTHISDEVICE_PRIVATE,
                 ][..],
             ),
-            ("playerctl", &[types::MPRIS_REQUEST, types::TELEPHONY][..]),
+            ("playerctl", &[types::MPRIS_REQUEST][..]),
             (
                 "wpctl",
                 &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST][..],
@@ -1314,6 +1315,25 @@ mod tests {
         ] {
             assert!(capabilities.accepts(packet), "{packet} missing on Windows");
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn telephony_requires_a_notifier() {
+        let registry = registry();
+        let without = install_backends(Desktop::default(), false, |_| false);
+        assert!(!registry
+            .capabilities(&without)
+            .unwrap()
+            .accepts(types::TELEPHONY));
+
+        let with = install_backends(Desktop::default(), false, |program| {
+            program == "notify-send"
+        });
+        assert!(registry
+            .capabilities(&with)
+            .unwrap()
+            .accepts(types::TELEPHONY));
     }
 
     #[cfg(not(windows))]

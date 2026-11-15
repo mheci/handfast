@@ -266,3 +266,9 @@ Parity wave 4, 2026-11-16, same branch:
 - Evidence: plugins 147 pass, daemon 132 pass, clippy clean. The phone-side mute action is still missing and is named in `docs/PARITY.md`.
 - MPRIS `requestVolume` is handled by sending the player state, which includes the volume.
 - CI on `3754865` is fully green: all 10 checks pass. The MPRIS and telephony commits will trigger one more run.
+
+Parity wave 5, 2026-11-16, same branch:
+
+- `battery` is now bidirectional: it sends `battery.request` on connect, reports the host battery, and pushes a change every 60 s. Linux reads `/sys/class/power_supply`; Windows reads `Win32_Battery` through in-box PowerShell. A host with no battery reports `currentCharge: -1`.
+- Evidence: plugins 153 pass, daemon 132 pass, clippy clean. The new `Power` trait has sysfs tests and a PowerShell fake-runner test.
+- CI on `a23c338` failed `test` and `gui` because `kdeconnect.telephony` is now advertised by the telephony plugin with a notifier, not only by pausemusic with playerctl. Fixed by removing TELEPHONY from the playerctl probe case and adding `telephony_requires_a_notifier`.

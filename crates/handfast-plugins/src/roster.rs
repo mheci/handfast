@@ -12,7 +12,7 @@ pub const BATTERY: PluginMeta = PluginMeta {
     title: "Battery monitor",
     status: IMPLEMENTED,
     incoming: &[types::BATTERY],
-    outgoing: &[],
+    outgoing: &[types::BATTERY_REQUEST, types::BATTERY],
     desktop: DesktopRequirement::None,
 };
 
@@ -112,7 +112,7 @@ pub const MOUSEPAD: PluginMeta = PluginMeta {
     desktop: DesktopRequirement::Input,
 };
 
-/// Control desktop media from the phone.
+/// Control desktop media from the phone and publish its player state.
 pub const MPRISCONTROL: PluginMeta = PluginMeta {
     name: "mpriscontrol",
     title: "Multimedia control receiver",
@@ -313,7 +313,7 @@ pub const SYSTEMVOLUME: PluginMeta = PluginMeta {
     desktop: DesktopRequirement::Volume,
 };
 
-/// Incoming call notifications.
+/// Incoming, missed and active call notifications.
 pub const TELEPHONY: PluginMeta = PluginMeta {
     name: "telephony",
     title: "Telephony integration",

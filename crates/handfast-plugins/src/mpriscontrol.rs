@@ -174,7 +174,8 @@ async fn apply(media: &dyn Media, player: &str, request: &Request<'_>) -> Result
     Ok(())
 }
 
-/// Applies MPRIS transport and volume requests to desktop players.
+/// Applies MPRIS transport and volume requests and publishes player state to
+/// the phone.
 #[derive(Debug, Default)]
 pub struct MprisControlPlugin;
 

@@ -60,7 +60,6 @@ pub struct VolumeState {
     /// Whether output is muted.
     pub muted: bool,
 }
-
 impl Default for VolumeState {
     fn default() -> Self {
         Self {
@@ -68,6 +67,15 @@ impl Default for VolumeState {
             muted: false,
         }
     }
+}
+
+/// Host battery state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PowerState {
+    /// Charge percentage, 0-100.
+    pub percent: u8,
+    /// Whether the host is charging.
+    pub charging: bool,
 }
 
 /// Keyboard modifiers for an injected key event.

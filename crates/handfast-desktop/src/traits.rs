@@ -3,7 +3,9 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::model::{KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, VolumeState};
+use crate::model::{
+    KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, PowerState, VolumeState,
+};
 
 /// Text clipboard access.
 #[async_trait]
@@ -86,4 +88,11 @@ pub trait Lock: Send + Sync {
 pub trait Shell: Send + Sync {
     /// Open a URL with the default handler.
     async fn open_url(&self, url: &str) -> Result<()>;
+}
+
+/// Host battery state.
+#[async_trait]
+pub trait Power: Send + Sync {
+    /// Read the host battery, or `None` when the host has no battery.
+    async fn state(&self) -> Result<Option<PowerState>>;
 }

@@ -8,6 +8,7 @@ pub mod clipboard;
 pub mod lock;
 pub mod mpris;
 pub mod notifications;
+pub mod power;
 pub mod screensaver;
 pub mod shell;
 pub mod volume;
@@ -17,7 +18,7 @@ pub mod win;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::traits::{Clipboard, Lock, Media, Notifier, Screensaver, Shell, Volume};
+use crate::traits::{Clipboard, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
 
 /// Whether `program` resolves to a regular file on `PATH`.
 ///
@@ -98,6 +99,12 @@ pub fn lock() -> Arc<dyn Lock> {
     Arc::new(lock::LoginctlLock::new())
 }
 
+/// Build the host battery backend.
+#[must_use]
+pub fn power() -> Arc<dyn Power> {
+    Arc::new(power::SysfsPower::new())
+}
+
 /// Add every Windows backend that does not need an external install to
 /// `desktop`.
 ///
@@ -111,6 +118,7 @@ pub fn windows(mut desktop: crate::Desktop) -> crate::Desktop {
     desktop.lock = Some(Arc::new(win::WinLock::new()));
     desktop.shell = Some(Arc::new(win::ExplorerShell::new()));
     desktop.volume = Some(Arc::new(win::WinVolume::new()));
+    desktop.power = Some(Arc::new(win::WinPower::new()));
     if win::powershell().is_file() {
         desktop.notifier = Some(Arc::new(win::WinNotifier::new()));
         desktop.media = Some(Arc::new(win::WinMedia::new()));

@@ -14,7 +14,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 
 | # | Plugin | Direction | Wire packets | Adapter | Phase | Contract | Backend | E2E |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `battery` | phone -> desktop | `kdeconnect.battery` | none | P0 | yes | n/a | no |
+| 1 | `battery` | bidirectional | `kdeconnect.battery`, `.battery.request` | sysfs; `Win32_Battery` on Windows | P0 | yes | yes | no |
 | 2 | `clipboard` | bidirectional | `kdeconnect.clipboard`, `.clipboard.connect` | `wl-clipboard` on Wayland, `xclip` on X11, `clipboard-win` on Windows | P2 | yes | yes | no |
 | 3 | `connectivity-report` | phone -> desktop | `kdeconnect.connectivity_report`, `.connectivity_report.request` | none | P2 | yes | n/a | no |
 | 4 | `contacts` | phone -> desktop | `kdeconnect.contacts.request_all_uids_timestamps`, `.request_vcards_by_uid`, `.response_uids_timestamps`, `.response_vcards` | vCard store | P2 | no | no | no |

@@ -25,10 +25,10 @@ pub use files::{
 };
 pub use mock::MockDesktop;
 pub use model::{
-    KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerEvent, Urgency,
-    VolumeState,
+    KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerEvent, PowerState,
+    Urgency, VolumeState,
 };
-pub use traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
+pub use traits::{Clipboard, Input, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
 
 /// Presence of desktop adapters on the current host.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -72,6 +72,8 @@ pub struct Desktop {
     pub lock: Option<Arc<dyn Lock>>,
     /// Shell integration adapter.
     pub shell: Option<Arc<dyn Shell>>,
+    /// Host battery adapter.
+    pub power: Option<Arc<dyn Power>>,
     /// File receive and send adapter.
     pub files: Option<Arc<dyn Files>>,
 }

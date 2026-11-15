@@ -15,8 +15,8 @@ use serde::Deserialize;
 use crate::backends::clipboard::{CommandOutput, CommandRunner, TokioRunner};
 use crate::backends::shell::{Spawner, TokioSpawner};
 use crate::error::{DesktopError, Result};
-use crate::model::{MediaAction, Notification, PlaybackState, VolumeState};
-use crate::traits::{Clipboard, Lock, Media, Notifier, Screensaver, Shell, Volume};
+use crate::model::{MediaAction, Notification, PlaybackState, PowerState, VolumeState};
+use crate::traits::{Clipboard, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
 
 /// `%SystemRoot%\System32\<program>`, the only directory a peer-driven tool may
 /// come from.
@@ -864,13 +864,72 @@ impl Volume for WinVolume {
     }
 }
 
+#[derive(Deserialize)]
+struct PowerReply {
+    present: bool,
+    #[serde(default)]
+    percent: u8,
+    #[serde(default)]
+    charging: bool,
+}
+
+/// Host battery state through the in-box Windows PowerShell.
+pub struct WinPower {
+    runner: Arc<dyn CommandRunner>,
+    powershell: PathBuf,
+}
+
+impl WinPower {
+    /// Build a battery adapter that runs the in-box Windows PowerShell.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            runner: Arc::new(TokioRunner),
+            powershell: powershell(),
+        }
+    }
+
+    /// Build a battery adapter over a custom runner.
+    #[must_use]
+    pub fn with_runner(runner: Arc<dyn CommandRunner>, powershell: PathBuf) -> Self {
+        Self { runner, powershell }
+    }
+}
+
+impl Default for WinPower {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Power for WinPower {
+    async fn state(&self) -> Result<Option<PowerState>> {
+        let script = r#"$battery = Get-CimInstance Win32_Battery | Select-Object -First 1
+if (-not $battery) { '{"present":false}'; exit 0 }
+$charging = $battery.BatteryStatus -ne 1 -and $battery.BatteryStatus -ne 4 -and $battery.BatteryStatus -ne 5
+@{ present = $true; percent = [int]$battery.EstimatedChargeRemaining; charging = [bool]$charging } | ConvertTo-Json -Compress
+"#;
+        let stdout = run_script(self.runner.as_ref(), &self.powershell, script).await?;
+        let reply: PowerReply = serde_json::from_slice(&stdout).map_err(|error| {
+            DesktopError::Backend(format!("Windows power returned invalid JSON: {error}"))
+        })?;
+        if !reply.present {
+            return Ok(None);
+        }
+        Ok(Some(PowerState {
+            percent: reply.percent.min(100),
+            charging: reply.charging,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use super::*;
-
     type Call = (String, Vec<String>, Option<Vec<u8>>);
 
     struct FakeRunner {
