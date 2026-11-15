@@ -17,6 +17,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
 use eframe::egui;
+use handfast_proto::DeviceId;
 
 use crate::control::{ControlError, DaemonStatus};
 use crate::service::{DaemonControl, LocalControl};
@@ -41,11 +42,12 @@ fn reduce(result: Result<DaemonStatus, ControlError>) -> DaemonState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum WorkerCommand {
     Start,
     Stop,
     Refresh,
+    PairingDecision { device_id: DeviceId, accept: bool },
 }
 
 fn daemon_command(exe: &Path, data_dir: &Path) -> Command {
@@ -118,6 +120,11 @@ fn worker(
                 }
             }
             Ok(WorkerCommand::Refresh) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(WorkerCommand::PairingDecision { device_id, accept }) => {
+                if let Err(error) = control.pairing_decision(&device_id, accept) {
+                    eprintln!("handfast: cannot answer the pairing request: {error}");
+                }
+            }
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -235,6 +242,8 @@ impl HandfastApp {
                 ui.separator();
                 self.identity(ui);
                 ui.separator();
+                self.pairings(ui);
+                ui.separator();
                 self.devices(ui);
                 ui.separator();
                 self.transfers(ui);
@@ -318,6 +327,48 @@ impl HandfastApp {
             ui.label(status.identity.tcp_port.to_string());
             ui.end_row();
         });
+    }
+
+    fn pairings(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Pairing requests");
+        let Some(status) = running_status(&self.state) else {
+            ui.label("Start the daemon to answer pairing requests.");
+            return;
+        };
+        if status.pending_pairings.is_empty() {
+            ui.label("No pairing requests.");
+            return;
+        }
+        egui::Grid::new("pairings")
+            .num_columns(4)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Name");
+                ui.label("Device ID");
+                ui.label("Fingerprint");
+                ui.label("Answer");
+                ui.end_row();
+                for pairing in &status.pending_pairings {
+                    ui.label(&pairing.device_name);
+                    ui.monospace(pairing.device_id.to_string());
+                    ui.monospace(&pairing.fingerprint);
+                    ui.horizontal(|ui| {
+                        if ui.button("Accept").clicked() {
+                            self.send(WorkerCommand::PairingDecision {
+                                device_id: pairing.device_id.clone(),
+                                accept: true,
+                            });
+                        }
+                        if ui.button("Reject").clicked() {
+                            self.send(WorkerCommand::PairingDecision {
+                                device_id: pairing.device_id.clone(),
+                                accept: false,
+                            });
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
     }
 
     fn devices(&mut self, ui: &mut egui::Ui) {
@@ -415,7 +466,9 @@ fn running_status(state: &DaemonState) -> Option<&DaemonStatus> {
 mod tests {
     use super::*;
 
-    use crate::control::{DeviceSummary, IdentitySummary, PairedDevice, TransferSummary};
+    use crate::control::{
+        DeviceSummary, IdentitySummary, PairedDevice, PairingSummary, TransferSummary,
+    };
     use handfast_proto::DeviceId;
 
     fn device_id() -> DeviceId {
@@ -447,6 +500,11 @@ mod tests {
                 device_type: "phone".to_string(),
                 connected: true,
             }],
+            pending_pairings: vec![PairingSummary {
+                device_id: device_id(),
+                device_name: "Tablet".to_string(),
+                fingerprint: "cd".repeat(32),
+            }],
             transfers: vec![TransferSummary {
                 device_id: device_id(),
                 transfer_id: 7,
@@ -464,6 +522,79 @@ mod tests {
             reduce(Ok(status.clone())),
             DaemonState::Running(Box::new(status))
         );
+    }
+
+    #[test]
+    fn a_pending_pairing_reaches_the_running_view() {
+        let mut status = sample_status();
+        status.pending_pairings = vec![PairingSummary {
+            device_id: device_id(),
+            device_name: "Tablet".to_string(),
+            fingerprint: "cd".repeat(32),
+        }];
+        let DaemonState::Running(status) = reduce(Ok(status)) else {
+            panic!("a status snapshot is a running view");
+        };
+        assert_eq!(status.pending_pairings.len(), 1);
+        assert_eq!(status.pending_pairings[0].device_name, "Tablet");
+        assert_eq!(status.pending_pairings[0].fingerprint, "cd".repeat(32));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_worker_sends_a_pairing_decision() {
+        use crate::control::{ControlResponse, ControlServer, DaemonCommand};
+        use tokio::sync::{mpsc, oneshot};
+
+        let runtime = tempfile::tempdir().expect("a temp runtime dir");
+        std::env::set_var("XDG_RUNTIME_DIR", runtime.path());
+        let data_dir = tempfile::tempdir().expect("a temp data dir");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = ControlServer::start(data_dir.path(), commands)
+            .await
+            .expect("start the control server");
+        let (observed, observed_rx) = oneshot::channel();
+        let script = tokio::spawn(async move {
+            while let Some(command) = command_rx.recv().await {
+                match command {
+                    DaemonCommand::Status { reply } => {
+                        let _ = reply.send(ControlResponse::Status {
+                            status: Box::new(sample_status()),
+                        });
+                    }
+                    DaemonCommand::PairingDecision {
+                        device_id,
+                        accept,
+                        reply,
+                    } => {
+                        let _ = observed.send((device_id, accept));
+                        let _ = reply.send(ControlResponse::Decided);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let (worker, _states) =
+            spawn_worker(PathBuf::from("handfast"), data_dir.path().to_path_buf());
+        worker
+            .send(WorkerCommand::PairingDecision {
+                device_id: device_id(),
+                accept: true,
+            })
+            .expect("the worker is running");
+
+        let (seen, accept) = tokio::time::timeout(Duration::from_secs(5), observed_rx)
+            .await
+            .expect("the worker sends the decision")
+            .expect("the script observes the request");
+        assert_eq!(seen, device_id());
+        assert!(accept);
+
+        drop(worker);
+        server.shutdown().await;
+        script.await.expect("the script joins");
     }
 
     #[test]
