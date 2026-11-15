@@ -3,6 +3,8 @@
 //! [`run`] is the daemon composition root.
 
 pub mod control;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod service;
 
 mod daemon;
@@ -15,6 +17,27 @@ mod session;
 pub use daemon::{parse_tcp_port, run, DaemonArgs, DEFAULT_TCP_PORT, SHUTDOWN_GRACE};
 
 use std::path::PathBuf;
+
+/// What `handfast` does when it is started without a subcommand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoSubcommand {
+    /// Open the GUI window. The `gui` feature is on.
+    Gui,
+    /// Print help to stderr and exit 2. The `gui` feature is off.
+    Help,
+}
+
+/// The no-subcommand rule: a GUI build opens a window, a headless build prints
+/// help. The daemon is never the default, so a typo cannot start a process that
+/// holds the store lock.
+#[must_use]
+pub const fn no_subcommand() -> NoSubcommand {
+    if cfg!(feature = "gui") {
+        NoSubcommand::Gui
+    } else {
+        NoSubcommand::Help
+    }
+}
 
 /// Default state directory.
 ///
@@ -35,4 +58,21 @@ pub fn default_data_dir() -> PathBuf {
         return PathBuf::from(home).join(".local/share/handfast");
     }
     PathBuf::from("handfast-data")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{no_subcommand, NoSubcommand};
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn no_subcommand_opens_the_gui_when_the_feature_is_on() {
+        assert_eq!(no_subcommand(), NoSubcommand::Gui);
+    }
+
+    #[cfg(not(feature = "gui"))]
+    #[test]
+    fn no_subcommand_prints_help_when_the_feature_is_off() {
+        assert_eq!(no_subcommand(), NoSubcommand::Help);
+    }
 }
