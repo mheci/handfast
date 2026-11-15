@@ -10,6 +10,7 @@ pub mod error;
 pub mod files;
 pub mod mock;
 pub mod model;
+pub mod owner;
 pub mod traits;
 #[cfg(windows)]
 pub mod winacl;

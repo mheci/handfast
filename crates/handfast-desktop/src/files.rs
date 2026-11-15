@@ -274,6 +274,10 @@ pub enum FilesError {
     #[error("private temp directory is accessible by other users: {0}")]
     TempPermissions(PathBuf),
 
+    /// The incoming root or private temp directory is owned by another user.
+    #[error("path is not owned by the current user: {0}")]
+    NotOwned(PathBuf),
+
     /// No candidate name fits the filesystem limit.
     #[error("file name is too long: {0}")]
     NameTooLong(String),
@@ -316,6 +320,7 @@ impl LocalFiles {
     ///
     /// # Errors
     /// Fails when the root or temp path exists as a file or symlink, when an
+    /// existing root or temp directory is owned by another user, when an
     /// existing temp directory is group or world accessible on Unix, when a
     /// directory cannot be created, or when the Windows DACL cannot be set.
     pub fn new(root: impl AsRef<Path>, limits: FileLimits) -> Result<Self, FilesError> {
@@ -630,6 +635,9 @@ fn ensure_root(root: &Path) -> Result<(), FilesError> {
             if !metadata.is_dir() {
                 return Err(FilesError::RootNotDirectory(root.to_path_buf()));
             }
+            if !crate::owner::is_owned_by_current_user(root)? {
+                return Err(FilesError::NotOwned(root.to_path_buf()));
+            }
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => create_private_dir(root)?,
         Err(error) => return Err(FilesError::Io(error)),
@@ -645,6 +653,9 @@ fn ensure_temp_dir(temp_dir: &Path) -> Result<(), FilesError> {
             }
             if !metadata.is_dir() {
                 return Err(FilesError::TempNotDirectory(temp_dir.to_path_buf()));
+            }
+            if !crate::owner::is_owned_by_current_user(temp_dir)? {
+                return Err(FilesError::NotOwned(temp_dir.to_path_buf()));
             }
             #[cfg(unix)]
             {
@@ -1548,6 +1559,14 @@ mod tests {
             assert_eq!(report.failed, 2);
             assert!(removable.exists());
         }
+    }
+
+    #[test]
+    fn owned_root_and_temp_dir_pass_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = LocalFiles::new(dir.path().join("incoming"), limits()).unwrap();
+        assert!(crate::owner::is_owned_by_current_user(files.root()).unwrap());
+        assert!(crate::owner::is_owned_by_current_user(files.temp_dir()).unwrap());
     }
 
     #[test]
