@@ -3,7 +3,9 @@ use std::process::ExitCode;
 use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
-use handfast_daemon::control::{send_request, ControlError, ControlRequest, ControlResponse};
+use handfast_daemon::control::{
+    send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus,
+};
 use handfast_daemon::{
     default_data_dir, parse_tcp_port, run, DaemonArgs, DEFAULT_TCP_PORT, SHUTDOWN_GRACE,
 };
@@ -36,6 +38,8 @@ enum Command {
     Daemon(DaemonArgs),
     /// Send a file to a connected device.
     Share(ShareArgs),
+    /// Print the running daemon's status.
+    Status(StatusArgs),
     /// Print this device's identity packet and exit.
     Identity(IdentityArgs),
     /// Print the version.
@@ -50,6 +54,13 @@ struct ShareArgs {
 
     /// Local file to send.
     path: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+struct StatusArgs {
+    /// Print the status as JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -89,6 +100,10 @@ fn main() -> ExitCode {
         Command::Share(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_share(args, data_dir)
+        }
+        Command::Status(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_status(args, data_dir)
         }
     }
 }
@@ -161,6 +176,84 @@ async fn send_share(args: ShareArgs, data_dir: PathBuf) -> Result<(), ControlErr
             Ok(())
         }
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        ControlResponse::Status { .. } | ControlResponse::ShuttingDown => Err(
+            ControlError::Remote("unexpected control response".to_string()),
+        ),
+    }
+}
+
+fn run_status(args: StatusArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(fetch_status(args.json, data_dir)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(error),
+    }
+}
+
+async fn fetch_status(json: bool, data_dir: PathBuf) -> Result<(), ControlError> {
+    match send_request(&data_dir, &ControlRequest::Status).await? {
+        ControlResponse::Status { status } => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                print_status(&status);
+            }
+            Ok(())
+        }
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        ControlResponse::Ok { .. } | ControlResponse::ShuttingDown => Err(ControlError::Remote(
+            "unexpected control response".to_string(),
+        )),
+    }
+}
+
+fn print_status(status: &DaemonStatus) {
+    println!("version: {}", status.version);
+    println!("pid: {}", status.pid);
+    println!("uptime: {}s", status.uptime_secs);
+    println!("device id: {}", status.identity.device_id);
+    println!("device name: {}", status.identity.device_name);
+    println!("device type: {}", status.identity.device_type);
+    println!("fingerprint: {}", status.identity.fingerprint);
+    println!("tcp port: {}", status.identity.tcp_port);
+    println!("incoming dir: {}", status.incoming_dir.display());
+    println!("connected: {}", status.connected.len());
+    for device in &status.connected {
+        println!(
+            "  {}  {}  {}",
+            device.device_id, device.device_name, device.device_type
+        );
+    }
+    println!("paired: {}", status.paired.len());
+    for device in &status.paired {
+        let link = if device.connected {
+            "connected"
+        } else {
+            "offline"
+        };
+        println!(
+            "  {}  {}  {}  {}",
+            device.device_id, device.device_name, device.device_type, link
+        );
+    }
+    println!("transfers: {}", status.transfers.len());
+    for transfer in &status.transfers {
+        let total = transfer
+            .total
+            .map_or_else(|| "?".to_string(), |total| total.to_string());
+        println!(
+            "  {}  {}  {}/{}",
+            transfer.device_id, transfer.transfer_id, transfer.bytes, total
+        );
+    }
+    if status.truncated {
+        println!("truncated: true");
     }
 }
 

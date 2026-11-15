@@ -25,11 +25,14 @@ use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
 use handfast_runtime::{PluginEvent, Registry};
-use handfast_store::Store;
+use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use crate::control::{ControlResponse, ControlServer, DaemonCommand};
+use crate::control::{
+    ControlResponse, ControlServer, DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary,
+    PairedDevice, TransferSummary, MAX_STATUS_DEVICES,
+};
 use crate::default_data_dir;
 use crate::identity;
 use crate::limits::{ShareLimits, STALE_TEMP_AGE};
@@ -121,6 +124,7 @@ pub async fn run(
     args: DaemonArgs,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let started_at = Instant::now();
     let data_dir = args.data_dir.unwrap_or_else(default_data_dir);
     identity::ensure_owned_state_path(&data_dir)?;
     std::fs::create_dir_all(&data_dir)?;
@@ -152,10 +156,8 @@ pub async fn run(
     // The listener is bound before discovery announces, so the announced port
     // is always one this process owns.
     let tls = Arc::new(identity::load_or_generate_tls_identity(&store, &device_id)?);
-    tracing::info!(
-        fingerprint = %tls.fingerprint().to_hex(),
-        "TLS identity loaded"
-    );
+    let fingerprint = tls.fingerprint().to_hex();
+    tracing::info!(fingerprint = %fingerprint, "TLS identity loaded");
     let listener = LinkListener::bind_in_range(args.tcp_port, Arc::clone(&tls)).await?;
     let tcp_port = listener.local_addr()?.port();
     if !(MIN_TCP_PORT..=MAX_TCP_PORT).contains(&tcp_port) {
@@ -203,6 +205,13 @@ pub async fn run(
         capabilities,
         Some(tcp_port),
     );
+    let identity_summary = IdentitySummary {
+        device_id: identity.device_id.clone(),
+        device_name: identity.device_name.as_str().to_string(),
+        device_type: identity.device_type.as_str().to_string(),
+        fingerprint,
+        tcp_port: identity.tcp_port.unwrap_or(tcp_port),
+    };
     let local = Arc::new(LocalEndpoint::new(tls, identity.clone())?);
 
     let mut trust = TrustTable::default();
@@ -295,6 +304,7 @@ pub async fn run(
     let (command_tx, mut command_rx) = mpsc::channel(COMMAND_QUEUE);
     let control = ControlServer::start(&data_dir, command_tx).await?;
 
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
     let mut daemon = Daemon {
         store,
         registry,
@@ -309,6 +319,12 @@ pub async fn run(
         next_prompt: 0,
         prompt_tx,
         prompt_task,
+        started_at,
+        identity: identity_summary,
+        incoming_dir: incoming_dir.clone(),
+        connected: HashMap::new(),
+        transfers: HashMap::new(),
+        shutdown: Some(shutdown_tx),
     };
 
     tokio::pin!(shutdown);
@@ -320,6 +336,10 @@ pub async fn run(
             biased;
             _ = &mut shutdown => {
                 tracing::info!("shutting down");
+                break;
+            }
+            _ = &mut shutdown_rx => {
+                tracing::info!("shutting down on a control request");
                 break;
             }
             event = link_rx.recv() => {
@@ -348,7 +368,7 @@ pub async fn run(
             }
             command = command_rx.recv(), if command_open => {
                 match command {
-                    Some(command) => daemon.handle_command(command),
+                    Some(command) => daemon.handle_command(command).await,
                     None => {
                         tracing::warn!("control command channel stopped");
                         command_open = false;
@@ -386,6 +406,12 @@ struct Daemon {
     next_prompt: u64,
     prompt_tx: mpsc::Sender<pairing::PromptRequest>,
     prompt_task: JoinHandle<()>,
+    started_at: Instant,
+    identity: IdentitySummary,
+    incoming_dir: PathBuf,
+    connected: HashMap<DeviceId, DeviceSummary>,
+    transfers: HashMap<(DeviceId, u64), TransferSummary>,
+    shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl Daemon {
@@ -454,6 +480,15 @@ impl Daemon {
                 let id = device_id.as_str().to_string();
                 let name = peer.device_name.as_str().to_string();
                 let device_type = peer.device_type.as_str().to_string();
+                self.connected.insert(
+                    device_id.clone(),
+                    DeviceSummary {
+                        device_id: device_id.clone(),
+                        device_name: name.clone(),
+                        device_type: device_type.clone(),
+                        connected: true,
+                    },
+                );
                 if let Err(error) = Arc::clone(&self.store)
                     .run_blocking(move |store| {
                         store.record_authenticated_identity(&id, &name, &device_type)
@@ -511,6 +546,10 @@ impl Daemon {
                     .await;
             }
             LinkEvent::Disconnected { device_id, reason } => {
+                self.connected.remove(&device_id);
+                // A mid-transfer disconnect aborts the session without a
+                // ShareFailed, so the row would otherwise stay forever.
+                self.transfers.retain(|(id, _), _| id != &device_id);
                 if let Some(session) = self.sessions.remove(&device_id) {
                     session.handle().stop(reason.clone());
                 }
@@ -613,6 +652,7 @@ impl Daemon {
     async fn handle_daemon_event(&mut self, event: DaemonEvent) {
         match event {
             DaemonEvent::PluginEvents { device_id, events } => {
+                self.record_transfers(&device_id, &events);
                 redact::log_plugin_events(&device_id, &events);
             }
             DaemonEvent::PairingAccepted { device_id, token } => {
@@ -691,32 +731,131 @@ impl Daemon {
         }
     }
 
-    /// Queue one control command. The transfer runs in its own task so a 30 s
-    /// payload accept cannot stall the event loop.
-    fn handle_command(&self, command: DaemonCommand) {
-        let DaemonCommand::Share {
-            device_id,
-            path,
-            reply,
-        } = command;
-        let Some(session) = self.sessions.get(&device_id) else {
-            let _ = reply.send(ControlResponse::Err {
-                message: format!("device {device_id} is not connected"),
+    fn record_transfers(&mut self, device_id: &DeviceId, events: &[PluginEvent]) {
+        for event in events {
+            match event {
+                PluginEvent::ShareProgress {
+                    transfer_id,
+                    bytes,
+                    total,
+                } => {
+                    self.transfers.insert(
+                        (device_id.clone(), *transfer_id),
+                        TransferSummary {
+                            device_id: device_id.clone(),
+                            transfer_id: *transfer_id,
+                            bytes: *bytes,
+                            total: *total,
+                        },
+                    );
+                }
+                PluginEvent::ShareCompleted { transfer_id, .. }
+                | PluginEvent::ShareFailed { transfer_id, .. } => {
+                    self.transfers.remove(&(device_id.clone(), *transfer_id));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn status(&self) -> Result<DaemonStatus, StoreError> {
+        let records = Arc::clone(&self.store)
+            .run_blocking(|store| {
+                let mut records = Vec::new();
+                for (id, _pin) in store.trust_table()? {
+                    if let Some(record) = store.device(&id)? {
+                        records.push(record);
+                    }
+                }
+                Ok(records)
+            })
+            .await?;
+
+        let mut paired = Vec::with_capacity(records.len());
+        for record in records {
+            let device_id =
+                DeviceId::new(&record.id).map_err(|error| StoreError::Data(error.to_string()))?;
+            paired.push(PairedDevice {
+                connected: self.connected.contains_key(&device_id),
+                device_id,
+                device_name: record.name,
+                device_type: record.device_type,
             });
-            return;
-        };
-        let handle = session.handle();
-        tokio::spawn(async move {
-            let response = match handle.share_file(path).await {
-                Ok(outcome) => ControlResponse::Ok {
-                    bytes: outcome.bytes,
-                },
-                Err(error) => ControlResponse::Err {
-                    message: error.to_string(),
-                },
-            };
-            let _ = reply.send(response);
+        }
+        paired.sort_by(|left, right| left.device_id.as_str().cmp(right.device_id.as_str()));
+
+        let mut connected: Vec<DeviceSummary> = self.connected.values().cloned().collect();
+        connected.sort_by(|left, right| left.device_id.as_str().cmp(right.device_id.as_str()));
+
+        let mut transfers: Vec<TransferSummary> = self.transfers.values().cloned().collect();
+        transfers.sort_by(|left, right| {
+            left.device_id
+                .as_str()
+                .cmp(right.device_id.as_str())
+                .then(left.transfer_id.cmp(&right.transfer_id))
         });
+
+        let truncated = connected.len() > MAX_STATUS_DEVICES || paired.len() > MAX_STATUS_DEVICES;
+        connected.truncate(MAX_STATUS_DEVICES);
+        paired.truncate(MAX_STATUS_DEVICES);
+
+        Ok(DaemonStatus {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            pid: std::process::id(),
+            uptime_secs: self.started_at.elapsed().as_secs(),
+            identity: self.identity.clone(),
+            incoming_dir: self.incoming_dir.clone(),
+            connected,
+            paired,
+            transfers,
+            truncated,
+        })
+    }
+
+    async fn handle_command(&mut self, command: DaemonCommand) {
+        match command {
+            DaemonCommand::Share {
+                device_id,
+                path,
+                reply,
+            } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let response = match handle.share_file(path).await {
+                        Ok(outcome) => ControlResponse::Ok {
+                            bytes: outcome.bytes,
+                        },
+                        Err(error) => ControlResponse::Err {
+                            message: error.to_string(),
+                        },
+                    };
+                    let _ = reply.send(response);
+                });
+            }
+            DaemonCommand::Status { reply } => {
+                let response = match self.status().await {
+                    Ok(status) => ControlResponse::Status {
+                        status: Box::new(status),
+                    },
+                    Err(error) => ControlResponse::Err {
+                        message: error.to_string(),
+                    },
+                };
+                let _ = reply.send(response);
+            }
+            DaemonCommand::Shutdown { reply } => {
+                let _ = reply.send(ControlResponse::ShuttingDown);
+                if let Some(shutdown) = self.shutdown.take() {
+                    let _ = shutdown.send(());
+                }
+            }
+        }
     }
 
     /// Remove the prompt handle only when the outcome belongs to the current
@@ -1263,6 +1402,7 @@ mod tests {
         ));
         let (events, mut events_rx) = mpsc::channel(16);
         let (prompt_tx, mut prompt_rx) = mpsc::channel(8);
+        let (shutdown, _shutdown_rx) = oneshot::channel();
         let mut daemon = Daemon {
             store,
             registry,
@@ -1277,6 +1417,18 @@ mod tests {
             next_prompt: 0,
             prompt_tx,
             prompt_task: tokio::spawn(async {}),
+            started_at: Instant::now(),
+            identity: IdentitySummary {
+                device_id: local_id.clone(),
+                device_name: "Daemon test".to_string(),
+                device_type: "desktop".to_string(),
+                fingerprint: "00".repeat(32),
+                tcp_port: 1716,
+            },
+            incoming_dir: directory.path().join("incoming"),
+            connected: HashMap::new(),
+            transfers: HashMap::new(),
+            shutdown: Some(shutdown),
         };
 
         let mut peer_identity = PeerConfig::client();
@@ -1411,6 +1563,151 @@ mod tests {
                 LinkEvent::Disconnected { reason, .. } if reason == "closed by manager"
             ),
             "a share with no session and no pending link closes the link"
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    async fn status_daemon(
+        store: Arc<Store>,
+        directory: &std::path::Path,
+    ) -> (
+        Daemon,
+        LinkManagerHandle,
+        JoinHandle<handfast_net::Result<()>>,
+    ) {
+        use handfast_net::{PayloadLimits, TlsIdentity};
+        use handfast_proto::Capabilities;
+
+        let local_id = DeviceId::new("ffeeddccbbaa99887766554433221100").expect("valid local ID");
+        let tls =
+            Arc::new(TlsIdentity::generate(local_id.clone()).expect("generate the local identity"));
+        let local = Arc::new(
+            LocalEndpoint::new(
+                Arc::clone(&tls),
+                Identity::new(
+                    local_id.clone(),
+                    DeviceName::new("Status test"),
+                    DeviceType::Desktop,
+                    Capabilities::default(),
+                    Some(1716),
+                ),
+            )
+            .expect("the IDs match"),
+        );
+        let listener = LinkListener::bind_in_range(1716, Arc::clone(&tls))
+            .await
+            .expect("bind a listener in the KDE Connect range");
+        let (link_tx, _link_rx) = mpsc::channel(16);
+        let (share_tx, _share_rx) = mpsc::channel(16);
+        let (links, manager_task) = LinkManager::start(
+            listener,
+            local,
+            TrustTable::default(),
+            LinkLimits::default(),
+            link_tx,
+            share_tx,
+        );
+        let (events, _events_rx) = mpsc::channel(16);
+        let (prompt_tx, _prompt_rx) = mpsc::channel(8);
+        let (shutdown, _shutdown_rx) = oneshot::channel();
+        let daemon = Daemon {
+            store,
+            registry: Arc::new(registry()),
+            desktop: Desktop::default(),
+            links: links.clone(),
+            payloads: Arc::new(PayloadService::new(
+                Arc::clone(&tls),
+                PayloadLimits::default(),
+            )),
+            limits: ShareLimits::default(),
+            events,
+            sessions: HashMap::new(),
+            pending: HashMap::new(),
+            prompts: HashMap::new(),
+            next_prompt: 0,
+            prompt_tx,
+            prompt_task: tokio::spawn(async {}),
+            started_at: Instant::now(),
+            identity: IdentitySummary {
+                device_id: local_id,
+                device_name: "Status test".to_string(),
+                device_type: "desktop".to_string(),
+                fingerprint: "00".repeat(32),
+                tcp_port: 1716,
+            },
+            incoming_dir: directory.join("incoming"),
+            connected: HashMap::new(),
+            transfers: HashMap::new(),
+            shutdown: Some(shutdown),
+        };
+        (daemon, links, manager_task)
+    }
+
+    #[tokio::test]
+    async fn status_caps_device_lists_at_128_and_sets_truncated() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        for index in 0..=MAX_STATUS_DEVICES {
+            let id = format!("{index:032x}");
+            store
+                .record_authenticated_identity(&id, "Peer", "phone")
+                .expect("record the paired peer");
+            store
+                .set_trusted(&id, Some([index as u8; 32]))
+                .expect("pin the paired peer");
+        }
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        for index in 0..=MAX_STATUS_DEVICES {
+            let device_id = DeviceId::new(format!("{index:032x}")).expect("a device id");
+            daemon.connected.insert(
+                device_id.clone(),
+                DeviceSummary {
+                    device_id,
+                    device_name: "Peer".to_string(),
+                    device_type: "phone".to_string(),
+                    connected: true,
+                },
+            );
+        }
+
+        let status = daemon.status().await.expect("build the status");
+        assert!(status.truncated, "129 rows in one list set the flag");
+        assert_eq!(status.connected.len(), MAX_STATUS_DEVICES);
+        assert_eq!(status.paired.len(), MAX_STATUS_DEVICES);
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn disconnect_clears_the_device_transfers() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        daemon.transfers.insert(
+            (peer.clone(), 1),
+            TransferSummary {
+                device_id: peer.clone(),
+                transfer_id: 1,
+                bytes: 1024,
+                total: Some(4096),
+            },
+        );
+
+        daemon
+            .handle_link_event(LinkEvent::Disconnected {
+                device_id: peer,
+                reason: "link closed".to_string(),
+            })
+            .await;
+        assert!(
+            daemon.transfers.is_empty(),
+            "a mid-transfer disconnect drops the row"
         );
 
         links.shutdown();

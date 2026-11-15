@@ -1,14 +1,14 @@
 //! Minimal same-user local control channel.
 //!
-//! The channel carries one command, `share`, and one response. Unix uses a
-//! Unix domain socket with a peer-credential check; Windows uses a named pipe
-//! with a current-user DACL. The frame is a 4-byte big-endian length followed
-//! by JSON, capped at 64 KiB.
+//! The channel carries three requests, `share`, `status` and `shutdown`. Unix
+//! uses a Unix domain socket with a peer-credential check; Windows uses a named
+//! pipe with a current-user DACL. The frame is a 4-byte big-endian length
+//! followed by JSON, capped at 64 KiB.
 //!
-//! The server never touches the session map. It forwards a
-//! [`DaemonCommand::Share`] to the daemon event loop and relays the framed
-//! result. The path is validated by `Files::open_outgoing` inside the session,
-//! so a directory or special file fails before a packet is sent.
+//! The server never touches the session map. It forwards a [`DaemonCommand`] to
+//! the daemon event loop and relays the framed result. The path is validated by
+//! `Files::open_outgoing` inside the session, so a directory or special file
+//! fails before a packet is sent.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -36,6 +36,13 @@ pub const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// The message the server writes when the daemon has stopped.
 const DAEMON_SHUT_DOWN: &str = "daemon shut down";
 
+/// Maximum device rows in one status snapshot.
+///
+/// A frame body over [`MAX_FRAME`] fails at `write_frame`, so a device list
+/// that would overflow the frame is capped and reported with
+/// [`DaemonStatus::truncated`].
+pub const MAX_STATUS_DEVICES: usize = 128;
+
 /// One request on the local control channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlRequest {
@@ -46,6 +53,10 @@ pub enum ControlRequest {
         /// Local source path. The daemon validates it.
         path: PathBuf,
     },
+    /// Read one daemon status snapshot.
+    Status,
+    /// Stop the daemon through its bounded shutdown path.
+    Shutdown,
 }
 
 /// One response on the local control channel.
@@ -56,11 +67,95 @@ pub enum ControlResponse {
         /// Bytes written to the payload.
         bytes: u64,
     },
+    /// The daemon status snapshot.
+    Status {
+        /// Boxed so the variant stays small next to `Ok`.
+        status: Box<DaemonStatus>,
+    },
+    /// The daemon accepted the shutdown request.
+    ShuttingDown,
     /// The request failed. The message is safe to print.
     Err {
         /// Failure reason.
         message: String,
     },
+}
+
+/// One daemon status snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonStatus {
+    /// The daemon's crate version.
+    pub version: String,
+    /// Process ID.
+    pub pid: u32,
+    /// Whole seconds since the daemon started.
+    pub uptime_secs: u64,
+    /// This device's public identity.
+    pub identity: IdentitySummary,
+    /// Resolved incoming directory.
+    pub incoming_dir: PathBuf,
+    /// Connected devices, sorted by device ID.
+    pub connected: Vec<DeviceSummary>,
+    /// Paired devices from the store, sorted by device ID.
+    pub paired: Vec<PairedDevice>,
+    /// In-flight transfers, sorted by device ID then transfer ID.
+    pub transfers: Vec<TransferSummary>,
+    /// Whether a device list hit [`MAX_STATUS_DEVICES`].
+    pub truncated: bool,
+}
+
+/// This device's public identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentitySummary {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Display name.
+    pub device_name: String,
+    /// Device type string.
+    pub device_type: String,
+    /// SHA-256 of the DER certificate as hex.
+    pub fingerprint: String,
+    /// Advertised KDE Connect TCP port.
+    pub tcp_port: u16,
+}
+
+/// A connected device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSummary {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Display name.
+    pub device_name: String,
+    /// Device type string.
+    pub device_type: String,
+    /// Whether a link to this device is open. Always `true` in `connected`.
+    pub connected: bool,
+}
+
+/// A paired device from the store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedDevice {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Display name.
+    pub device_name: String,
+    /// Device type string.
+    pub device_type: String,
+    /// Whether a link to this device is open.
+    pub connected: bool,
+}
+
+/// An in-flight transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferSummary {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Transfer identifier assigned by the session.
+    pub transfer_id: u64,
+    /// Bytes moved so far.
+    pub bytes: u64,
+    /// Declared total, or `None` when the peer sent no size.
+    pub total: Option<u64>,
 }
 
 /// One command for the daemon event loop.
@@ -73,6 +168,16 @@ pub enum DaemonCommand {
         /// Local source path.
         path: PathBuf,
         /// Reply sender. The daemon event loop never awaits the transfer.
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Build a status snapshot and reply.
+    Status {
+        /// Reply sender.
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Reply, then complete the daemon's shutdown future.
+    Shutdown {
+        /// Reply sender.
         reply: oneshot::Sender<ControlResponse>,
     },
 }
@@ -277,29 +382,26 @@ async fn dispatch(
     request: ControlRequest,
     commands: mpsc::Sender<DaemonCommand>,
 ) -> ControlResponse {
-    match request {
-        ControlRequest::Share { device_id, path } => {
-            let (reply, reply_rx) = oneshot::channel();
-            if commands
-                .send(DaemonCommand::Share {
-                    device_id,
-                    path,
-                    reply,
-                })
-                .await
-                .is_err()
-            {
-                return ControlResponse::Err {
-                    message: DAEMON_SHUT_DOWN.to_string(),
-                };
-            }
-            match reply_rx.await {
-                Ok(response) => response,
-                Err(_) => ControlResponse::Err {
-                    message: DAEMON_SHUT_DOWN.to_string(),
-                },
-            }
-        }
+    let (reply, reply_rx) = oneshot::channel();
+    let command = match request {
+        ControlRequest::Share { device_id, path } => DaemonCommand::Share {
+            device_id,
+            path,
+            reply,
+        },
+        ControlRequest::Status => DaemonCommand::Status { reply },
+        ControlRequest::Shutdown => DaemonCommand::Shutdown { reply },
+    };
+    if commands.send(command).await.is_err() {
+        return ControlResponse::Err {
+            message: DAEMON_SHUT_DOWN.to_string(),
+        };
+    }
+    match reply_rx.await {
+        Ok(response) => response,
+        Err(_) => ControlResponse::Err {
+            message: DAEMON_SHUT_DOWN.to_string(),
+        },
     }
 }
 
@@ -608,6 +710,41 @@ mod tests {
         }
     }
 
+    fn sample_status() -> DaemonStatus {
+        DaemonStatus {
+            version: "0.2.0".to_string(),
+            pid: 4242,
+            uptime_secs: 17,
+            identity: IdentitySummary {
+                device_id: device_id(),
+                device_name: "Laptop".to_string(),
+                device_type: "desktop".to_string(),
+                fingerprint: "ab".repeat(32),
+                tcp_port: 1716,
+            },
+            incoming_dir: PathBuf::from("/home/me/Downloads"),
+            connected: vec![DeviceSummary {
+                device_id: DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id"),
+                device_name: "Pixel".to_string(),
+                device_type: "phone".to_string(),
+                connected: true,
+            }],
+            paired: vec![PairedDevice {
+                device_id: DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id"),
+                device_name: "Pixel".to_string(),
+                device_type: "phone".to_string(),
+                connected: true,
+            }],
+            transfers: vec![TransferSummary {
+                device_id: DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id"),
+                transfer_id: 7,
+                bytes: 1024,
+                total: Some(4096),
+            }],
+            truncated: false,
+        }
+    }
+
     async fn round_trip<T>(value: &T) -> T
     where
         T: Serialize + DeserializeOwned + Debug + PartialEq,
@@ -634,6 +771,52 @@ mod tests {
             message: "device 0123456789abcdef0123456789abcdef is not connected".to_string(),
         };
         assert_eq!(round_trip(&error).await, error);
+    }
+
+    #[tokio::test]
+    async fn status_and_shutdown_round_trip() {
+        assert_eq!(
+            round_trip(&ControlRequest::Status).await,
+            ControlRequest::Status
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::Shutdown).await,
+            ControlRequest::Shutdown
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::ShuttingDown).await,
+            ControlResponse::ShuttingDown
+        );
+
+        let response = ControlResponse::Status {
+            status: Box::new(sample_status()),
+        };
+        assert_eq!(round_trip(&response).await, response);
+    }
+
+    #[tokio::test]
+    async fn a_full_status_snapshot_fits_one_frame() {
+        let mut status = sample_status();
+        status.connected = (0..MAX_STATUS_DEVICES)
+            .map(|index| DeviceSummary {
+                device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
+                device_name: "Handfast test peer".to_string(),
+                device_type: "phone".to_string(),
+                connected: true,
+            })
+            .collect();
+        status.paired = (0..MAX_STATUS_DEVICES)
+            .map(|index| PairedDevice {
+                device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
+                device_name: "Handfast test peer".to_string(),
+                device_type: "phone".to_string(),
+                connected: index % 2 == 0,
+            })
+            .collect();
+        let response = ControlResponse::Status {
+            status: Box::new(status),
+        };
+        assert_eq!(round_trip(&response).await, response);
     }
 
     #[tokio::test]
