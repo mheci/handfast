@@ -22,7 +22,7 @@ pub const CLIPBOARD: PluginMeta = PluginMeta {
     title: "Clipboard synchronization",
     status: IMPLEMENTED,
     incoming: &[types::CLIPBOARD, types::CLIPBOARD_CONNECT],
-    outgoing: &[],
+    outgoing: &[types::CLIPBOARD, types::CLIPBOARD_CONNECT],
     desktop: DesktopRequirement::Clipboard,
 };
 
@@ -177,8 +177,8 @@ pub const REMOTECOMMANDS: PluginMeta = PluginMeta {
     name: "remotecommands",
     title: "Send commands to execute",
     status: PLANNED,
-    incoming: &[types::RUNCOMMAND_REQUEST],
-    outgoing: &[types::RUNCOMMAND],
+    incoming: &[types::RUNCOMMAND],
+    outgoing: &[types::RUNCOMMAND_REQUEST],
     desktop: DesktopRequirement::Shell,
 };
 
@@ -197,7 +197,7 @@ pub const REMOTEKEYBOARD: PluginMeta = PluginMeta {
     name: "remotekeyboard",
     title: "Send remote keyboard input",
     status: PLANNED,
-    incoming: &[],
+    incoming: &[types::MOUSEPAD_ECHO, types::MOUSEPAD_KEYBOARDSTATE],
     outgoing: &[types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::None,
 };
@@ -247,8 +247,8 @@ pub const SFTP: PluginMeta = PluginMeta {
     name: "sftp",
     title: "Remote filesystem browser",
     status: PLANNED,
-    incoming: &[types::SFTP_REQUEST],
-    outgoing: &[types::SFTP],
+    incoming: &[types::SFTP],
+    outgoing: &[types::SFTP_REQUEST],
     desktop: DesktopRequirement::Files,
 };
 
@@ -267,8 +267,8 @@ pub const SHAREINPUTDEVICES: PluginMeta = PluginMeta {
     name: "shareinputdevices",
     title: "Share input devices",
     status: PLANNED,
-    incoming: &[types::SHAREINPUTDEVICES_REQUEST],
-    outgoing: &[types::SHAREINPUTDEVICES, types::MOUSEPAD_REQUEST],
+    incoming: &[types::SHAREINPUTDEVICES],
+    outgoing: &[types::SHAREINPUTDEVICES_REQUEST, types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::Input,
 };
 
@@ -277,8 +277,8 @@ pub const SHAREINPUTDEVICESREMOTE: PluginMeta = PluginMeta {
     name: "shareinputdevicesremote",
     title: "Receive shared input devices",
     status: PLANNED,
-    incoming: &[types::SHAREINPUTDEVICES, types::MOUSEPAD_REQUEST],
-    outgoing: &[types::SHAREINPUTDEVICES_REQUEST],
+    incoming: &[types::SHAREINPUTDEVICES_REQUEST, types::MOUSEPAD_REQUEST],
+    outgoing: &[types::SHAREINPUTDEVICES],
     desktop: DesktopRequirement::Input,
 };
 
@@ -295,7 +295,6 @@ pub const SMS: PluginMeta = PluginMeta {
         types::SMS_ATTACHMENT_FILE,
     ],
     outgoing: &[
-        types::SMS_MESSAGES,
         types::SMS_REQUEST,
         types::SMS_REQUEST_CONVERSATION,
         types::SMS_REQUEST_CONVERSATIONS,

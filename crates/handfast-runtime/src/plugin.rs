@@ -128,6 +128,12 @@ pub trait Plugin: Send + Sync {
         Ok(PluginOutput::new())
     }
 
+    /// Called on the session timer so a plugin can originate packets from local
+    /// state that has no incoming packet.
+    async fn on_tick(&mut self, _ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
+        Ok(PluginOutput::new())
+    }
+
     /// Handle one inbound packet.
     async fn on_packet(
         &mut self,

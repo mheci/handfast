@@ -1,7 +1,8 @@
-//! Linux desktop backends.
+//! Desktop backends.
 //!
 //! Each backend is independent, so a host missing one capability still gets the
-//! others.
+//! others. Linux adapters run session tools; Windows adapters run in-box
+//! executables by absolute path or wrap a safe crate.
 
 pub mod clipboard;
 pub mod lock;
@@ -10,6 +11,8 @@ pub mod notifications;
 pub mod screensaver;
 pub mod shell;
 pub mod volume;
+#[cfg(windows)]
+pub mod win;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -93,6 +96,26 @@ pub fn screensaver() -> Arc<dyn Screensaver> {
 #[must_use]
 pub fn lock() -> Arc<dyn Lock> {
     Arc::new(lock::LoginctlLock::new())
+}
+
+/// Add every Windows backend that does not need an external install to
+/// `desktop`.
+///
+/// The toast and SMTC adapters need the in-box Windows PowerShell. The others
+/// use System32 executables or a safe crate, so they are always present.
+#[cfg(windows)]
+#[must_use]
+pub fn windows(mut desktop: crate::Desktop) -> crate::Desktop {
+    desktop.clipboard = Some(Arc::new(win::WinClipboard::new()));
+    desktop.screensaver = Some(Arc::new(win::WinScreensaver::new()));
+    desktop.lock = Some(Arc::new(win::WinLock::new()));
+    desktop.shell = Some(Arc::new(win::ExplorerShell::new()));
+    desktop.volume = Some(Arc::new(win::WinVolume::new()));
+    if win::powershell().is_file() {
+        desktop.notifier = Some(Arc::new(win::WinNotifier::new()));
+        desktop.media = Some(Arc::new(win::WinMedia::new()));
+    }
+    desktop
 }
 
 #[cfg(test)]

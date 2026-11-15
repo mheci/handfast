@@ -10,6 +10,11 @@ full at the end of this file.
 | --- | --- | --- | --- |
 | `clipboard-win` | 5.4 | BSL-1.0 | Douman Ash |
 | `error-code` | 3.4 | BSL-1.0 | Douman Ash |
+| `keepawake` | 0.6 | MIT | segevfiner |
+| `volumecontrol-core` | 0.1 | MIT | Touchify |
+| `volumecontrol-windows` | 0.1 | MIT | Touchify |
+| `windows` | 0.62 | MIT OR Apache-2.0 | Microsoft Corporation |
+| `windows-core` | 0.62 | MIT OR Apache-2.0 | Microsoft Corporation |
 | `epaint_default_fonts` | 0.33 | MIT OR Apache-2.0 (crate); font licenses below | Emil Ernerfeldt and egui contributors |
 | Ubuntu Light font | bundled by `epaint_default_fonts` | Ubuntu-font-1.0 | Canonical Ltd. |
 | Hack font | bundled by `epaint_default_fonts` | MIT, with Bitstream Vera terms | Source Foundry Authors, Bitstream Inc. |
@@ -17,8 +22,25 @@ full at the end of this file.
 | emoji-icon-font | bundled by `epaint_default_fonts` | MIT | John Slegers |
 
 `clipboard-win` and `error-code` are compiled into the Windows binary through
-the clipboard backend. The fonts are compiled into the GUI feature through
-`eframe` and `epaint`.
+the clipboard backend. `keepawake`, `volumecontrol-core` and
+`volumecontrol-windows` are compiled into the Windows binary through the
+screensaver and volume backends. `windows` and `windows-core` are compiled into
+the Windows binary through those crates. The fonts are compiled into the GUI
+feature through `eframe` and `epaint`.
+
+## MIT License, Windows backends
+
+Copyright (c) segevfiner (keepawake)
+
+Copyright (c) Touchify (volumecontrol-core, volumecontrol-windows)
+
+Copyright (c) Microsoft Corporation (windows, windows-core)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## Boost Software License 1.0
 

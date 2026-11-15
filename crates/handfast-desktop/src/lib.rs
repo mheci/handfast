@@ -1,7 +1,8 @@
 //! Desktop adapter contracts for Handfast.
 //!
-//! Plugins talk to these traits. Linux backends implement them with D-Bus,
-//! Wayland, PipeWire and libei. Tests use [`MockDesktop`].
+//! Plugins talk to these traits. Linux and Windows backends implement them
+//! with session tools, D-Bus, Wayland, PipeWire and in-box Windows
+//! executables. Tests use [`MockDesktop`].
 
 #![deny(missing_docs)]
 

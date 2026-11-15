@@ -41,6 +41,8 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 /// Byte step that also releases a progress event.
 const PROGRESS_BYTES: u64 = 4 * 1024 * 1024;
 
+const PLUGIN_TICK: Duration = Duration::from_secs(2);
+
 /// An event from a session or a pairing task back to the daemon.
 #[derive(Debug)]
 pub enum DaemonEvent {
@@ -704,6 +706,7 @@ impl TransferRunner {
 enum SessionStep {
     Input(Option<SessionInput>),
     Stop(String),
+    Tick,
     Receive(Option<Result<(), JoinError>>),
     Connect(Option<ConnectJoin>),
     Send(Option<Result<(), JoinError>>),
@@ -755,6 +758,9 @@ async fn run(
         runner.enqueue_all(transfers).await;
     }
 
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + PLUGIN_TICK, PLUGIN_TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let reason = loop {
         if let Some(runner) = runner.as_mut() {
             runner.start_front();
@@ -783,6 +789,7 @@ async fn run(
                     joined = runner.sends.join_next(), if sends_open => {
                         SessionStep::Send(joined)
                     }
+                    _ = tick.tick() => SessionStep::Tick,
                 }
             }
             None => {
@@ -790,6 +797,7 @@ async fn run(
                     biased;
                     reason = next_stop(&mut stop) => SessionStep::Stop(reason),
                     input = input.recv() => SessionStep::Input(input),
+                    _ = tick.tick() => SessionStep::Tick,
                 }
             }
         };
@@ -802,6 +810,13 @@ async fn run(
                     break reason;
                 }
                 handle_input(input, &mut host, &mut runner, &link, &events, &device_id).await;
+            }
+            SessionStep::Tick => {
+                let dispatch = host.tick().await;
+                let transfers = send_dispatch(&link, &events, &device_id, dispatch).await;
+                if let Some(runner) = runner.as_mut() {
+                    runner.enqueue_all(transfers).await;
+                }
             }
             SessionStep::Receive(joined) => {
                 if let Some(runner) = runner.as_mut() {

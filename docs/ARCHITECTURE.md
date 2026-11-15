@@ -15,8 +15,8 @@
 ## Non-goals for v2
 
 - Replacing the Android or iOS clients.
-- Windows and macOS desktop backends. The adapter traits leave room for them,
-  but v2 ships Linux only.
+- macOS desktop backends. The adapter traits leave room for them, but v2 ships
+  Linux and Windows.
 - Cloud relay, accounts or telemetry.
 
 ## Compatibility contract
@@ -50,7 +50,7 @@ production codec must not be the only implementation used to test itself.
 | `handfast-net` | UDP discovery, TCP links, pairing state machine | plugins, desktop |
 | `handfast-runtime` | Plugin trait, registry, per-device host, events, supervision | concrete plugins |
 | `handfast-plugins` | 31-plugin roster and plugin implementations | daemon, UI |
-| `handfast-desktop` | Desktop adapter traits, mock backend, Linux backends | protocol |
+| `handfast-desktop` | Desktop adapter traits, mock backend, Linux and Windows backends | protocol |
 | `handfast-store` | redb tables, settings, device and plugin state | runtime |
 | `handfast-testkit` | Independent wire peer, golden vectors, conformance harness | production codec (dev-dependency only) |
 | `handfast-daemon` | `handfast` composition root and control client | UI |
@@ -186,26 +186,28 @@ announced to a peer and never receives packets.
 
 `handfast-desktop` defines small traits, not one god object:
 
-| Trait | Used by | Linux backend |
-| --- | --- | --- |
-| `Clipboard` | clipboard, share text | `wl-clipboard` (`wl-paste`, `wl-copy`) on Wayland, `xclip` on X11 |
-| `Notifier` | notifications, sendnotifications, findthisdevice | `notify-send`, closed with `gdbus` |
-| `Media` | mpriscontrol, mprisremote, pausemusic | `playerctl` |
-| `Volume` | systemvolume, remotesystemvolume | `wpctl` |
-| `Input` | mousepad, presenter, digitizer, remotecontrol, remotekeyboard | none |
-| `Screensaver` | screensaver-inhibit | `systemd-inhibit` |
-| `Lock` | lockdevice | `loginctl` |
-| `Shell` | share URL | `xdg-open` |
-| `Files` | share | `LocalFiles` under the incoming root |
+| Trait | Used by | Linux backend | Windows backend |
+| --- | --- | --- | --- |
+| `Clipboard` | clipboard, share text | `wl-clipboard` (`wl-paste`, `wl-copy`) on Wayland, `xclip` on X11 | `clipboard-win` |
+| `Notifier` | notifications, sendnotifications, findthisdevice | `notify-send`, closed with `gdbus` | toast through in-box PowerShell |
+| `Media` | mpriscontrol, mprisremote, pausemusic | `playerctl` | SMTC through in-box PowerShell |
+| `Volume` | systemvolume, remotesystemvolume | `wpctl` | WASAPI through `volumecontrol-windows` |
+| `Input` | mousepad, presenter, digitizer, remotecontrol, remotekeyboard | none | none |
+| `Screensaver` | screensaver-inhibit | `systemd-inhibit` | `SetThreadExecutionState` through `keepawake` |
+| `Lock` | lockdevice | `loginctl` | `rundll32.exe user32.dll,LockWorkStation` |
+| `Shell` | share URL | `xdg-open` | `explorer.exe` for http and https |
+| `Files` | share | `LocalFiles` under the incoming root | `LocalFiles` plus a protected DACL |
 
 Traits return `Result` and are `Send + Sync`. The daemon composes a `Desktop`
 from optional adapters. A plugin whose required adapter is missing is not
 advertised on that host. The registry already filters by `Desktop`. `handfast
 daemon` installs the `Files` adapter and, when their CLI tools are present, the
 clipboard, notifications, MPRIS, volume, shell, lock and screensaver adapters.
-Capabilities are recomputed after installation, so the identity advertises only
-the installed adapters. `handfast identity` stays on the default desktop and
-creates nothing.
+On Windows it installs the clipboard, notifications, media, volume, screensaver,
+lock and shell adapters from in-box executables or safe crates; no peer-driven
+tool is resolved through `PATH`. Capabilities are recomputed after installation,
+so the identity advertises only the installed adapters. `handfast identity` stays
+on the default desktop and creates nothing.
 
 `MockDesktop` implements every trait except `Files` with in-memory recording.
 `MockDesktop::with_files` installs a real `LocalFiles` under a temp directory.

@@ -6,16 +6,16 @@ official KDE Connect Android/iOS apps over protocol version 8.
 Status legend:
 
 - **contract**: the v2 plugin implements the packet schema and trait contract.
-- **backend**: the Linux desktop adapter for the plugin exists and is tested.
+- **backend**: the desktop adapter for the plugin exists and is tested.
 - **e2e**: the plugin has been exercised against a real KDE Connect client.
 
 Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 **P3** input and files, **P4** display and advanced.
 
-| # | Plugin | Direction | Wire packets | Linux backend | Phase | Contract | Backend | E2E |
+| # | Plugin | Direction | Wire packets | Adapter | Phase | Contract | Backend | E2E |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `battery` | phone -> desktop | `kdeconnect.battery` | none | P0 | yes | n/a | no |
-| 2 | `clipboard` | phone -> desktop | `kdeconnect.clipboard`, `.clipboard.connect` | `wl-clipboard` on Wayland, `xclip` on X11 | P2 | yes | yes | no |
+| 2 | `clipboard` | bidirectional | `kdeconnect.clipboard`, `.clipboard.connect` | `wl-clipboard` on Wayland, `xclip` on X11, `clipboard-win` on Windows | P2 | yes | yes | no |
 | 3 | `connectivity-report` | phone -> desktop | `kdeconnect.connectivity_report`, `.connectivity_report.request` | none | P2 | yes | n/a | no |
 | 4 | `contacts` | phone -> desktop | `kdeconnect.contacts.request_all_uids_timestamps`, `.request_vcards_by_uid`, `.response_uids_timestamps`, `.response_vcards` | vCard store | P2 | no | no | no |
 | 5 | `digitizer` | phone -> desktop | `kdeconnect.digitizer`, `.digitizer.session` | libei absolute pointer with pressure | P4 | no | no | no |
@@ -53,8 +53,9 @@ virtual monitors, and a few plugins are one-way. v2 matches the desktop half of
 each plugin and does not claim Android-side features the official app does not
 have.
 
-- **Run command**: Android can trigger desktop commands, but the desktop cannot
-  trigger Android commands.
+- **Run command**: the desktop and Android each keep their own command list.
+  `runcommand` executes local commands; `remotecommands` triggers the peer's
+  list.
 - **SMS and contacts**: the phone owns the data. The desktop stores, displays and
   sends requests.
 - **Virtual monitor**: desktop-only; the official Android client has no virtual
@@ -62,6 +63,36 @@ have.
 - **Clipboard images**: the wire protocol carries text. File clipboard entries
   use `kdeconnect.clipboard.file` and are a v2 extension target, not a v1
   requirement.
+
+## Windows 11 backends
+
+The Windows daemon installs every implemented adapter that an in-box tool or a
+safe crate can provide. It never resolves a peer-driven executable through
+`PATH`; each tool is an absolute path under `%SystemRoot%\System32`.
+
+| Capability | Windows path | Notes |
+| --- | --- | --- |
+| Clipboard | `clipboard-win` | In-process text read and write. |
+| Notifications | toast through `powershell.exe` | XML text is escaped; close removes the toast by tag. |
+| Media | SMTC through `powershell.exe` | Play, pause, toggle, stop, next, previous, volume, and now playing. Position is reported when the source publishes it. |
+| Volume | `volumecontrol-windows` | WASAPI default output; percent and mute. |
+| Screensaver | `keepawake` | `SetThreadExecutionState` on a dedicated thread. |
+| Lock | `rundll32.exe user32.dll,LockWorkStation` | Best effort; `rundll32` reports its own status. |
+| Shell | `explorer.exe` | Only `http` and `https` URLs are opened. |
+| Files | `LocalFiles` | The state and incoming directories carry a protected DACL. |
+
+Gaps, named rather than hidden:
+
+- **Input**: no safe Windows backend yet, so `mousepad`, `presenter`, `digitizer`
+  and `shareinputdevices` stay unadvertised on Windows.
+- **Player volume read**: SMTC exposes `TryChangeVolumeAsync` but no per-session
+  volume getter, so `PlaybackState.volume` is `None` on Windows.
+- **Clipboard push**: the session polls every 2 s because the clipboard trait has
+  no change notification. The selection is capped at 256 KiB, and an inbound
+  write is not echoed back.
+- **Toast identity**: the toast uses the `Handfast` AUMID. A Start Menu shortcut
+  carrying `System.AppUserModel.ID=Handfast` is the packaging follow-up if a
+  Windows build drops the toast.
 
 ## Test strategy
 

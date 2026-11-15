@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
-use handfast_desktop::{backends, default_incoming_dir, Desktop, Files, LocalFiles};
+use handfast_desktop::{backends, default_incoming_dir, Desktop, FileLimits, Files, LocalFiles};
 use handfast_net::{
     Discovery, Fingerprint, LinkEvent, LinkHandle, LinkLimits, LinkListener, LinkManager,
     LinkManagerHandle, LocalEndpoint, PayloadService, PeerCertificate, PendingLink, ShareEvent,
@@ -1089,6 +1089,16 @@ fn device_name() -> String {
         .unwrap_or_else(|_| "Handfast desktop".to_string())
 }
 
+#[cfg(windows)]
+fn install_backends(
+    desktop: Desktop,
+    _wayland: bool,
+    _available: impl Fn(&str) -> bool,
+) -> Desktop {
+    backends::windows(desktop)
+}
+
+#[cfg(not(windows))]
 fn install_backends(
     mut desktop: Desktop,
     wayland: bool,
@@ -1125,6 +1135,7 @@ fn install_backends(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
     use handfast_desktop::DesktopCapabilities;
     use handfast_proto::types;
 
@@ -1143,6 +1154,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn available_tools_select_their_backends() {
         let none = install_backends(Desktop::default(), false, |_| false);
@@ -1181,6 +1193,38 @@ mod tests {
         assert!(!xclip_on_wayland.capabilities().clipboard);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_installs_the_in_box_backends() {
+        let desktop = backends::windows(Desktop::default());
+        let capabilities = desktop.capabilities();
+        assert!(capabilities.clipboard);
+        assert!(capabilities.screensaver);
+        assert!(capabilities.lock);
+        assert!(capabilities.shell);
+        assert!(capabilities.volume);
+        if backends::win::powershell().is_file() {
+            assert!(capabilities.notifications);
+            assert!(capabilities.media);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_install_keeps_the_files_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = Arc::new(LocalFiles::new(dir.path(), FileLimits::default()).unwrap());
+        let desktop = Desktop {
+            files: Some(files as Arc<dyn Files>),
+            ..Desktop::default()
+        };
+
+        let installed = install_backends(desktop, false, |_| false);
+
+        assert!(installed.capabilities().files);
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn capabilities_follow_the_installed_adapters() {
         let registry = registry();
@@ -1220,12 +1264,51 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_adapters_advertise_their_packets() {
+        let registry = registry();
+        let capabilities = registry
+            .capabilities(&backends::windows(Desktop::default()))
+            .unwrap();
+        for packet in [
+            types::CLIPBOARD,
+            types::CLIPBOARD_CONNECT,
+            types::NOTIFICATION,
+            types::FINDMYPHONE_REQUEST,
+            types::FINDTHISDEVICE_PRIVATE,
+            types::MPRIS_REQUEST,
+            types::TELEPHONY,
+            types::SYSTEMVOLUME,
+            types::SYSTEMVOLUME_REQUEST,
+            types::LOCK_REQUEST,
+        ] {
+            assert!(capabilities.accepts(packet), "{packet} missing on Windows");
+        }
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn shell_and_screensaver_adapters_add_no_packets() {
         let registry = registry();
         let desktop = install_backends(Desktop::default(), false, |program| {
             program == "xdg-open" || program == "systemd-inhibit"
         });
+        assert!(desktop.capabilities().shell);
+        assert!(desktop.capabilities().screensaver);
+
+        let capabilities = registry.capabilities(&desktop).unwrap();
+        assert!(!capabilities.accepts(types::RUNCOMMAND_REQUEST));
+        assert!(!capabilities.accepts(types::LOCK_REQUEST));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_and_screensaver_add_no_packets() {
+        let registry = registry();
+        let desktop = Desktop::default()
+            .with_shell(Arc::new(backends::win::ExplorerShell::new()))
+            .with_screensaver(Arc::new(backends::win::WinScreensaver::new()));
         assert!(desktop.capabilities().shell);
         assert!(desktop.capabilities().screensaver);
 
