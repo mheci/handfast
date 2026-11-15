@@ -18,7 +18,7 @@ Hardening queue, 2026-11-14:
 - Fourth wave merged: `#254` incoming space reservation, `#255` interop harness nits, `#256` session stop design docs, `#257` share-during-pairing queue, `#258` state path safety, `#259` incoming owner check.
 - P2 feature wave: `lockdevice` `ses_e21d5417effeBpOYO3GdGqBsEi` running, lock-only with a `loginctl` backend.
 - Queued: Windows control pipe token (low, deferred), eager queued-file handshake (held for the manual gate), pairing prompt stale-answer race (low, not started), `p1-share-file.md:782` two-to-three JoinSets docs fix.
-- Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. Then the remaining P2-P4 plugins and backends.
+- Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. The user is running it now; record the evidence and the exit verdict when it returns.
 
 Current state:
 
