@@ -289,6 +289,25 @@ impl SessionHandle {
         }
     }
 
+    /// Queue one outbound packet and wait for room in the session queue.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::Full`] when the queue stays full for the
+    /// delivery timeout, and [`SessionError::Closed`] when the session stopped.
+    pub async fn send_packet(&self, packet: Packet) -> Result<(), SessionError> {
+        match tokio::time::timeout(
+            self.delivery_timeout,
+            self.tx.send(SessionInput::Send(packet)),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(SessionError::Closed),
+            Err(_) => Err(SessionError::Full),
+        }
+    }
+
     /// Queue one outbound file and wait for the payload to finish.
     ///
     /// Waits up to the session delivery timeout for room in the session queue,
@@ -422,6 +441,8 @@ pub enum SessionInput {
     Packet(Packet),
     /// One share packet on the reliable path.
     Share(Packet),
+    /// One outbound packet from the control channel.
+    Send(Packet),
     /// One outbound file share. The session replies exactly once.
     ShareFile {
         /// Local source file.
@@ -858,6 +879,11 @@ async fn handle_input(
             let transfers = send_dispatch(link, events, device_id, dispatch).await;
             if let Some(runner) = runner.as_mut() {
                 runner.enqueue_all(transfers).await;
+            }
+        }
+        SessionInput::Send(packet) => {
+            if let Err(error) = link.send(packet).await {
+                tracing::warn!(%error, "failed to send a control packet");
             }
         }
         SessionInput::ShareFile { path, reply } => match runner.as_mut() {
@@ -1552,6 +1578,44 @@ mod tests {
                 disconnects: Arc::clone(&self.disconnects),
             })
         }
+    }
+
+    #[tokio::test]
+    async fn a_control_packet_reaches_the_link() {
+        let peer = peer_identity();
+        let device_id = peer.device_id.clone();
+        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let link = LinkHandle::from_channel(device_id, link_tx);
+        let (events_tx, _events_rx) = mpsc::channel(8);
+        let session = DeviceSession::start(
+            peer,
+            link,
+            Arc::new(registry()),
+            Desktop::default(),
+            events_tx,
+            SessionLimits::default(),
+        );
+
+        session
+            .handle()
+            .send_packet(Packet::empty(types::FINDMYPHONE_REQUEST).expect("a valid packet"))
+            .await
+            .expect("the session queues the packet");
+
+        let packet = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(packet) = link_rx.recv().await {
+                if packet.ptype == types::FINDMYPHONE_REQUEST {
+                    return packet;
+                }
+            }
+            panic!("the link closed before the ring packet");
+        })
+        .await
+        .expect("the ring reaches the link");
+        assert_eq!(packet.ptype, types::FINDMYPHONE_REQUEST);
+
+        session.handle().stop("test done".to_string());
+        let _ = tokio::time::timeout(Duration::from_secs(5), session.into_task()).await;
     }
 
     #[tokio::test]

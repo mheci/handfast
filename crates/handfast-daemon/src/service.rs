@@ -216,6 +216,27 @@ impl LocalControl {
             )),
         }
     }
+
+    /// Ask a connected device to ring.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no daemon answers, the device is not connected, or the
+    /// response is not an acknowledgement.
+    pub fn ring(&self, device_id: &DeviceId) -> Result<(), ControlError> {
+        let request = ControlRequest::Ring {
+            device_id: device_id.as_str().to_string(),
+        };
+        match self.request(&request)? {
+            ControlResponse::Ok { .. } => Ok(()),
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            ControlResponse::Status { .. }
+            | ControlResponse::ShuttingDown
+            | ControlResponse::Decided => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
+        }
+    }
 }
 
 impl DaemonControl for LocalControl {

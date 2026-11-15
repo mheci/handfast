@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
-use handfast_desktop::{backends, default_incoming_dir, Desktop, FileLimits, Files, LocalFiles};
+use handfast_desktop::{backends, default_incoming_dir, Desktop, Files, LocalFiles};
 use handfast_net::{
     Discovery, Fingerprint, LinkEvent, LinkHandle, LinkLimits, LinkListener, LinkManager,
     LinkManagerHandle, LocalEndpoint, PayloadService, PeerCertificate, PendingLink, ShareEvent,
@@ -890,6 +890,33 @@ impl Daemon {
                     let _ = shutdown.send(());
                 }
             }
+            DaemonCommand::Ring { device_id, reply } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                let packet = match handfast_plugins::findmyphone::findmyphone_packet() {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        let _ = reply.send(ControlResponse::Err {
+                            message: error.to_string(),
+                        });
+                        return;
+                    }
+                };
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let response = match handle.send_packet(packet).await {
+                        Ok(()) => ControlResponse::Ok { bytes: 0 },
+                        Err(error) => ControlResponse::Err {
+                            message: error.to_string(),
+                        },
+                    };
+                    let _ = reply.send(response);
+                });
+            }
             DaemonCommand::PairingDecision {
                 device_id,
                 accept,
@@ -1137,6 +1164,8 @@ fn install_backends(
 mod tests {
     #[cfg(not(windows))]
     use handfast_desktop::DesktopCapabilities;
+    #[cfg(windows)]
+    use handfast_desktop::FileLimits;
     use handfast_proto::types;
 
     use super::*;
@@ -1898,6 +1927,31 @@ mod tests {
             daemon.prompts.contains_key(&peer),
             "the prompt stays until the task reports the outcome"
         );
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_ring_to_an_unknown_device_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::Ring {
+                device_id: peer,
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("is not connected")
+        ));
 
         links.shutdown();
         let _ = manager_task.await;

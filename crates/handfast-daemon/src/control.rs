@@ -57,6 +57,11 @@ pub enum ControlRequest {
     Status,
     /// Stop the daemon through its bounded shutdown path.
     Shutdown,
+    /// Ask a connected device to ring.
+    Ring {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+    },
     /// Accept or reject a pending pairing request.
     PairingDecision {
         /// Device ID shown in the pairing prompt. The daemon validates it.
@@ -200,6 +205,13 @@ pub enum DaemonCommand {
     },
     /// Reply, then complete the daemon's shutdown future.
     Shutdown {
+        /// Reply sender.
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Send the ring request to one connected device and reply.
+    Ring {
+        /// Paired device ID.
+        device_id: DeviceId,
         /// Reply sender.
         reply: oneshot::Sender<ControlResponse>,
     },
@@ -425,6 +437,14 @@ async fn dispatch(
         },
         ControlRequest::Status => DaemonCommand::Status { reply },
         ControlRequest::Shutdown => DaemonCommand::Shutdown { reply },
+        ControlRequest::Ring { device_id } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            DaemonCommand::Ring { device_id, reply }
+        }
         ControlRequest::PairingDecision {
             device_id,
             accept,
@@ -853,6 +873,15 @@ mod tests {
             }
         );
         assert_eq!(
+            round_trip(&ControlRequest::Ring {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+            })
+            .await,
+            ControlRequest::Ring {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+            }
+        );
+        assert_eq!(
             round_trip(&ControlResponse::ShuttingDown).await,
             ControlResponse::ShuttingDown
         );
@@ -1200,6 +1229,63 @@ mod tests {
 
         server.shutdown().await;
         script.await.expect("the script joins");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_ring_request_is_relayed_to_the_daemon() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("handfast.sock");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = start_at(path.clone(), commands)
+            .await
+            .expect("start the control server");
+        let expected = device_id();
+        let script = tokio::spawn(async move {
+            if let Some(DaemonCommand::Ring { device_id, reply }) = command_rx.recv().await {
+                assert_eq!(device_id, expected);
+                let _ = reply.send(ControlResponse::Ok { bytes: 0 });
+            }
+        });
+
+        let request = ControlRequest::Ring {
+            device_id: device_id().as_str().to_string(),
+        };
+        let response = send_to_path(&path, &request)
+            .await
+            .expect("relay the ring request");
+        assert_eq!(response, ControlResponse::Ok { bytes: 0 });
+
+        server.shutdown().await;
+        script.await.expect("the script joins");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_malformed_ring_device_id_is_an_error() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("handfast.sock");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = start_at(path.clone(), commands)
+            .await
+            .expect("start the control server");
+
+        let request = ControlRequest::Ring {
+            device_id: "not-a-device".to_string(),
+        };
+        let response = send_to_path(&path, &request)
+            .await
+            .expect("the boundary replies");
+        assert!(
+            matches!(&response, ControlResponse::Err { message } if message.contains("is not a device ID")),
+            "{response:?}"
+        );
+        assert!(
+            command_rx.try_recv().is_err(),
+            "a malformed device ID never reaches the daemon"
+        );
+
+        server.shutdown().await;
     }
 
     #[cfg(unix)]

@@ -38,6 +38,8 @@ enum Command {
     Share(ShareArgs),
     /// Accept or reject a pending pairing request.
     Pair(PairArgs),
+    /// Ask a connected device to ring.
+    Ring(RingArgs),
     /// Print the running daemon's status.
     Status(StatusArgs),
     /// Install and control the per-user autostart service.
@@ -72,6 +74,13 @@ struct PairArgs {
     /// Reject the pairing request from this device ID.
     #[arg(long, value_name = "DEVICE_ID", group = "answer")]
     reject: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct RingArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
 }
 
 #[derive(Debug, Parser)]
@@ -169,6 +178,10 @@ fn main() -> ExitCode {
         Command::Pair(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_pair(args, data_dir)
+        }
+        Command::Ring(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_ring(args, data_dir)
         }
         Command::Status(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
@@ -303,6 +316,41 @@ fn run_pair(args: PairArgs, data_dir: PathBuf) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => fail(error),
+    }
+}
+
+fn run_ring(args: RingArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_ring(args.device_id, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_ring(device_id: String, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{device_id} is not a device ID"
+        )));
+    }
+    let request = ControlRequest::Ring {
+        device_id: device_id.clone(),
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("ringing {device_id}")),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
     }
 }
 

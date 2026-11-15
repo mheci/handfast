@@ -9,6 +9,7 @@
 pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
+pub mod findmyphone;
 pub mod findthisdevice;
 pub mod lockdevice;
 pub mod mousepad;
@@ -27,6 +28,7 @@ use handfast_runtime::{PluginMeta, Registry};
 pub use battery::{BatteryFactory, BatteryPlugin};
 pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
+pub use findmyphone::{findmyphone_packet, FindMyPhoneFactory, FindMyPhonePlugin};
 pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
 pub use lockdevice::{LockDeviceFactory, LockDevicePlugin};
 pub use mousepad::{MousepadFactory, MousepadPlugin};
@@ -52,6 +54,7 @@ pub fn registry() -> Registry {
         Box::new(mpriscontrol::MprisControlFactory),
         Box::new(notifications::NotificationsFactory),
         Box::new(findthisdevice::FindThisDeviceFactory),
+        Box::new(findmyphone::FindMyPhoneFactory),
         Box::new(systemvolume::SystemVolumeFactory),
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
         Box::new(lockdevice::LockDeviceFactory),

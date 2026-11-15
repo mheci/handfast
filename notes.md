@@ -246,3 +246,10 @@ Parity wave 1, 2026-11-16, branch `feat/parity`:
 - Docs: `docs/ARCHITECTURE.md` now lists Linux and Windows adapters; `docs/PARITY.md` has the Windows table and the named gaps (no Windows input, no player volume read, 2 s clipboard poll, toast AUMID follow-up).
 - Local checks: desktop 133 pass plus 5 ignored real tests, daemon 129 pass, plugins 132 pass, runtime 11 pass, fmt and clippy clean on the changed crates. The release `handfast.exe` builds at 10.99 MB. WiX is not installed locally, so the MSI build is unverified until CI or a release run.
 - Pending: comment review, commit and PR. Then findmyphone, remotesystemvolume, telephony, MPRIS both ways, sendnotifications, runcommand, input, contacts, SMS, sftp, virtualmonitor.
+
+Parity wave 2, 2026-11-16, same branch:
+
+- `findmyphone` is implemented and registered: empty `kdeconnect.findmyphone.request` body, control request `Ring`, `handfast ring <device-id>`, and a Ring button on each connected device in the window.
+- The roster test now accepts an implemented plugin with either an incoming or an outgoing contract; screensaver stays exempt because it is connection-driven.
+- Evidence: plugins 133 pass, daemon lib 131 pass (including a ring-to-an-offline-device error test), bin 4 pass, fmt and clippy clean. The Unix ring CLI test compiles here and runs in CI.
+- PR #272 CI first run: fmt, test, msrv, deny, docs, windows, testkit and fuzz passed; clippy and gui failed on an unused `FileLimits` import that was only used by a Windows test. Fixed by moving the import into the test module.

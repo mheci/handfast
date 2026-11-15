@@ -58,6 +58,9 @@ enum WorkerCommand {
     Start,
     Stop,
     Refresh,
+    Ring {
+        device_id: DeviceId,
+    },
     PairingDecision {
         device_id: DeviceId,
         accept: bool,
@@ -135,6 +138,11 @@ fn worker(
                 }
             }
             Ok(WorkerCommand::Refresh) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(WorkerCommand::Ring { device_id }) => {
+                if let Err(error) = control.ring(&device_id) {
+                    eprintln!("handfast: cannot ring the device: {error}");
+                }
+            }
             Ok(WorkerCommand::PairingDecision {
                 device_id,
                 accept,
@@ -405,13 +413,14 @@ impl HandfastApp {
             return;
         }
         egui::Grid::new("paired")
-            .num_columns(4)
+            .num_columns(5)
             .striped(true)
             .show(ui, |ui| {
                 ui.label("Name");
                 ui.label("Device ID");
                 ui.label("Type");
                 ui.label("Link");
+                ui.label("Actions");
                 ui.end_row();
                 for device in &status.paired {
                     ui.label(&device.device_name);
@@ -422,6 +431,14 @@ impl HandfastApp {
                     } else {
                         "offline"
                     });
+                    if ui
+                        .add_enabled(device.connected, egui::Button::new("Ring"))
+                        .clicked()
+                    {
+                        self.send(WorkerCommand::Ring {
+                            device_id: device.device_id.clone(),
+                        });
+                    }
                     ui.end_row();
                 }
             });
@@ -641,6 +658,58 @@ mod tests {
             seen_fingerprint, row_fingerprint,
             "the row fingerprint travels"
         );
+
+        drop(worker);
+        server.shutdown().await;
+        script.await.expect("the script joins");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_worker_sends_a_ring() {
+        use crate::control::{ControlResponse, ControlServer, DaemonCommand};
+        use tokio::sync::{mpsc, oneshot};
+
+        let _env = ENV_LOCK.lock().await;
+        let runtime = tempfile::tempdir().expect("a temp runtime dir");
+        std::env::set_var("XDG_RUNTIME_DIR", runtime.path());
+        let data_dir = tempfile::tempdir().expect("a temp data dir");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = ControlServer::start(data_dir.path(), commands)
+            .await
+            .expect("start the control server");
+        let (observed, observed_rx) = oneshot::channel();
+        let script = tokio::spawn(async move {
+            while let Some(command) = command_rx.recv().await {
+                match command {
+                    DaemonCommand::Status { reply } => {
+                        let _ = reply.send(ControlResponse::Status {
+                            status: Box::new(sample_status()),
+                        });
+                    }
+                    DaemonCommand::Ring { device_id, reply } => {
+                        let _ = observed.send(device_id);
+                        let _ = reply.send(ControlResponse::Ok { bytes: 0 });
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let (worker, _states) =
+            spawn_worker(PathBuf::from("handfast"), data_dir.path().to_path_buf());
+        worker
+            .send(WorkerCommand::Ring {
+                device_id: device_id(),
+            })
+            .expect("the worker is running");
+
+        let seen = tokio::time::timeout(Duration::from_secs(5), observed_rx)
+            .await
+            .expect("the worker sends the ring")
+            .expect("the script observes the request");
+        assert_eq!(seen, device_id());
 
         drop(worker);
         server.shutdown().await;

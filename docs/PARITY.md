@@ -19,7 +19,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 3 | `connectivity-report` | phone -> desktop | `kdeconnect.connectivity_report`, `.connectivity_report.request` | none | P2 | yes | n/a | no |
 | 4 | `contacts` | phone -> desktop | `kdeconnect.contacts.request_all_uids_timestamps`, `.request_vcards_by_uid`, `.response_uids_timestamps`, `.response_vcards` | vCard store | P2 | no | no | no |
 | 5 | `digitizer` | phone -> desktop | `kdeconnect.digitizer`, `.digitizer.session` | libei absolute pointer with pressure | P4 | no | no | no |
-| 6 | `findmyphone` | desktop -> phone | `kdeconnect.findmyphone.request` | none | P2 | no | n/a | no |
+| 6 | `findmyphone` | desktop -> phone | `kdeconnect.findmyphone.request` | none | P2 | yes | n/a | no |
 | 7 | `findthisdevice` | phone -> desktop | `kdeconnect.findmyphone.request`, `.private.findthisdevice` | `notify-send` | P2 | yes | yes | no |
 | 8 | `lockdevice` | phone -> desktop | `kdeconnect.lock`, `.lock.request` | `loginctl` | P2 | yes | yes | no |
 | 9 | `mmtelephony` | ModemManager -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | ModemManager DBus | P4 | no | no | no |

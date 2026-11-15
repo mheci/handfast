@@ -65,8 +65,8 @@ pub const DIGITIZER: PluginMeta = PluginMeta {
 /// Ring a remote phone.
 pub const FINDMYPHONE: PluginMeta = PluginMeta {
     name: "findmyphone",
-    title: "Find other devices",
-    status: PLANNED,
+    title: "Find my phone",
+    status: IMPLEMENTED,
     incoming: &[],
     outgoing: &[types::FINDMYPHONE_REQUEST],
     desktop: DesktopRequirement::None,
@@ -386,15 +386,15 @@ mod tests {
     }
 
     #[test]
-    fn implemented_plugins_have_an_incoming_contract() {
+    fn implemented_plugins_have_a_contract() {
         for meta in ALL.iter().filter(|meta| meta.status == IMPLEMENTED) {
             if meta.desktop == DesktopRequirement::Screensaver {
                 // Screensaver inhibition is connection-driven and handles no packets.
                 continue;
             }
             assert!(
-                !meta.incoming.is_empty(),
-                "{} is implemented but handles no packets",
+                !meta.incoming.is_empty() || !meta.outgoing.is_empty(),
+                "{} is implemented but has no packet contract",
                 meta.name
             );
         }
