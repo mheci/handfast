@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-daemon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "fs4",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-net"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "handfast-proto",
  "handfast-testkit",
@@ -1523,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-plugins"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "handfast-desktop",
@@ -1535,7 +1535,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1546,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "redb",
  "serde",
@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "handfast-testkit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "handfast-proto",
@@ -4334,7 +4334,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "sha2",
