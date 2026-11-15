@@ -71,9 +71,9 @@ only to the runner's temporary directory and is removed by the `always()` step.
    git push origin v0.3.0
    ```
 
-6. The Release workflow checks the tag against `Cargo.toml`, builds the six
-   assets, signs the Windows files when the secrets are present, writes
-   `SHA256SUMS` and attaches every asset to the GitHub release.
+6. The Release workflow checks the tag against `Cargo.toml`, builds the packages
+   and portable assets, signs the Windows files when the secrets are present,
+   writes `SHA256SUMS` and attaches every asset to the GitHub release.
 
 A manual `workflow_dispatch` run builds and uploads run artifacts. Set
 `sign_windows` to false to build an unsigned MSI without the signing secrets.
@@ -151,9 +151,10 @@ and its pairings.
 The workflow cannot prove these, so run them on the release candidate:
 
 - Install the MSI on Windows 11, open the Start Menu shortcut, confirm the
-  window opens, run `handfast service install` as an administrator, confirm the
-  logon task and the firewall rule, then uninstall. Upgrade 0.3.0 to the next
-  build with the daemon running to exercise `CloseApplication`.
+  window opens, run `handfast service install`, add the printed firewall rule as
+  an administrator, confirm the logon task and the rule, then uninstall. Upgrade
+  0.3.0 to the next build with the daemon running to exercise
+  `CloseApplication`.
 - `dpkg-deb -I` and `dpkg-deb -c` on both debs. Confirm `handfast`, the unit and
   the notices, and no `handfastd`.
 - `makepkg` in an `archlinux` container. Confirm the same file list.
