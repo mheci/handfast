@@ -1,7 +1,4 @@
 //! Lock device plugin.
-//!
-//! Lock only. A remote unlock request is refused, so a paired phone can never
-//! take over an unattended session.
 
 use async_trait::async_trait;
 use handfast_proto::{types, Packet};
@@ -32,7 +29,6 @@ fn warn(message: &str) -> PluginOutput {
     })
 }
 
-/// The requested lock state, sent as a bool or as the strings `true` and `false`.
 fn requested_lock(packet: &Packet) -> Result<bool, ()> {
     match packet.body.get("setLocked") {
         Some(Value::Bool(locked)) => Ok(*locked),
