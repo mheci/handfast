@@ -1,10 +1,16 @@
 use std::time::{Duration, Instant};
 
+use handfast_daemon::control::{send_request, ControlError, ControlRequest, ControlResponse};
 use handfast_daemon::{run, DaemonArgs};
 use tokio::sync::oneshot;
 
+// Both tests scan the fixed KDE Connect TCP range. Run them one at a time so
+// the port probes cannot race each other.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn run_returns_when_the_shutdown_future_completes() {
+    let _serial = SERIAL.lock().await;
     // Keep the control socket under the temp data directory instead of the
     // user's runtime directory.
     std::env::remove_var("XDG_RUNTIME_DIR");
@@ -30,6 +36,49 @@ async fn run_returns_when_the_shutdown_future_completes() {
         .expect("run returns within the shutdown grace")
         .expect("the daemon task joins");
     assert!(result.is_ok(), "the daemon shuts down cleanly: {result:?}");
+}
+
+#[tokio::test]
+async fn run_returns_when_the_control_channel_requests_shutdown() {
+    let _serial = SERIAL.lock().await;
+    std::env::remove_var("XDG_RUNTIME_DIR");
+    let directory = tempfile::tempdir().expect("create the test state directory");
+    let data_dir = directory.path().join("data");
+    let tcp_port = free_tcp_port();
+    let args = DaemonArgs {
+        data_dir: Some(data_dir.clone()),
+        incoming_dir: Some(directory.path().join("incoming")),
+        tcp_port,
+        discovery_port: free_udp_port(),
+        log_file: None,
+        print_identity: false,
+    };
+    let daemon = tokio::spawn(run(args, std::future::pending()));
+
+    wait_for_listener(tcp_port).await;
+    let response = wait_for_shutdown_response(&data_dir).await;
+    assert_eq!(response, ControlResponse::ShuttingDown);
+
+    let result = tokio::time::timeout(Duration::from_secs(6), daemon)
+        .await
+        .expect("run returns within the shutdown grace")
+        .expect("the daemon task joins");
+    assert!(result.is_ok(), "the daemon shuts down cleanly: {result:?}");
+}
+
+/// The control server starts after the TCP listener, so the first request can
+/// arrive before the endpoint exists.
+async fn wait_for_shutdown_response(data_dir: &std::path::Path) -> ControlResponse {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match send_request(data_dir, &ControlRequest::Shutdown).await {
+            Ok(response) => return response,
+            Err(ControlError::NotRunning) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!("the daemon answers the shutdown request: {error}"),
+        }
+    }
 }
 
 async fn wait_for_listener(port: u16) {

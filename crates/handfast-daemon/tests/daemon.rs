@@ -13,6 +13,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use handfast_daemon::control::{
+    send_request, ControlRequest, ControlResponse, DaemonStatus, TransferSummary,
+};
 #[cfg(unix)]
 use handfast_net::Discovery;
 use handfast_net::{
@@ -1099,6 +1102,85 @@ async fn run_share(data_dir: PathBuf, device: String, path: PathBuf) -> std::pro
     .expect("the handfast task joins")
 }
 
+async fn run_status(data_dir: PathBuf, json: bool) -> std::process::Output {
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::task::spawn_blocking(move || {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_handfast"));
+            command
+                .env_remove("XDG_RUNTIME_DIR")
+                .args(["status", "--data-dir"])
+                .arg(&data_dir);
+            if json {
+                command.arg("--json");
+            }
+            command.output().expect("run handfast status")
+        }),
+    )
+    .await
+    .expect("handfast status finishes")
+    .expect("the handfast task joins")
+}
+
+async fn fetch_status(data_dir: &Path) -> DaemonStatus {
+    match send_request(data_dir, &ControlRequest::Status)
+        .await
+        .expect("the daemon answers a status request")
+    {
+        ControlResponse::Status { status } => *status,
+        other => panic!("expected a status response, got {other:?}"),
+    }
+}
+
+async fn wait_for_transfer(data_dir: &Path) -> TransferSummary {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(transfer) = fetch_status(data_dir).await.transfers.into_iter().next() {
+            return transfer;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the status never showed the in-flight transfer"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_no_transfers(data_dir: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if fetch_status(data_dir).await.transfers.is_empty() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the completed transfer stayed in the list"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Write half the payload, signal, and hold the rest until `release` fires, so
+/// the daemon has a transfer in flight long enough to observe.
+async fn serve_half_payload(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    bytes: Vec<u8>,
+    half: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+) -> std::io::Result<u64> {
+    let (tcp, _) = listener.accept().await?;
+    let mut stream = acceptor.accept(tcp).await.map_err(std::io::Error::other)?;
+    let (first, rest) = bytes.split_at(bytes.len() / 2);
+    stream.write_all(first).await?;
+    stream.flush().await?;
+    let _ = half.send(());
+    let _ = release.await;
+    stream.write_all(rest).await?;
+    stream.shutdown().await?;
+    Ok(bytes.len() as u64)
+}
+
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
@@ -1201,6 +1283,101 @@ async fn paired_peer_sends_a_file_and_it_is_committed_atomically() {
         expected.len() as u64
     );
     wait_for_log(&log, "ShareCompleted", &mut daemon).await;
+
+    peer.close().await.expect("close the testkit link");
+    stop(daemon);
+}
+
+#[tokio::test]
+async fn status_reports_identity_devices_and_transfers() {
+    let _serial = serial().await;
+    std::env::remove_var("XDG_RUNTIME_DIR");
+    let directory = tempfile::tempdir().unwrap();
+    let log = directory.path().join("daemon.log");
+    let (daemon, mut peer, config, daemon_id) =
+        spawn_and_pair(directory.path(), &log, free_udp_port()).await;
+    let data_dir = directory.path().to_path_buf();
+
+    let output = run_status(data_dir.clone(), false).await;
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let human = stdout(&output);
+    for line in [
+        format!("pid: {}", daemon.id()),
+        format!("device id: {daemon_id}"),
+        format!("incoming dir: {}", incoming_dir(directory.path()).display()),
+        "connected: 1".to_string(),
+        "paired: 1".to_string(),
+        "transfers: 0".to_string(),
+    ] {
+        assert!(human.contains(&line), "missing {line:?} in:\n{human}");
+    }
+    let paired_row = format!(
+        "  {TEST_PEER_ID}  {}  {}  connected",
+        config.identity.device_name, config.identity.device_type
+    );
+    assert!(
+        human.contains(&paired_row),
+        "the paired row marks the open link:\n{human}"
+    );
+
+    let output = run_status(data_dir.clone(), true).await;
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let status: Value = serde_json::from_slice(&output.stdout).expect("status json");
+    assert_eq!(status["pid"], json!(daemon.id()));
+    assert_eq!(status["identity"]["device_id"], json!(daemon_id));
+    assert_eq!(
+        status["identity"]["fingerprint"].as_str().map(str::len),
+        Some(64),
+        "the fingerprint is a hex SHA-256"
+    );
+    assert_eq!(
+        status["incoming_dir"],
+        json!(incoming_dir(directory.path()))
+    );
+    assert_eq!(status["connected"].as_array().map(Vec::len), Some(1));
+    assert_eq!(status["connected"][0]["device_id"], json!(TEST_PEER_ID));
+    assert_eq!(status["paired"].as_array().map(Vec::len), Some(1));
+    assert_eq!(status["paired"][0]["device_id"], json!(TEST_PEER_ID));
+    assert_eq!(status["paired"][0]["connected"], json!(true));
+    assert_eq!(status["transfers"], json!([]));
+
+    let port = free_payload_port();
+    let (listener, acceptor) = payload_server(&config, port);
+    let bytes: Vec<u8> = (0..10 * 1024 * 1024)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let total = bytes.len() as u64;
+    let (half, half_rx) = oneshot::channel();
+    let (release, release_rx) = oneshot::channel();
+    let send = tokio::spawn(serve_half_payload(
+        listener, acceptor, bytes, half, release_rx,
+    ));
+    peer.send(&share_file_wire("big.bin", total, port))
+        .await
+        .expect("send the share request");
+    tokio::time::timeout(Duration::from_secs(10), half_rx)
+        .await
+        .expect("the payload reaches the halfway point")
+        .expect("the sender signals the halfway point");
+
+    let transfer = wait_for_transfer(&data_dir).await;
+    assert_eq!(transfer.device_id.as_str(), TEST_PEER_ID);
+    assert_eq!(transfer.total, Some(total));
+    assert!(
+        transfer.bytes >= 4 * 1024 * 1024,
+        "a progress event fills the transfer row: {transfer:?}"
+    );
+
+    release.send(()).expect("release the rest of the payload");
+    assert_eq!(
+        send.await
+            .expect("the sender joins")
+            .expect("the payload is sent"),
+        total
+    );
+    let saved = incoming_dir(directory.path()).join("big.bin");
+    wait_for_file(&saved).await;
+    wait_for_no_transfers(&data_dir).await;
 
     peer.close().await.expect("close the testkit link");
     stop(daemon);
