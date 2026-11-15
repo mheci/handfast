@@ -1,5 +1,3 @@
-//! `handfast status` against a live control server.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -15,8 +13,8 @@ use tokio::sync::mpsc;
 const DEVICE: &str = "0123456789abcdef0123456789abcdef";
 const PEER: &str = "fedcba9876543210fedcba9876543210";
 
-// Both tests bind the same control endpoint. Run them one at a time so they
-// never share a socket or pipe instance.
+// Serializes the process-global `XDG_RUNTIME_DIR` change. The Windows pipe is
+// per user, so the two tests must not use the endpoint at the same time.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Serializes the tests and gives each one its own runtime directory on Unix.

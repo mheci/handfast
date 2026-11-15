@@ -726,8 +726,6 @@ impl Daemon {
         }
     }
 
-    /// Fold share progress into the status transfer list. Progress is the only
-    /// source, so a transfer smaller than the progress step never appears.
     fn record_transfers(&mut self, device_id: &DeviceId, events: &[PluginEvent]) {
         for event in events {
             match event {
@@ -755,7 +753,6 @@ impl Daemon {
         }
     }
 
-    /// Build the status snapshot the control channel and the CLI print.
     async fn status(&self) -> Result<DaemonStatus, StoreError> {
         let records = Arc::clone(&self.store)
             .run_blocking(|store| {
@@ -810,8 +807,6 @@ impl Daemon {
         })
     }
 
-    /// Queue one control command. The transfer runs in its own task so a 30 s
-    /// payload accept cannot stall the event loop.
     async fn handle_command(&mut self, command: DaemonCommand) {
         match command {
             DaemonCommand::Share {

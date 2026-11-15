@@ -1160,8 +1160,7 @@ async fn wait_for_no_transfers(data_dir: &Path) {
     }
 }
 
-/// Write half the payload, signal, and hold the rest until `release` fires, so
-/// the daemon has a transfer in flight long enough to observe.
+/// Holds the rest so the daemon has a transfer in flight long enough to observe.
 async fn serve_half_payload(
     listener: TcpListener,
     acceptor: TlsAcceptor,
