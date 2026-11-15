@@ -280,11 +280,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -D dist
+      - name: Add the third-party notices
+        run: cp THIRD-PARTY-NOTICES.md dist/
       - run: cargo run -p xtask -- checksums
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: handfast-checksums
-          path: dist/SHA256SUMS
+          path: |
+            dist/SHA256SUMS
+            dist/THIRD-PARTY-NOTICES.md
           if-no-files-found: error
 
   publish:

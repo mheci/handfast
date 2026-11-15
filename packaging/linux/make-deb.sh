@@ -31,7 +31,9 @@ Version: ${version}
 Section: net
 Priority: optional
 Architecture: ${arch}
-Depends: libc6 (>= ${glibc}), libgcc-s1
+Depends: libc6 (>= ${glibc}), libgcc-s1, libegl1, libgl1,
+ libwayland-client0, libwayland-cursor0, libwayland-egl1, libx11-6,
+ libxcursor1, libxi6, libxkbcommon0, libxkbcommon-x11-0, libxrandr2
 Conflicts: handfastd
 Replaces: handfastd
 Provides: handfastd

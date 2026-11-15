@@ -56,7 +56,14 @@ enum Task {
         out: PathBuf,
     },
     /// Copy the portable binary and build the host's native package.
-    Package,
+    Package {
+        /// Minimum glibc version for the host's deb package.
+        #[arg(long)]
+        glibc: Option<String>,
+        /// Distribution label for the host's deb package.
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Write `dist/SHA256SUMS` over every other file in `dist/`.
     Checksums,
 }
@@ -86,7 +93,9 @@ fn run(task: &Task) -> bool {
             out,
         } => deb(version.as_deref(), glibc, label, out),
         Task::Msi { out } => msi(out),
-        Task::Package => portable() && native_package(),
+        Task::Package { glibc, label } => {
+            portable() && native_package(glibc.as_deref(), label.as_deref())
+        }
         Task::Checksums => checksums(),
         Task::Check => false,
         _ => run_cargo(task),
@@ -255,13 +264,19 @@ fn wix_tool(name: &str) -> PathBuf {
 }
 
 #[cfg(windows)]
-fn native_package() -> bool {
+fn native_package(_glibc: Option<&str>, _label: Option<&str>) -> bool {
     msi(Path::new("dist"))
 }
 
 #[cfg(unix)]
-fn native_package() -> bool {
-    deb(None, "2.36", "debian12", Path::new("dist"))
+fn native_package(glibc: Option<&str>, label: Option<&str>) -> bool {
+    let (Some(glibc), Some(label)) = (glibc, label) else {
+        eprintln!(
+            "pass --glibc and --label for the host's deb, for example --glibc 2.39 --label ubuntu24.04"
+        );
+        return false;
+    };
+    deb(None, glibc, label, Path::new("dist"))
 }
 
 fn portable() -> bool {

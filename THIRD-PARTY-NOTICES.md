@@ -48,6 +48,8 @@ DEALINGS IN THE SOFTWARE.
 
 ## SIL Open Font License 1.1
 
+Noto Emoji font: Copyright 2013 Google Inc. All Rights Reserved.
+
 This Font Software is licensed under the SIL Open Font License,
 Version 1.1.
 
@@ -142,6 +144,8 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ## Ubuntu Font Licence 1.0
+
+Ubuntu Light font: Copyright 2010 Canonical Ltd.
 
 -------------------------------
 UBUNTU FONT LICENCE Version 1.0
