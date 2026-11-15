@@ -183,12 +183,10 @@ pub async fn write<W: AsyncWrite + Unpin>(writer: &mut W, packet: &WirePacket) -
     Ok(())
 }
 
-/// Maximum plaintext hello line accepted by the peer, matching Android's
-/// `readLineBounded` cap.
+/// Maximum plaintext hello line accepted by the peer.
 pub const MAX_HELLO_LINE: usize = 512 * 1024;
 
-/// Maximum link packet line accepted by the peer, matching the 1 MiB packet
-/// policy.
+/// Maximum link packet line accepted by the peer.
 pub const MAX_LINK_LINE: usize = 1024 * 1024;
 
 /// Encode a packet as one compact JSON line terminated by `\n`.

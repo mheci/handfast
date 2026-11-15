@@ -129,6 +129,18 @@ async fn dial_testkit(
     (link, peer)
 }
 
+#[test]
+fn production_and_testkit_line_caps_agree() {
+    assert_eq!(
+        handfast_net::MAX_HELLO_LINE,
+        handfast_testkit::frame::MAX_HELLO_LINE
+    );
+    assert_eq!(
+        handfast_net::MAX_LINK_LINE,
+        handfast_testkit::frame::MAX_LINK_LINE
+    );
+}
+
 #[tokio::test]
 async fn listener_completes_a_full_link_with_a_pinned_testkit_dialer() {
     let local = local_endpoint(HANDFAST_ID);
@@ -823,8 +835,11 @@ async fn listener_closes_a_peer_that_sends_an_oversized_line() {
     drop(reader);
     drop(writer);
     let _ = send.await;
-    assert!(
-        matches!(error, NetError::Proto(ProtoError::LineTooLarge { .. })),
-        "{error}"
-    );
+    match error {
+        NetError::Proto(ProtoError::LineTooLarge { size, max }) => {
+            assert!(size > MAX_LINK_LINE, "{size}");
+            assert_eq!(max, MAX_LINK_LINE);
+        }
+        other => panic!("{other}"),
+    }
 }

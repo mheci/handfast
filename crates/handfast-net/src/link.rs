@@ -437,15 +437,16 @@ impl LinkWriter {
 }
 
 /// Maximum plaintext hello line, matching Android's `readLineBounded` cap.
-const MAX_HELLO_LINE: usize = 512 * 1024;
+pub const MAX_HELLO_LINE: usize = 512 * 1024;
 
-/// Maximum packet line after the hello, matching the 1 MiB packet policy.
-const MAX_LINK_LINE: usize = 1024 * 1024;
+/// Maximum packet line accepted after the hello.
+pub const MAX_LINK_LINE: usize = 1024 * 1024;
 
 /// Write one compact JSON line.
 ///
-/// Android's `NetworkPacket.serialize()` appends `\n` and `LanLink.sendPacket`
-/// writes those bytes with no length prefix.
+/// Android's `NetworkPacket.serialize()` appends `\n`. The hello is written by
+/// `LanLinkProvider` and every later packet by `LanLink.sendPacket`, both with
+/// no length prefix.
 async fn send_line<W: AsyncWrite + Unpin>(
     writer: &mut W,
     line: &mut Vec<u8>,
@@ -459,7 +460,7 @@ async fn send_line<W: AsyncWrite + Unpin>(
         line.clear();
         return Err(error.into());
     }
-    let size = line.len() + 1;
+    let size = line.len();
     if size > max {
         *line = Vec::with_capacity(capacity);
         return Err(line_too_large(size, max));
@@ -471,9 +472,6 @@ async fn send_line<W: AsyncWrite + Unpin>(
 }
 
 /// Write the plaintext hello as one compact JSON line.
-///
-/// Android's `NetworkPacket.serialize()` appends `\n` and `LanLinkProvider`
-/// writes those bytes with no length prefix.
 async fn write_hello<W: AsyncWrite + Unpin>(writer: &mut W, packet: &Packet) -> Result<()> {
     let mut line = Vec::new();
     send_line(writer, &mut line, packet, MAX_HELLO_LINE).await
@@ -508,7 +506,7 @@ async fn read_line_unbuffered<R: AsyncRead + Unpin>(reader: &mut R, max: usize) 
             break;
         }
         if line.len() >= max {
-            return Err(line_too_large(max + 1, max));
+            return Err(line_too_large(line.len() + 1, max));
         }
         line.push(byte[0]);
     }
@@ -632,7 +630,7 @@ mod tests {
     use serde_json::json;
     use tokio::io::AsyncReadExt;
 
-    /// The phone's first bytes, from `NetworkPacket.serialize()`.
+    /// Shaped like the phone's plaintext hello line.
     const ANDROID_HELLO_LINE: &str = concat!(
         r#"{"id":0,"type":"kdeconnect.identity","body":{"deviceId":"fedcba9876543210fedcba9876543210","#,
         r#""deviceName":"Pixel","deviceType":"phone","incomingCapabilities":["kdeconnect.ping"],"#,
@@ -640,14 +638,14 @@ mod tests {
         r#""targetDeviceId":"00112233445566778899aabbccddeeff","targetProtocolVersion":"8"}}"#,
     );
 
-    /// The phone's secure identity line, from `NetworkPacket.serialize()`.
+    /// Shaped like the phone's secure identity line.
     const ANDROID_IDENTITY_LINE: &str = concat!(
         r#"{"id":0,"type":"kdeconnect.identity","body":{"deviceId":"fedcba9876543210fedcba9876543210","#,
         r#""deviceName":"Pixel","deviceType":"phone","incomingCapabilities":["kdeconnect.ping"],"#,
         r#""outgoingCapabilities":["kdeconnect.ping"],"protocolVersion":8,"tcpPort":1716}}"#,
     );
 
-    /// The desktop connection packet, from `toConnectionPacket`.
+    /// Shaped like the desktop connection packet.
     const DESKTOP_HELLO_LINE: &str = concat!(
         r#"{"id":0,"type":"kdeconnect.identity","body":{"deviceId":"fedcba9876543210fedcba9876543210","#,
         r#""deviceName":"Desktop","protocolVersion":8,"#,
@@ -771,10 +769,13 @@ mod tests {
         let error = read_hello(&mut server, &LinkLimits::default())
             .await
             .expect_err("an over-cap hello line is rejected");
-        assert!(
-            matches!(error, NetError::Proto(ProtoError::LineTooLarge { .. })),
-            "{error}"
-        );
+        match error {
+            NetError::Proto(ProtoError::LineTooLarge { size, max }) => {
+                assert_eq!(size, MAX_HELLO_LINE + 1);
+                assert_eq!(max, MAX_HELLO_LINE);
+            }
+            other => panic!("{other}"),
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -958,10 +959,13 @@ mod tests {
         let error = send_line(&mut client, &mut line, &packet, MAX_LINK_LINE)
             .await
             .expect_err("the line limit rejects the packet");
-        assert!(
-            matches!(error, NetError::Proto(ProtoError::LineTooLarge { .. })),
-            "{error}"
-        );
+        match error {
+            NetError::Proto(ProtoError::LineTooLarge { size, max }) => {
+                assert!(size > MAX_LINK_LINE, "{size}");
+                assert_eq!(max, MAX_LINK_LINE);
+            }
+            other => panic!("{other}"),
+        }
         assert!(line.is_empty(), "no partial line stays in the buffer");
 
         drop(client);

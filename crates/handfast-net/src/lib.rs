@@ -25,7 +25,10 @@ pub use error::{NetError, Result, TlsError};
 pub use identity::{
     Fingerprint, LocalEndpoint, PeerCertificate, PeerTrust, TlsIdentity, TrustTable,
 };
-pub use link::{connect, Link, LinkLimits, LinkListener, LinkReader, LinkWriter, LinkedPeer};
+pub use link::{
+    connect, Link, LinkLimits, LinkListener, LinkReader, LinkWriter, LinkedPeer, MAX_HELLO_LINE,
+    MAX_LINK_LINE,
+};
 pub use manager::{
     is_unpaired_allowed, LinkEvent, LinkHandle, LinkManager, LinkManagerHandle, PendingLink,
     ShareEvent, SHARE_EVENT_QUEUE,
