@@ -34,7 +34,6 @@ fn device_id() -> DeviceId {
     DeviceId::new(DEVICE).expect("a valid device id")
 }
 
-/// Run `handfast ring` with the arguments after the subcommand name.
 async fn run_cli(env: &TestEnv, data_dir: &Path, args: &[&str]) -> std::process::Output {
     let data_dir = data_dir.to_path_buf();
     let runtime = env.runtime.path().to_path_buf();

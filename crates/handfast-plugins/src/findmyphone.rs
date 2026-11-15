@@ -8,17 +8,10 @@ use handfast_runtime::{
 
 use crate::roster;
 
-/// Rings a device on demand.
+/// Advertises the find-my-phone capability; the control channel sends the
+/// request.
 #[derive(Debug, Default)]
 pub struct FindMyPhonePlugin;
-
-impl FindMyPhonePlugin {
-    /// Create a find-my-phone plugin.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
 
 #[async_trait]
 impl Plugin for FindMyPhonePlugin {
@@ -45,7 +38,7 @@ impl PluginFactory for FindMyPhoneFactory {
     }
 
     fn create(&self) -> Box<dyn Plugin> {
-        Box::new(FindMyPhonePlugin::new())
+        Box::new(FindMyPhonePlugin)
     }
 }
 
@@ -53,7 +46,7 @@ impl PluginFactory for FindMyPhoneFactory {
 ///
 /// # Errors
 ///
-/// Fails only if the packet body cannot be constructed.
+/// Fails when the packet type is malformed.
 pub fn findmyphone_packet() -> Result<Packet, ProtoError> {
     Packet::empty(types::FINDMYPHONE_REQUEST)
 }

@@ -1,9 +1,9 @@
 //! Minimal same-user local control channel.
 //!
-//! The channel carries four requests, `share`, `status`, `shutdown` and
-//! `pairing decision`. Unix uses a Unix domain socket with a peer-credential
-//! check; Windows uses a named pipe with a current-user DACL. The frame is a
-//! 4-byte big-endian length followed by JSON, capped at 64 KiB.
+//! The channel carries same-user requests from the CLI and the window. Unix
+//! uses a Unix domain socket with a peer-credential check; Windows uses a named
+//! pipe with a current-user DACL. The frame is a 4-byte big-endian length
+//! followed by JSON, capped at 64 KiB.
 //!
 //! The server never touches the session map. It forwards a [`DaemonCommand`] to
 //! the daemon event loop and relays the framed result. The path is validated by
@@ -77,9 +77,9 @@ pub enum ControlRequest {
 /// One response on the local control channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlResponse {
-    /// The transfer completed.
+    /// The request completed.
     Ok {
-        /// Bytes written to the payload.
+        /// Bytes written to the payload, or 0 when the request carries none.
         bytes: u64,
     },
     /// The daemon status snapshot.
@@ -210,9 +210,7 @@ pub enum DaemonCommand {
     },
     /// Send the ring request to one connected device and reply.
     Ring {
-        /// Paired device ID.
         device_id: DeviceId,
-        /// Reply sender.
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Answer one open pairing prompt and reply.

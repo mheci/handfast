@@ -298,7 +298,7 @@ impl SessionHandle {
     pub async fn send_packet(&self, packet: Packet) -> Result<(), SessionError> {
         match tokio::time::timeout(
             self.delivery_timeout,
-            self.tx.send(SessionInput::Send(packet)),
+            self.tx.send(SessionInput::SendControl(packet)),
         )
         .await
         {
@@ -441,8 +441,7 @@ pub enum SessionInput {
     Packet(Packet),
     /// One share packet on the reliable path.
     Share(Packet),
-    /// One outbound packet from the control channel.
-    Send(Packet),
+    SendControl(Packet),
     /// One outbound file share. The session replies exactly once.
     ShareFile {
         /// Local source file.
@@ -881,7 +880,7 @@ async fn handle_input(
                 runner.enqueue_all(transfers).await;
             }
         }
-        SessionInput::Send(packet) => {
+        SessionInput::SendControl(packet) => {
             if let Err(error) = link.send(packet).await {
                 tracing::warn!(%error, "failed to send a control packet");
             }
