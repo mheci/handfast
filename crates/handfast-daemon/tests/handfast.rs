@@ -161,18 +161,30 @@ fn data_dir_is_global_before_and_after_the_subcommand() {
 
 #[test]
 fn version_prints_the_package_version() {
-    let expected = format!("handfast {}", env!("CARGO_PKG_VERSION"));
+    let expected = format!(
+        "handfast {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        env!("HANDFAST_TARGET")
+    );
     let subcommand = handfast(&["version"]);
     assert!(
         subcommand.status.success(),
         "stderr: {}",
         stderr(&subcommand)
     );
-    assert_eq!(stdout(&subcommand).trim(), expected);
+    assert_eq!(
+        stdout(&subcommand).trim(),
+        expected,
+        "version prints the target triple the updater picks an asset with"
+    );
 
     let flag = handfast(&["--version"]);
     assert!(flag.status.success(), "stderr: {}", stderr(&flag));
-    assert_eq!(stdout(&flag).trim(), expected);
+    assert_eq!(
+        stdout(&flag).trim(),
+        format!("handfast {}", env!("CARGO_PKG_VERSION")),
+        "--version keeps the clap default"
+    );
 }
 
 #[cfg(unix)]
