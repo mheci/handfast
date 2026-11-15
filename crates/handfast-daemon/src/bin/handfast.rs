@@ -114,7 +114,6 @@ fn parse_device_id(value: &str) -> Result<DeviceId, String> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    // A crashed update leaves the previous exe beside the current one.
     if let Ok(exe) = std::env::current_exe() {
         let _ = handfast_daemon::update::cleanup_old(&exe);
     }

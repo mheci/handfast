@@ -2,9 +2,10 @@
 //!
 //! [`Updater::check`] reads the latest GitHub release and compares its `vX.Y.Z`
 //! tag with this build's version. [`Updater::apply`] downloads the bare binary
-//! for this target, checks it against `SHA256SUMS` and the Authenticode
-//! signature, then replaces the running executable with a rename pair so a
-//! crash leaves a state the next start finishes.
+//! for this target, checks it against `SHA256SUMS` and, on Windows, its
+//! Authenticode signature, then replaces the running executable with a rename
+//! pair so a crash leaves a state the next start finishes. On Unix the
+//! same-release SHA-256 is the whole check.
 //!
 //! The network and the signature check sit behind [`ReleaseSource`] and
 //! [`SignatureVerifier`], so the tests never touch a real release.
@@ -20,6 +21,11 @@ use ureq::ResponseExt;
 
 use crate::control::ControlError;
 use crate::service::{DaemonControl, Service, STOP_TIMEOUT};
+
+#[cfg(not(windows))]
+mod unix;
+#[cfg(windows)]
+mod windows;
 
 /// The repository the updater reads releases from.
 pub const REPO: &str = "mheci/handfast";
@@ -48,11 +54,8 @@ const STOP_POLL: Duration = Duration::from_millis(100);
 /// A release version, compared by its numeric triple only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version {
-    /// First component.
     pub major: u64,
-    /// Second component.
     pub minor: u64,
-    /// Third component.
     pub patch: u64,
 }
 
@@ -93,12 +96,9 @@ fn parse_component(part: Option<&str>, tag: &str) -> Result<u64, UpdateError> {
 }
 
 /// This build's version, from the package metadata.
-///
-/// # Errors
-///
-/// Fails when `CARGO_PKG_VERSION` is not `X.Y.Z`, which no build produces.
-pub fn current_version() -> Result<Version, UpdateError> {
-    Version::parse_tag(env!("CARGO_PKG_VERSION"))
+#[must_use]
+pub fn current_version() -> Version {
+    Version::parse_tag(env!("CARGO_PKG_VERSION")).expect("cargo sets a semver package version")
 }
 
 /// The release asset name for a target triple, with the platform's exe suffix.
@@ -121,7 +121,6 @@ pub struct Asset {
 pub struct Release {
     /// The `vX.Y.Z` tag.
     pub tag: String,
-    /// Published assets.
     pub assets: Vec<Asset>,
 }
 
@@ -132,8 +131,6 @@ impl Release {
         self.assets.iter().find(|asset| asset.name == name)
     }
 
-    /// Parse the tag.
-    ///
     /// # Errors
     ///
     /// Fails when the tag is not `vX.Y.Z`.
@@ -166,7 +163,6 @@ pub struct GitHub {
 }
 
 impl GitHub {
-    /// Build a client with the update deadline.
     #[must_use]
     pub fn new() -> Self {
         let config = ureq::Agent::config_builder()
@@ -258,74 +254,14 @@ pub struct Authenticode;
 impl SignatureVerifier for Authenticode {
     fn verify(&self, path: &Path) -> Result<(), UpdateError> {
         #[cfg(windows)]
-        return verify_authenticode(path);
+        {
+            windows::verify(path)
+        }
         #[cfg(not(windows))]
         {
-            let _ = path;
-            Ok(())
+            unix::verify(path)
         }
     }
-}
-
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn verify_authenticode(path: &Path) -> Result<(), UpdateError> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null_mut;
-
-    use windows_sys::Win32::Security::WinTrust::{
-        WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0,
-        WINTRUST_FILE_INFO, WTD_CHOICE_FILE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE,
-        WTD_STATEACTION_VERIFY, WTD_UI_NONE,
-    };
-
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
-    let mut file_info = WINTRUST_FILE_INFO {
-        cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
-        pcwszFilePath: wide.as_ptr(),
-        hFile: null_mut(),
-        pgKnownSubject: null_mut(),
-    };
-    let mut data = WINTRUST_DATA {
-        cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
-        pPolicyCallbackData: null_mut(),
-        pSIPClientData: null_mut(),
-        dwUIChoice: WTD_UI_NONE,
-        fdwRevocationChecks: WTD_REVOKE_NONE,
-        dwUnionChoice: WTD_CHOICE_FILE,
-        Anonymous: WINTRUST_DATA_0 {
-            pFile: &mut file_info,
-        },
-        dwStateAction: WTD_STATEACTION_VERIFY,
-        hWVTStateData: null_mut(),
-        pwszURLReference: null_mut(),
-        dwProvFlags: 0,
-        dwUIContext: 0,
-        pSignatureSettings: null_mut(),
-    };
-    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    let status = unsafe {
-        WinVerifyTrust(
-            null_mut(),
-            &mut action,
-            (&mut data as *mut WINTRUST_DATA).cast(),
-        )
-    };
-    data.dwStateAction = WTD_STATEACTION_CLOSE;
-    unsafe {
-        WinVerifyTrust(
-            null_mut(),
-            &mut action,
-            (&mut data as *mut WINTRUST_DATA).cast(),
-        );
-    }
-    if status == 0 {
-        return Ok(());
-    }
-    Err(UpdateError::Signature(format!(
-        "WinVerifyTrust returned 0x{status:08x} for {}",
-        path.display()
-    )))
 }
 
 /// The parsed `SHA256SUMS` table.
@@ -448,16 +384,12 @@ pub fn cleanup_old(exe: &Path) -> io::Result<()> {
 /// What `update check` found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
-    /// The running version.
     pub current: Version,
-    /// The latest published version.
     pub latest: Version,
-    /// The asset this target would download.
     pub asset: String,
 }
 
 impl Check {
-    /// Whether the latest release is newer than this build.
     #[must_use]
     pub fn update_available(&self) -> bool {
         self.latest > self.current
@@ -481,9 +413,7 @@ impl std::fmt::Display for Check {
 /// What `update apply` installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied {
-    /// The installed version.
     pub version: Version,
-    /// The asset that was installed.
     pub asset: String,
     /// Whether the daemon was running and was started again.
     pub restarted: bool,
@@ -499,7 +429,6 @@ impl std::fmt::Display for Applied {
     }
 }
 
-/// One update run over a release source, a signature check and the daemon.
 pub struct Updater<'a> {
     source: &'a dyn ReleaseSource,
     verifier: &'a dyn SignatureVerifier,
@@ -508,7 +437,6 @@ pub struct Updater<'a> {
 }
 
 impl<'a> Updater<'a> {
-    /// Describe an update run.
     #[must_use]
     pub fn new(
         source: &'a dyn ReleaseSource,
@@ -577,7 +505,6 @@ impl<'a> Updater<'a> {
         })
     }
 
-    /// A refusal removes the temp file and leaves the current exe alone.
     fn prepare(&self, asset: &Asset, sums: &Asset, temp: &Path) -> Result<(), UpdateError> {
         match self.download_verified(asset, sums, temp) {
             Ok(()) => Ok(()),
@@ -614,8 +541,6 @@ impl<'a> Updater<'a> {
         Ok(())
     }
 
-    /// Stop the daemon and wait for its endpoint to close. Returns whether it
-    /// was running.
     fn stop_daemon(&self) -> Result<bool, UpdateError> {
         match self.control.status() {
             Ok(_) => {}
@@ -643,7 +568,7 @@ impl<'a> Updater<'a> {
 
 fn check_release(release: &Release) -> Result<Check, UpdateError> {
     Ok(Check {
-        current: current_version()?,
+        current: current_version(),
         latest: release.version()?,
         asset: asset_name(env!("HANDFAST_TARGET")),
     })
@@ -692,10 +617,8 @@ fn set_executable(_path: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// Swap the downloaded file into the executable's place.
-///
 /// The running exe is renamed aside first, so a process that keeps its mapped
-/// image keeps running. A failed second rename rolls the first one back.
+/// image keeps running.
 fn replace(exe: &Path, temp: &Path) -> Result<(), UpdateError> {
     let old = old_path(exe);
     match std::fs::remove_file(&old) {
@@ -733,23 +656,18 @@ fn rename_retry(from: &Path, to: &Path) -> Result<(), UpdateError> {
 /// Why an update was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
-    /// A filesystem or stream operation failed.
     #[error("update io: {0}")]
     Io(#[from] io::Error),
 
-    /// The release body is not valid JSON.
     #[error("update json: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// The tag is not `vX.Y.Z`.
     #[error("update version: {0} is not vX.Y.Z")]
     Version(String),
 
-    /// The request failed.
     #[error("update http: {0}")]
     Http(String),
 
-    /// The host is not on the allowlist.
     #[error("{0} is not an allowed update host")]
     Host(String),
 
@@ -757,73 +675,49 @@ pub enum UpdateError {
     #[error("update url: {0}")]
     Url(String),
 
-    /// The release does not publish a required file.
     #[error("the release has no {0} asset")]
     MissingAsset(String),
 
-    /// `SHA256SUMS` has no line for the asset.
     #[error("{SUMS_ASSET} has no line for {0}")]
     MissingSum(String),
 
-    /// `SHA256SUMS` lists one name twice.
     #[error("{SUMS_ASSET} lists {0} twice")]
     Duplicate(String),
 
-    /// A `SHA256SUMS` line is malformed.
     #[error("{SUMS_ASSET} is malformed: {0}")]
     Sums(String),
 
-    /// The downloaded bytes do not match the published digest.
     #[error("the checksum for {0} does not match the download")]
     Checksum(String),
 
-    /// The platform signature check failed.
     #[error("the signature check failed: {0}")]
     Signature(String),
 
-    /// The executable's directory cannot take a new file.
     #[error("cannot write to {directory}: {hint}", directory = .directory.display(), hint = package_manager_hint())]
-    NotWritable {
-        /// The directory that refused the write.
-        directory: PathBuf,
-    },
+    NotWritable { directory: PathBuf },
 
-    /// The current build is not older than the release.
     #[error("handfast {current} is not older than the latest release {latest}")]
-    NotNewer {
-        /// The running version.
-        current: Version,
-        /// The latest published version.
-        latest: Version,
-    },
+    NotNewer { current: Version, latest: Version },
 
-    /// The download is over the cap.
     #[error("the download exceeds {0} bytes")]
     TooLarge(u64),
 
-    /// The daemon kept answering after the shutdown request.
     #[error("the daemon did not stop within {0:?}")]
     DaemonRunning(Duration),
 
-    /// A previous `handfast.old` cannot be removed.
     #[error(
         "cannot remove {}: close the previous Handfast process and retry",
         .0.display()
     )]
     OldBusy(PathBuf),
 
-    /// A rename failed after every retry.
     #[error("cannot rename {} to {}: {message}", from.display(), to.display())]
     Rename {
-        /// The source path.
         from: PathBuf,
-        /// The target path.
         to: PathBuf,
-        /// The last OS error.
         message: String,
     },
 
-    /// The update installed but the daemon did not start again.
     #[error("the update installed but the daemon did not restart: {0}")]
     Restart(String),
 
@@ -1067,10 +961,7 @@ mod tests {
         assert_eq!(check.asset, name);
         assert_eq!(
             check.to_string(),
-            format!(
-                "update available: {} -> 99.0.0 ({name})",
-                current_version().expect("a version")
-            )
+            format!("update available: {} -> 99.0.0 ({name})", current_version())
         );
     }
 
