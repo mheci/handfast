@@ -40,7 +40,7 @@ jobs:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     name: test
@@ -52,8 +52,8 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo test --workspace --all-features --all-targets
-      - run: cargo test --workspace --all-features --doc
+      - run: cargo test --workspace --all-targets
+      - run: cargo test --workspace --doc
 
   msrv:
     name: msrv (1.90)
@@ -65,7 +65,7 @@ jobs:
         with:
           toolchain: 1.90.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo check --locked --workspace --all-features
+      - run: cargo check --locked --workspace
 
   deny:
     name: deny
@@ -87,7 +87,25 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo doc --workspace --no-deps --all-features
+      - run: cargo doc --workspace --no-deps
+
+  gui:
+    name: gui
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # eframe builds winit, glutin and accesskit. These are the X11 and
+      # Wayland development packages those backends need on ubuntu-latest.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - run: cargo check -p handfast-daemon --features gui
+      - run: cargo test -p handfast-daemon --features gui --lib
 
   windows:
     name: windows (build)
