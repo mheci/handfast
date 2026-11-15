@@ -319,7 +319,7 @@ pub const TELEPHONY: PluginMeta = PluginMeta {
     title: "Telephony integration",
     status: IMPLEMENTED,
     incoming: &[types::TELEPHONY],
-    outgoing: &[types::TELEPHONY_REQUEST_MUTE],
+    outgoing: &[],
     desktop: DesktopRequirement::Notifications,
 };
 
