@@ -6,8 +6,9 @@
 2. Wire compatibility with KDE Connect protocol version 8 and the official
    Android/iOS apps.
 3. One Rust workspace, one async runtime, one plugin model.
-4. Rust-only test and release tooling. No Python peer, no shell packaging
-   scripts in the critical path.
+4. Rust-first test and release tooling. No Python peer. `xtask` owns every
+   release task; the deb tree comes from `packaging/linux/make-deb.sh`, because
+   `dpkg-deb` is the tool that builds the package either way.
 5. A CI that is fast, deterministic and honest: every required job is a real
    gate.
 
@@ -256,8 +257,11 @@ wire protocol's newline JSON. Requests are idempotent; events are broadcast.
   `TlsIdentity` drops.
 - File transfers reject absolute paths, `..`, symlink escapes and reserved names.
 - Run commands are opt-in, stored as argv arrays, never shell-interpolated.
-- The daemon runs as a user service with `NoNewPrivileges`, `ProtectSystem=strict`
-  and a restricted address family set.
+- The daemon runs as a per-user service, never as SYSTEM or root: a systemd user
+  unit with `NoNewPrivileges=yes` and
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, or a Task Scheduler logon
+  task at least privilege. The desktop adapters need the user's session bus, the
+  user's state directory and the user's Downloads folder.
 
 ### Windows state-file and incoming-file ACLs
 
@@ -344,19 +348,39 @@ in the roadmap.
 ## Release packaging
 
 A tag matching the workspace version runs `.github/workflows/release.yml`.
-The tag must match `[workspace.package] version`, for example
-`v0.2.0`. The workflow builds native packages in the target
-environment:
+The tag must match `[workspace.package] version`, for example `v0.3.0`. Every
+job builds the same `handfast` binary with `cargo run -p xtask -- build`, which
+is `cargo build --release --locked -p handfast-daemon --features gui`. The
+workflow builds native packages in the target environment:
 
-- Debian 12 amd64 `.deb` in `rust:1.90-bookworm`.
-- Ubuntu 24.04 amd64 `.deb` on `ubuntu-24.04`.
-- Arch Linux x86_64 `handfastd-bin` `.pkg.tar.zst` in `archlinux:latest`.
-- Windows 11 x64 `.msi` with WiX, built with the static CRT.
+- Debian 12 amd64 `handfast_<version>_debian12_amd64.deb` in
+  `rust:1.90-bookworm`.
+- Ubuntu 24.04 amd64 `handfast_<version>_ubuntu24.04_amd64.deb` on
+  `ubuntu-24.04`.
+- Arch Linux x86_64 `handfast-bin-<version>-1-x86_64.pkg.tar.zst` in
+  `archlinux:latest`.
+- Windows 11 x64 `handfast-<version>-x64.msi` with WiX, built with the static
+  CRT.
+- Portable `handfast-x86_64-unknown-linux-gnu` and
+  `handfast-x86_64-pc-windows-msvc.exe` for `handfast update`.
 
-The Windows job signs `handfastd.exe` and the MSI when the signing secrets are
+The Linux packages install `/usr/bin/handfast`, the systemd user unit at
+`/usr/lib/systemd/user/handfast.service`, and the license and third-party
+notices under `/usr/share/doc/handfast` or `/usr/share/licenses/handfast-bin`.
+They conflict with, replace and provide the retired `handfastd` package names.
+The MSI installs per user under `%LOCALAPPDATA%\Handfast`, adds a Start Menu
+shortcut that runs `handfast gui`, and carries the 0.2.0 `UpgradeCode`. It does
+not run `service install`, because a per-user MSI cannot add the firewall rule
+and a failing custom action would fail the install. The user runs
+`handfast service install` once, which prints the administrator `netsh` command
+when the rule is missing.
+
+The Windows job signs `handfast.exe` and the MSI when the signing secrets are
 configured, verifies both signatures and otherwise publishes an unsigned MSI.
-The `publish` job attaches every asset to the GitHub release. The required
-secrets and the install commands are in [RELEASING.md](RELEASING.md).
+The 0.3.0 Windows updater refuses an unsigned asset, so a signed release is
+required for self-update. The `checksums` job writes `SHA256SUMS` over every
+asset, and the `publish` job attaches all of them to the GitHub release. The
+required secrets and the install commands are in [RELEASING.md](RELEASING.md).
 
 ## Migration
 
@@ -372,6 +396,13 @@ secrets and the install commands are in [RELEASING.md](RELEASING.md).
   certificate and fingerprint.
 - A stored identity is never regenerated. A corrupt record, a CN mismatch or a
   device ID that disagrees with `settings_v1` is a fatal startup error.
+- 0.3.0 replaces `handfastd` and `hfctl` with one `handfast` binary and renames
+  the control endpoint. The store schema, the data directory and the device
+  identity do not change, so a 0.3.0 daemon opens a 0.2.0 `state.db` and keeps
+  its pairings. The deb and Arch packages conflict with, replace and provide the
+  old names. The MSI is per user from 0.3.0 and keeps the 0.2.0 `UpgradeCode`,
+  but Windows Installer cannot upgrade a per-machine product from a per-user
+  package without elevation, so the 0.2.0 MSI is uninstalled once by hand.
 - No v1 source is copied into v2. Protocol behavior is re-derived from the KDE
   protocol reference and the official client behavior.
 
