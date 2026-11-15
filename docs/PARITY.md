@@ -42,7 +42,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 26 | `shareinputdevices` | desktop -> remote | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input capture + forwarding | P4 | no | no | no |
 | 27 | `shareinputdevicesremote` | remote -> desktop | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input injection | P4 | no | no | no |
 | 28 | `sms` | bidirectional | `kdeconnect.sms.messages`, `.sms.request`, `.sms.request_conversation`, `.sms.request_conversations`, `.sms.request_attachment`, `.sms.attachment_file` | phone-owned data, desktop UI | P2 | no | no | no |
-| 29 | `systemvolume` | phone -> desktop | `kdeconnect.systemvolume`, `.systemvolume.request` | `wpctl` | P2 | yes | yes | no |
+| 29 | `systemvolume` | bidirectional | `kdeconnect.systemvolume`, `.systemvolume.request` | `wpctl` | P2 | yes | yes | no |
 | 30 | `telephony` | phone -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | `notify-send`; toast on Windows | P2 | yes | yes | no |
 | 31 | `virtualmonitor` | phone -> desktop | `kdeconnect.virtualmonitor`, `.virtualmonitor.request` | Wayland virtual-output protocol | P4 | no | no | no |
 

@@ -272,3 +272,8 @@ Parity wave 5, 2026-11-16, same branch:
 - `battery` is now bidirectional: it sends `battery.request` on connect, reports the host battery, and pushes a change every 60 s. Linux reads `/sys/class/power_supply`; Windows reads `Win32_Battery` through in-box PowerShell. A host with no battery reports `currentCharge: -1`.
 - Evidence: plugins 153 pass, daemon 132 pass, clippy clean. The new `Power` trait has sysfs tests and a PowerShell fake-runner test.
 - CI on `a23c338` failed `test` and `gui` because `kdeconnect.telephony` is now advertised by the telephony plugin with a notifier, not only by pausemusic with playerctl. Fixed by removing TELEPHONY from the playerctl probe case and adding `telephony_requires_a_notifier`.
+
+Parity wave 6, 2026-11-16, same branch:
+
+- `systemvolume` now pushes its sink list on connect instead of sending `requestSinks`, which is the remotesystemvolume direction. The roster outgoing drops `SYSTEMVOLUME_REQUEST`; the plugin still answers a peer's `requestSinks` and applies volume and mute requests.
+- Evidence: plugins 153 pass, clippy clean. The old `on_connect_requests_the_sink_list` test was replaced by `on_connect_pushes_the_current_sink`.

@@ -309,7 +309,7 @@ pub const SYSTEMVOLUME: PluginMeta = PluginMeta {
     title: "Receive volume controls",
     status: IMPLEMENTED,
     incoming: &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST],
-    outgoing: &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST],
+    outgoing: &[types::SYSTEMVOLUME],
     desktop: DesktopRequirement::Volume,
 };
 
