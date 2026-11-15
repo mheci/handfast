@@ -21,8 +21,10 @@ Hardening queue, 2026-11-14:
 - P1 gate progress, 2026-11-15, real Android: discovery works, TLS 1.2 completes, secure identity and pairing work with `#261` at `fd1ecea`. Outbound `hfctl share` sent 46 bytes to the phone successfully. Inbound photo `IMG-20261112-WA0002.jpeg` (2,493,278 bytes) committed. Ping events arrive and are logged; Windows has no notification backend, so no toast. The phone redials on every 5 s announcement and Handfast replaces the session, so a fix pauses announcements while a link is active. Remaining: stable-link ping, restart reuse, empty/large/cancel/two-file, reject/unpair, changed certificate, desktop client, and the Windows ACL second-user check.
 - The testkit mirrored the framed production codec, so CI could not catch the wire-format bug. The manual gate found it.
 - The live daemon is running the full line codec from the `handfast-hello-line` worktree, paired with the Android phone. `hfctl` is built in that worktree.
-- Queued: Windows control pipe token (low, deferred), eager queued-file handshake (held for the manual gate), pairing prompt stale-answer race (low, not started), `p1-share-file.md:782` two-to-three JoinSets docs fix.
-- Next: the manual Android and desktop interop gate using `scripts/interop-share.sh` or `.ps1` and `docs/INTEROP.md`. The user is running it now; record the evidence and the exit verdict when it returns.
+- New requirement, 2026-11-15: replace `handfastd`, `hfctl` and any future GUI/updater with one monolithic `handfast` / `handfast.exe`. Design package `ses_e216fb658ffe4Qu3xl3y0xtf1C` on `docs/monolithic-binary`. Planned rollout: daemon library boundary, CLI subcommands (`daemon`, `share`, `status`, `identity`, `version`, `service`, `update`, `gui`), control status request, per-user autostart (Windows logon task, systemd user unit), feature-gated egui GUI, verified self-update, then packaging and script/docs migration to one exe.
+- The daemon must run in the user session, not as a SYSTEM service, because the desktop adapters need the user's clipboard, notifications, MPRIS, volume, shell and screensaver.
+- Manual gate paused while the user is at work. The phone remains paired; the daemon can reconnect without a prompt. Continue code, automated checks and the monolithic binary.
+- Queued low findings: Windows control pipe token, eager queued-file handshake (needs the desktop client evidence), pairing prompt stale-answer race, `p1-share-file.md:782` two-to-three JoinSets docs fix.
 
 Current state:
 
