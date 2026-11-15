@@ -26,7 +26,7 @@ Non-goals:
 
 ## Problem
 
-The link layer can authenticate a peer and carry framed JSON. It cannot move a
+The link layer can authenticate a peer and carry newline-delimited JSON. It cannot move a
 payload. KDE Connect share is not a JSON-only plugin. A file share sends a
 `kdeconnect.share.request` packet with a declared size and a port, then the
 receiver opens a second connection to that port and streams raw bytes. The

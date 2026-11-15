@@ -1,8 +1,9 @@
 //! KDE Connect wire protocol for Handfast v2.
 //!
-//! This crate is deliberately transport-free. It owns packet framing, identity,
-//! capability negotiation, pairing bodies, the plaintext connection hello and
-//! the UDP discovery announcement. Network IO lives in `handfast-net`.
+//! This crate is deliberately transport-free. It owns the packet model, the
+//! frame codec used by local IPC tests and fuzzing, identity, capability
+//! negotiation, pairing bodies, the plaintext connection hello and the UDP
+//! discovery announcement. Network IO lives in `handfast-net`.
 
 #![deny(missing_docs)]
 

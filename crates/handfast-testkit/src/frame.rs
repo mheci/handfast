@@ -1,11 +1,15 @@
-//! Independent 4-byte length-prefixed JSON framing.
+//! Independent wire codecs.
+//!
+//! The TLS link uses newline-delimited compact JSON. The plain peer harness
+//! uses 4-byte length-prefixed frames, which is the local control-channel
+//! format, not the KDE Connect link format.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// Maximum frame size accepted by the peer.
+/// Maximum frame size accepted by the plain peer harness.
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 /// A packet shaped like the KDE Connect wire format, independent of production
@@ -179,6 +183,72 @@ pub async fn write<W: AsyncWrite + Unpin>(writer: &mut W, packet: &WirePacket) -
     Ok(())
 }
 
+/// Maximum plaintext hello line accepted by the peer.
+pub const MAX_HELLO_LINE: usize = 512 * 1024;
+
+/// Maximum secure identity line accepted by the peer.
+pub const MAX_IDENTITY_LINE: usize = 512 * 1024;
+
+/// Maximum link packet line accepted by the peer.
+pub const MAX_LINK_LINE: usize = 1024 * 1024;
+
+/// Encode a packet as one compact JSON line terminated by `\n`.
+///
+/// # Errors
+///
+/// Fails when the packet is invalid or cannot be serialized.
+pub fn encode_line(packet: &WirePacket) -> Result<Vec<u8>> {
+    packet.validate()?;
+    let mut line = serde_json::to_vec(packet)?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// Read one newline-terminated JSON line, one byte at a time.
+///
+/// Returns `Ok(None)` on a clean EOF before the first byte.
+///
+/// # Errors
+///
+/// Fails on a truncated or over-cap line or invalid JSON.
+pub async fn read_line<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> Result<Option<WirePacket>> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if reader.read(&mut byte).await? == 0 {
+            if line.is_empty() {
+                return Ok(None);
+            }
+            return Err(TestkitError::Protocol("truncated line".to_string()));
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        if line.len() >= max {
+            return Err(TestkitError::Protocol("line too large".to_string()));
+        }
+        line.push(byte[0]);
+    }
+    let packet: WirePacket = serde_json::from_slice(&line)?;
+    packet.validate()?;
+    Ok(Some(packet))
+}
+
+/// Write one newline-terminated JSON line and flush it.
+///
+/// # Errors
+///
+/// Fails when the packet is invalid or the write fails.
+pub async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, packet: &WirePacket) -> Result<()> {
+    let line = encode_line(packet)?;
+    writer.write_all(&line).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +297,52 @@ mod tests {
         let (mut client, mut server) = duplex(1024);
         write(&mut client, &ping()).await.unwrap();
         assert_eq!(read(&mut server).await.unwrap().unwrap(), ping());
+    }
+
+    #[test]
+    fn hello_and_identity_line_caps_match_android() {
+        assert_eq!(MAX_HELLO_LINE, 512 * 1024);
+        assert_eq!(MAX_IDENTITY_LINE, 512 * 1024);
+    }
+
+    #[tokio::test]
+    async fn line_round_trip() {
+        let (mut client, mut server) = duplex(1024);
+        write_line(&mut client, &ping()).await.unwrap();
+        assert_eq!(
+            read_line(&mut server, MAX_LINK_LINE)
+                .await
+                .unwrap()
+                .unwrap(),
+            ping()
+        );
+    }
+
+    #[tokio::test]
+    async fn line_has_no_length_prefix() {
+        let line = encode_line(&ping()).unwrap();
+        assert_eq!(line.first(), Some(&b'{'), "the line starts with JSON");
+        assert_eq!(line.last(), Some(&b'\n'), "the line ends with a newline");
+    }
+
+    #[tokio::test]
+    async fn line_without_a_newline_is_rejected() {
+        let (mut client, mut server) = duplex(1024);
+        client
+            .write_all(br#"{"id":0,"type":"kdeconnect.ping","body":{}}"#)
+            .await
+            .unwrap();
+        drop(client);
+        assert!(read_line(&mut server, MAX_LINK_LINE).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn line_over_the_cap_is_rejected() {
+        let (mut client, mut server) = duplex(MAX_HELLO_LINE + 2);
+        client
+            .write_all(&vec![b'x'; MAX_HELLO_LINE + 1])
+            .await
+            .unwrap();
+        assert!(read_line(&mut server, MAX_HELLO_LINE).await.is_err());
     }
 }

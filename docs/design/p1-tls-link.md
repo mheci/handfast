@@ -55,7 +55,7 @@ The grounding pass read `handfast-net`, `handfast-store`, `handfast-daemon`, `ha
 
 | Crate | Current behavior | Constraint for this design |
 | --- | --- | --- |
-| `handfast-proto` | Packet model, 1 MiB framing, `Identity`, `PairingRequest`, capability sets. Transport-free by doc and by dependency choice. | May gain the plaintext identity hello and the minimal discovery announcement. Must not gain TLS, certificate bytes or fingerprints. |
+| `handfast-proto` | Packet model, 1 MiB frame codec for tests and fuzzing, `Identity`, `PairingRequest`, capability sets. Transport-free by doc and by dependency choice. | May gain the plaintext identity hello and the minimal discovery announcement. Must not gain TLS, certificate bytes or fingerprints. |
 | `handfast-net` | UDP discovery on 1716, plain TCP `Link`, pure pairing state machine. | Owns the TCP listener, TLS roles, identity re-exchange and link lifecycle. Must not depend on `handfast-store`. |
 | `handfast-store` | redb tables for devices, plugin state and settings. Device ID lives in `settings_v1`. No identity table. | Owns opaque DER and fingerprint persistence. No crypto, no TLS policy. |
 | `handfast-runtime` | `Device`, `DeviceHost`, plugin dispatch, panic isolation, 5 s plugin timeout. No sockets. | Stays transport-free. The daemon builds one host per paired connected device. `DeviceHost::new` borrows `&Registry`. |
@@ -70,21 +70,22 @@ The current discovery parser is a compatibility bug. `Identity::from_packet` req
 
 ### Protocol sequence (re-grounded against real clients)
 
-The following is verified from the Android `LanLinkProvider.kt`, `DeviceInfo.kt` and `SslHelper.kt`, and the desktop `lanlinkprovider.cpp` and `deviceinfo.h`.
+The following is verified from the Android `NetworkPacket.kt`, `LanLinkProvider.kt`, `DeviceInfo.kt` and `SslHelper.kt`, and the desktop `lanlinkprovider.cpp` and `deviceinfo.h`.
 
 ```
 A (discovered B)                                      B (listener)
   TCP connect  -------------------------------------->
-  plaintext identity hello {A full + target B} ------>  validate targetDeviceId and targetProtocolVersion
+  plaintext hello line {A full + target B} + "\n" --->  validate targetDeviceId and targetProtocolVersion
   TLS handshake, A = server, B = client  <----------->
   encrypted identity {A full} ----------------------->  compare A deviceId/protocolVersion to hello
   <----------------------- encrypted identity {B full}  compare B deviceId/protocolVersion to discovery/hello
-  framed packets, gate: unpaired -> pair only
+  newline-delimited packets, gate: unpaired -> pair only
 ```
 
 Facts that drive the design:
 
-- **One plaintext hello, from the dialer only.** Android's `udpPacketReceived` dials, builds its full identity, adds `targetDeviceId` and `targetProtocolVersion` as strings, writes it, and then starts TLS. Desktop's `tcpSocketConnected` writes `toConnectionPacket` with numeric target fields and then starts server encryption. The listener never sends a plaintext identity of its own.
+- **One plaintext hello, from the dialer only.** Android's `udpPacketReceived` dials, builds its full identity, adds `targetDeviceId` and `targetProtocolVersion` as strings, writes it, and then starts TLS. Desktop's `tcpSocketConnected` writes `toConnectionPacket` with numeric target fields and then starts server encryption. The listener never sends a plaintext identity of its own. The hello is one compact JSON line, not a length-prefixed frame. `NetworkPacket.serialize()` returns `json.encodeToString(...) + "\n"`, and `LanLinkProvider` writes those bytes to the socket directly. The listener reads byte by byte until `\n` with a 512 KiB cap (`readLineBounded`), then hands the same socket to rustls, so the read stops exactly at the newline.
+- **The whole post-TLS link is newline-delimited JSON.** Android's `LanLink.sendPacket` writes `NetworkPacket.serialize()`, compact JSON plus `\n`, and `LanLink.startListening` reads every packet with `readLineBounded(stream, 32 MiB)`. `LanLinkProvider` reads and writes the secure identity the same way. Handfast uses lines for the encrypted identity with a 512 KiB cap, and for every later packet with a 1 MiB cap. The 4-byte length frame remains only in the local control channel.
 - **The dialer is the TLS server.** Android sets `clientMode = (connectionStarted == Locally)`, so a dialed connection is server mode. Desktop calls `startServerEncryption` on the dialed socket. The accepted side is the TLS client.
 - **The hello shapes differ.** Android sends the full identity plus target fields. Desktop sends only `deviceId`, `deviceName`, `protocolVersion`, `targetDeviceId` and `targetProtocolVersion`. The listener must accept both. Accepting the smaller packet means `deviceType` and the capability arrays are optional in the hello. The encrypted identity remains full.
 - **Target protocol version is a string on Android and a number on desktop.** `targetProtocolVersion` must parse from both a JSON string and a JSON number. The value must be 8.
@@ -296,7 +297,7 @@ Rejecting writes no pin and sends `PairingRequest::reject()`. Unpairing clears t
 
 - `identity.rs`: pure identity types and checks. `Fingerprint`, `TlsIdentity`, `LocalEndpoint`, `PeerCertificate`, `PeerTrust`, `TrustTable`, `TlsError`. No sockets.
 - `tls.rs`: rustls 1.2 and 1.3 configuration, the accept-any verifiers, `verify_tls12_signature` and `verify_tls13_signature`, certificate/key conversion, and provider setup. It calls `identity.rs`; it does not own trust policy.
-- `link.rs`: plaintext hello, both TLS roles, identity re-exchange, framed reader and writer, keepalive, timeouts. One public `LinkListener::accept`, one public `connect`, and `Link`.
+- `link.rs`: plaintext hello, both TLS roles, identity re-exchange, line reader and writer, keepalive, timeouts. One public `LinkListener::accept`, one public `connect`, and `Link`.
 - `policy.rs`: `LinkPolicy` and `AdmissionPermit`. The unpaired cap and the inbound per-IP rate limit live here.
 - `manager.rs`: `LinkManager` actor, duplicate rule, trust snapshot, gate, backoff, peer expiry, pending limit, events, shutdown.
 - `discovery.rs`, `pairing.rs`, `error.rs`: existing, with `NetError` extended.
@@ -359,7 +360,7 @@ impl DiscoveryAnnouncement {
 }
 ```
 
-`IdentityHello::to_packet` starts from the full `Identity` body and inserts `targetDeviceId` and a numeric `targetProtocolVersion`. `IdentityHello::from_packet` requires `kdeconnect.identity`, a valid `deviceId`, protocol version 8, and a valid target device ID. `deviceName` is optional and sanitized; `deviceType` and both capability arrays are optional and default to `Unknown` and empty. `targetProtocolVersion` accepts a JSON number or a string and must be 8. `device_id` must differ from `target_device_id`. This accepts the Android full hello and the desktop connection packet.
+`IdentityHello::to_packet` starts from the full `Identity` body and inserts `targetDeviceId` and a numeric `targetProtocolVersion`. `IdentityHello::from_packet` requires `kdeconnect.identity`, a valid `deviceId`, protocol version 8, and a valid target device ID. `deviceName` is optional and sanitized; `deviceType` and both capability arrays are optional and default to `Unknown` and empty. `targetProtocolVersion` accepts a JSON number or a string and must be 8. `device_id` must differ from `target_device_id`. This accepts the Android full hello and the desktop connection packet. On the wire the hello is one compact JSON line terminated by `\n`, not a 4-byte length-prefixed frame. Android's `NetworkPacket.serialize()` appends the newline and `LanLinkProvider` writes the bytes directly; the listener reads until `\n` with the same 512 KiB bound, one byte at a time, then hands the socket to rustls. The encrypted identity and every later packet use the same line format. The identity cap is 512 KiB and later packets use 1 MiB.
 
 `DiscoveryAnnouncement::from_packet` requires `kdeconnect.identity`, a valid `deviceId`, `protocolVersion` 8 and a `tcpPort` in 1716-1764. It reads `deviceName` and `deviceType` if present and defaults to `Unnamed device` and `Unknown`. It ignores capability fields. `to_packet` emits the minimal desktop shape: `deviceId`, `deviceName`, `protocolVersion` and `tcpPort`. The encrypted identity parser stays strict; only discovery and the plaintext hello are permissive.
 
@@ -525,12 +526,12 @@ impl LinkedPeer {
     }
 }
 
-pub struct LinkReader { /* ReadHalf<TlsStream> */ }
+pub struct LinkReader { /* buffered read half */ }
 impl LinkReader {
     pub async fn recv(&mut self) -> Result<Option<Packet>, NetError>;
 }
 
-pub struct LinkWriter { /* WriteHalf<TlsStream> */ }
+pub struct LinkWriter { /* write half */ }
 impl LinkWriter {
     pub async fn send(&mut self, packet: &Packet) -> Result<(), NetError>;
     pub async fn close(self);
@@ -734,7 +735,7 @@ Both accept-any verifiers implement all four signature methods:
 
 The provider's TLS 1.2 cipher suites include ECDHE with RSA and ECDSA certificates. Android's certificate may be RSA; the testkit includes a static RSA certificate and PKCS#8 key fixture generated for tests, not copied from KDE. The verifier and the handshake must work with it in TLS 1.2 and TLS 1.3.
 
-Identity policy is `PeerCertificate::check`, a pure function called once after the handshake and before any frame is read:
+Identity policy is `PeerCertificate::check`, a pure function called once after the handshake and before any packet line is read:
 
 1. Parse exactly one certificate from `peer_certificates()`.
 2. `x509_parser::parse_x509_certificate` must consume the whole DER input.
@@ -778,7 +779,7 @@ The public API has one `connect` and one `accept`. Callers do not coordinate sta
 
 1. `TcpStream::connect` with `connect_timeout`; set `TCP_NODELAY`; apply keepalive.
 2. Reject `expected == local.device_id()`.
-3. Send `IdentityHello` built from `local.identity()` with the target `expected`.
+3. Send `IdentityHello` built from `local.identity()` with the target `expected` as one compact JSON line plus `\n`.
 4. Start the TLS server handshake with the local certificate. TLS 1.2 and 1.3 are enabled.
 5. Read the peer certificate and run `PeerCertificate::check(expected, trust)`.
 6. Send the local full `Identity` from `local.identity()` over TLS.
@@ -789,7 +790,7 @@ The public API has one `connect` and one `accept`. Callers do not coordinate sta
 `accept`:
 
 1. Accept TCP; set `TCP_NODELAY` and apply keepalive.
-2. Read the plaintext `IdentityHello` with `handshake_timeout`.
+2. Read the plaintext `IdentityHello` as one newline-terminated JSON line with `handshake_timeout` and a 512 KiB cap, one byte at a time so the raw socket reaches rustls with no buffered bytes.
 3. Require `target_device_id == local.device_id()`, `target_protocol_version == 8`, and `hello.identity.device_id != local.device_id()`.
 4. Resolve `trust = trust_table.trust(&hello.identity.device_id)`.
 5. Ask `policy.reserve_incoming(address, &hello.identity.device_id, trust)` for an admission permit. A rejection closes before TLS.
@@ -805,7 +806,7 @@ The listener never sends a plaintext identity. Both real clients send exactly on
 
 ### Link manager
 
-`LinkManager` is a single-owner actor. It owns the listener, the trust snapshot, the admission policy, the peer table and the active links. There is no mutex around the socket map. It is also the single gate: the link task reads frames and forwards them to the manager, and the manager decides whether a packet is allowed.
+`LinkManager` is a single-owner actor. It owns the listener, the trust snapshot, the admission policy, the peer table and the active links. There is no mutex around the socket map. It is also the single gate: the link task reads packet lines and forwards them to the manager, and the manager decides whether a packet is allowed.
 
 Commands and messages:
 
@@ -862,7 +863,7 @@ Rules:
 - Closing a link sends `LinkControl::Close` through its watch. The link task exits cleanly. The manager ignores stale messages by generation.
 - When the duplicate rule replaces an active link, the manager emits the old link's `Disconnected` before the new link's `Connected`. The daemon processes one ordered event stream, so a stale disconnect cannot remove the new session.
 - When a link is installed, the manager emits `Connected` before it starts the link reader task. The daemon session therefore exists before any `Packet` event from that link.
-- Each established link gets a `LinkHandle` backed by a bounded channel. The link task selects between inbound frames, outbound packets and the close signal. Inbound frames become `ManagerMessage::Inbound`; the task does not gate.
+- Each established link gets a `LinkHandle` backed by a bounded channel. The link task selects between inbound lines, outbound packets and the close signal. Inbound lines become `ManagerMessage::Inbound`; the task does not gate.
 - The gate runs in the manager:
   - `kdeconnect.pair` from any authenticated link is decoded. A malformed pair body closes the link. A valid request becomes `LinkEvent::PairingRequest` with `paired` set from the trust table.
   - `kdeconnect.identity` after establishment is a protocol violation. Close.
@@ -945,7 +946,7 @@ The trust policy has one home. `PeerCertificate::check` is the only function tha
 7. The manager either dials or accepts. A dial sends the full plaintext hello, then acts as TLS server. An accept reads the hello, then acts as TLS client.
 8. After the TLS handshake, each side parses the peer certificate and checks CN and pin. Then both exchange the full identity over TLS. TLS 1.2 and TLS 1.3 are both accepted.
 9. The manager checks the three-way ID correlation and the protocol version. It admits the link under the unpaired cap and the inbound per-IP limit, applies the last-wins duplicate rule, and emits `LinkEvent::Connected` with the trust state.
-10. The link task forwards inbound frames to the manager. The manager gates them. Pair frames become events. Unpaired non-pair frames are dropped. Paired frames become `LinkEvent::Packet`.
+10. The link task forwards inbound packets to the manager. The manager gates them. Pair packets become events. Unpaired non-pair packets are dropped. Paired packets become `LinkEvent::Packet`.
 11. The daemon updates the device record from the authenticated identity. It creates a `DeviceSession` only for a paired link. The session calls `on_connect`, dispatches packets, sends plugin output and calls `on_disconnect` on close.
 12. Shutdown closes discovery, the listener and every link, then drains the sessions.
 
@@ -1002,6 +1003,7 @@ Only protocol 8 is accepted. The identity parser already rejects other versions.
 | Discovery has an out-of-range `tcpPort` | Ignore the announcement. | Parser test. |
 | Connect refused or timed out | Log, back off per peer, retry on later discovery. | Manager test. |
 | Plaintext hello malformed | Close before TLS. | Link test. |
+| Plaintext hello has no newline or exceeds 512 KiB | Close before TLS. | Link test. |
 | Hello target ID or version mismatch | Close before TLS. | Link test. |
 | Hello target version is a string | Accept `"8"` as 8. | Proto test with Android fixture. |
 | Hello omits type or capabilities | Accept; defaults to Unknown and empty. | Proto test with desktop fixture. |
@@ -1016,7 +1018,7 @@ Only protocol 8 is accepted. The identity parser already rejects other versions.
 | Encrypted identity ID differs from hello or CN | Close; security event. This is the CVE-2025-66270 regression. | Link test. |
 | Encrypted identity version is not 8 | Close; security event. | Link test. |
 | Malformed pair body | Close; protocol violation. | Manager test. |
-| Frame over 1 MiB, malformed JSON or deeply nested JSON | Proto or serde error; close. The 1 MiB cap bounds the allocation. | Link test. |
+| Line over its cap (512 KiB identity, 1 MiB later), malformed JSON or deeply nested JSON | Proto or serde error; close. The line cap bounds the allocation. | Link test. |
 | Duplicate connection with the same certificate | Replace the old link; last successful handshake wins. | Manager test with a replacer peer. |
 | Duplicate connection with a different certificate | Close the new link. | Manager test. |
 | Silent peer after TCP accept | Handshake timeout; pending permit released. | Link test with a silent peer. |
@@ -1098,6 +1100,13 @@ These use the independent testkit TLS peer, not a second copy of the production 
 - A testkit peer restricted to TLS 1.3 completes the same sequence.
 - A testkit peer with an RSA certificate completes the full link over TLS 1.2 and TLS 1.3.
 - The dialer's hello contains the full identity and the target fields. The listener accepts it.
+- A raw Android-shaped hello line, written byte for byte with a string target version, is accepted.
+- A raw desktop-shaped hello line, written byte for byte with a numeric target version, is accepted.
+- A raw Android secure identity line is accepted after the handshake.
+- A raw Android packet line is accepted on the established link.
+- A hello line without a newline or over 512 KiB is rejected before TLS.
+- A packet line without a newline or over 1 MiB is rejected.
+- The dialer writes one newline-terminated JSON line with no length prefix.
 - A desktop-shaped hello with no type or capabilities is accepted.
 - A listener presents a certificate whose CN is a different device ID. The dialer closes before identity.
 - A dialer presents a certificate whose CN is a different device ID. The listener closes.
@@ -1106,8 +1115,8 @@ These use the independent testkit TLS peer, not a second copy of the production 
 - A pinned peer is accepted when the certificate matches.
 - A pinned peer is rejected when the certificate changes, and the pin remains in the trust table.
 - A peer that connects and sends nothing hits the handshake timeout.
-- A peer that sends a partial identity frame hits the identity timeout. After establishment there is no idle read timeout for paired links; the 1 MiB cap and keepalive bound the damage.
-- A peer that declares a frame larger than 1 MiB is closed before a larger allocation.
+- A peer that sends a partial identity line hits the identity timeout. The identity cap is 512 KiB. After establishment there is no idle read timeout for paired links; the 1 MiB packet cap and keepalive bound the damage.
+- A peer that sends a line larger than 1 MiB is closed before a larger allocation.
 - An unpaired peer can complete the link, but a ping is dropped and a pair request is emitted.
 - An unpaired link creates no `DeviceHost` and receives no `on_connect` callback.
 - A testkit peer opens a second link for the same device with the same certificate. The manager keeps the new link and emits `Disconnected` for the old one before `Connected` for the new one.
@@ -1119,7 +1128,7 @@ These use the independent testkit TLS peer, not a second copy of the production 
 - A testkit TLS self-test runs two independent peers over loopback. They generate their own certificates, complete the hello, TLS and identity exchange, and exchange a ping.
 - The testkit peer supports TLS 1.2 only, TLS 1.3 only, and both.
 - The testkit peer supports an RSA certificate and key fixture.
-- The testkit peer can be configured to present a wrong CN, a certificate that does not match a seeded pin, an identity mismatch, a protocol mismatch, a string target version, a silent handshake and an oversized frame.
+- The testkit peer can be configured to present a wrong CN, a certificate that does not match a seeded pin, an identity mismatch, a protocol mismatch, a string target version, a silent handshake and an oversized line.
 - The testkit peer can open a replacement link for an existing device and close the old one.
 - The testkit does not import `handfast-proto` or `handfast-net` in its normal build. The conformance tests may use production types as consumers.
 
@@ -1268,8 +1277,8 @@ Each unit ends in a check. Do not start the next unit until the check passes.
 4. **Identity types and checks.** Add `Fingerprint`, `TlsIdentity`, `LocalEndpoint`, `PeerCertificate`, `PeerTrust`, `TlsError`, the certificate validity window and the pure checks. No sockets. Tests: generation, CN, validity, fingerprint, pin, malformed DER, local endpoint mismatch. Check: `cargo test -p handfast-net identity`.
 5. **Independent testkit TLS peer and RSA fixture.** Add `tls_peer` with TLS 1.2/1.3, the RSA certificate and PKCS#8 key fixture, minimal UDP announcement and replacement mode. Add `tls-self-test`. This unit lands before the TLS config and link units because both use the peer and the RSA fixture. Check: `cargo test -p handfast-testkit` and `cargo run -p handfast-testkit -- tls-self-test`.
 6. **TLS 1.2 and 1.3 configuration.** Add the rustls configs, `verify_tls12_signature`, `verify_tls13_signature`, RSA schemes and the accept-any verifiers. Test with a minimal TLS-only loopback client/server for both versions and with the RSA fixture from unit 5. Check: the TLS-only version and algorithm tests. They do not use the testkit peer or the link handshake.
-7. **Both link roles.** Add `LinkListener::bind_in_range/accept`, `connect`, the full plaintext hello, the full local identity, the identity re-exchange, the framed link and the keepalive helper. Test with the testkit peer from unit 5 for TLS 1.2 and 1.3. Check: the full-link happy-path tests for hello, certificate check and identity exchange.
-8. **Negative link tests.** Add wrong CN, pin mismatch, identity mismatch, protocol mismatch, string/number target, timeouts, oversized frame, TLS 1.1 rejection and RSA. Check: `cargo test -p handfast-net --test tls_link`.
+7. **Both link roles.** Add `LinkListener::bind_in_range/accept`, `connect`, the full plaintext hello, the full local identity, the identity re-exchange, the newline-delimited link and the keepalive helper. Test with the testkit peer from unit 5 for TLS 1.2 and 1.3. Check: the full-link happy-path tests for hello, certificate check and identity exchange.
+8. **Negative link tests.** Add wrong CN, pin mismatch, identity mismatch, protocol mismatch, string/number target, timeouts, oversized line, TLS 1.1 rejection and RSA. Check: `cargo test -p handfast-net --test tls_link`.
 9. **Link manager and policy.** Add last-wins dedupe, trust snapshot, gate, admission policy (42 unpaired, inbound per-IP 500 ms, idle 60 s), peer expiry and flood recovery, backoff, limits, events and shutdown. Tests: duplicate replacer, unpaired cap, inbound rate limit, simultaneous discovery, idle, flood recovery, shutdown. Check: `cargo test -p handfast-net --test manager`.
 10. **Daemon composition.** Add the port-range scan, full local endpoint, `Arc<Registry>` sessions, `SessionHandle::stop` on disconnect, discovery announcement wiring, `--print-identity` no-cert/no-bind behavior, Unix permissions and the updated discovery test ports. Tests: range, print identity, migration, desktop UDP announcement, discovery-driven dial, disconnect `on_disconnect`. Check: `cargo test -p handfast-daemon`.
 11. **CI and docs.** Update the architecture state table and the README "what works" only after the code lands. Run fmt, clippy, test, msrv, deny, docs, testkit self-test, fuzz and Windows. Check: all nine checks green.
@@ -1401,7 +1410,9 @@ Local:
 Real KDE Connect sources, read for protocol behavior only. No KDE code is copied into Handfast.
 
 - Android `SslHelper.kt`: `SSLContext("TLSv1.2")`, client/server mode, client auth for trusted and untrusted devices, certificate generation with CN = device ID and a one-year-back to ten-year-ahead validity window, SHA-256 certificate hash.
-- Android `LanLinkProvider.kt`: UDP and TCP handshake order, one plaintext hello from the dialer, full identity plus string target fields, TLS server on dial, TLS client on accept, 1716-1764 port scan, 42 unpaired cap, 1 s per-IP rate limit, encrypted identity device ID and protocol version correlation, last-successful-link replacement.
+- Android `NetworkPacket.kt`: `serialize()` returns compact JSON plus a trailing newline.
+- Android `LanLink.kt`: every packet is written with `NetworkPacket.serialize()` and read with `readLineBounded(stream, 32 MiB)`, so the post-TLS link is newline-delimited JSON.
+- Android `LanLinkProvider.kt`: UDP and TCP handshake order, one plaintext hello from the dialer, the raw hello bytes written with no length prefix, `readLineBounded` with a 512 KiB cap, full identity plus string target fields, TLS server on dial, TLS client on accept, 1716-1764 port scan, 42 unpaired cap, 1 s per-IP rate limit, encrypted identity device ID and protocol version correlation, last-successful-link replacement.
 - Android `DeviceInfo.kt`: full identity packet fields, minimal validation requiring a non-blank device name and a valid device ID.
 - Desktop `lanlinkprovider.cpp`: UDP minimal discovery packet, TLS server on dial, TLS client on accept, connection packet fields, port range, 42 unpaired cap, 500 ms per-IP rate limit, encrypted identity correlation, last-successful-link replacement, keepalive values.
 - Desktop `deviceinfo.h`: `toUdpDiscoveryPacket`, `toConnectionPacket` and `toIdentityPacket` field sets, validation rules.

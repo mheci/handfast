@@ -14,6 +14,16 @@ pub enum ProtoError {
         max: usize,
     },
 
+    /// A newline-delimited packet line exceeded the protocol limit.
+    #[error("line too large: {size} bytes (max {max})")]
+    LineTooLarge {
+        /// Line length in bytes when the cap was crossed, excluding the
+        /// trailing newline. A buffered read can cross by more than one byte.
+        size: usize,
+        /// Configured maximum content length.
+        max: usize,
+    },
+
     /// A frame was empty.
     #[error("empty frame")]
     EmptyFrame,

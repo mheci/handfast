@@ -9,19 +9,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use handfast_net::{
-    connect, Fingerprint, LinkLimits, LinkListener, LinkPolicy, LocalEndpoint, NetError, PeerTrust,
-    TlsError, TlsIdentity, TrustTable,
+    connect, Fingerprint, Link, LinkLimits, LinkListener, LinkPolicy, LocalEndpoint, NetError,
+    PeerTrust, TlsError, TlsIdentity, TrustTable,
 };
 use handfast_proto::{
     types, Capabilities, DeviceId, DeviceName, DeviceType, Identity, Packet, ProtoError,
 };
-use handfast_testkit::frame::MAX_FRAME_SIZE;
+use handfast_testkit::frame::MAX_LINK_LINE;
 use handfast_testkit::tls_peer::{
-    accept, connect_silent, dial, dial_with_hello, CertificateKind, TlsPeerConfig, TlsVersion,
+    accept, connect_silent, dial, dial_with_hello, dial_with_raw_hello, CertificateKind, TlsPeer,
+    TlsPeerConfig, TlsVersion,
 };
 use handfast_testkit::WirePacket;
 use rustls::ProtocolVersion;
 use serde_json::{json, Value};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 
 const HANDFAST_ID: &str = "00112233445566778899aabbccddeeff";
@@ -92,6 +94,55 @@ fn echo() -> WirePacket {
         payload_size: None,
         payload_transfer_info: None,
     }
+}
+
+async fn dial_testkit(
+    local: &Arc<LocalEndpoint>,
+    version: TlsVersion,
+    certificate: CertificateKind,
+) -> (Link, TlsPeer) {
+    let peer = peer_config(version, certificate);
+    let peer_id = device_id(&peer.identity.device_id);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the testkit listener");
+    let address = listener.local_addr().expect("read the testkit address");
+    let server = tokio::spawn(async move { accept(&listener, &peer).await });
+    let policy = policy();
+    let permit = policy
+        .reserve_outgoing(&peer_id, PeerTrust::Unpaired)
+        .expect("reserve the outbound slot");
+    let link = connect(
+        address,
+        local.as_ref(),
+        &peer_id,
+        PeerTrust::Unpaired,
+        &limits(),
+        permit,
+    )
+    .await
+    .expect("the dialer completes the link");
+    let peer = server
+        .await
+        .expect("the listener task completes")
+        .expect("the testkit accept succeeds");
+    (link, peer)
+}
+
+#[test]
+fn production_and_testkit_line_caps_agree() {
+    assert_eq!(
+        handfast_net::MAX_HELLO_LINE,
+        handfast_testkit::frame::MAX_HELLO_LINE
+    );
+    assert_eq!(
+        handfast_net::MAX_IDENTITY_LINE,
+        handfast_testkit::frame::MAX_IDENTITY_LINE
+    );
+    assert_eq!(
+        handfast_net::MAX_LINK_LINE,
+        handfast_testkit::frame::MAX_LINK_LINE
+    );
 }
 
 #[tokio::test]
@@ -364,6 +415,123 @@ async fn listener_accepts_a_desktop_shaped_hello() {
 }
 
 #[tokio::test]
+async fn listener_accepts_a_raw_android_hello_line() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (listener, address) = bind(&local).await;
+    let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
+    let peer_id = device_id(&peer.identity.device_id);
+    let raw = raw_hello_line(&peer.android_hello_packet(HANDFAST_ID));
+    let dialer =
+        tokio::spawn(async move { dial_with_raw_hello(address, HANDFAST_ID, &peer, &raw).await });
+
+    let link = listener
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
+        .await
+        .expect("the listener accepts the phone's raw hello line");
+    let peer = dialer
+        .await
+        .expect("the dialer task completes")
+        .expect("the dial succeeds");
+
+    assert_eq!(link.peer().device_id(), &peer_id);
+    assert_eq!(peer.protocol_version(), ProtocolVersion::TLSv1_3);
+}
+
+#[tokio::test]
+async fn listener_accepts_a_raw_desktop_hello_line() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (listener, address) = bind(&local).await;
+    let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
+    let peer_id = device_id(&peer.identity.device_id);
+    let raw = raw_hello_line(&peer.desktop_hello_packet(HANDFAST_ID));
+    let dialer =
+        tokio::spawn(async move { dial_with_raw_hello(address, HANDFAST_ID, &peer, &raw).await });
+
+    let link = listener
+        .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
+        .await
+        .expect("the listener accepts the desktop raw hello line");
+    let peer = dialer
+        .await
+        .expect("the dialer task completes")
+        .expect("the dial succeeds");
+
+    assert_eq!(link.peer().device_id(), &peer_id);
+    assert_eq!(peer.protocol_version(), ProtocolVersion::TLSv1_3);
+}
+
+#[tokio::test]
+async fn dialer_writes_a_newline_terminated_hello_line() {
+    let local = local_endpoint(HANDFAST_ID);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the raw listener");
+    let address = listener.local_addr().expect("read the raw address");
+    let expected = device_id(OTHER_ID);
+    let policy = policy();
+    let permit = policy
+        .reserve_outgoing(&expected, PeerTrust::Unpaired)
+        .expect("reserve the outbound slot");
+    let dial = tokio::spawn(async move {
+        connect(
+            address,
+            local.as_ref(),
+            &expected,
+            PeerTrust::Unpaired,
+            &limits(),
+            permit,
+        )
+        .await
+    });
+
+    let (mut tcp, _) = listener.accept().await.expect("accept the dialer");
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        let read = tcp.read(&mut byte).await.expect("read the hello line");
+        assert_ne!(read, 0, "the dialer closed before the newline");
+        if byte[0] == b'\n' {
+            break;
+        }
+        line.push(byte[0]);
+    }
+
+    assert_eq!(line.first(), Some(&b'{'), "the line has no length prefix");
+    let hello: Packet = serde_json::from_slice(&line).expect("the hello line is JSON");
+    assert_eq!(hello.ptype, types::IDENTITY);
+    assert_eq!(
+        hello.body.get("deviceId").and_then(Value::as_str),
+        Some(HANDFAST_ID)
+    );
+    assert_eq!(
+        hello.body.get("targetDeviceId").and_then(Value::as_str),
+        Some(OTHER_ID)
+    );
+    assert_eq!(
+        hello
+            .body
+            .get("targetProtocolVersion")
+            .and_then(Value::as_u64),
+        Some(8)
+    );
+
+    drop(tcp);
+    match dial.await.expect("the dial task completes") {
+        Ok(_) => panic!("the raw listener cannot finish the TLS handshake"),
+        Err(error) => assert!(
+            matches!(error, NetError::Io(_) | NetError::Timeout(_)),
+            "{error}"
+        ),
+    }
+}
+
+fn raw_hello_line(hello: &WirePacket) -> Vec<u8> {
+    let mut line = serde_json::to_string(hello).expect("serialize the raw hello");
+    line.push('\n');
+    line.into_bytes()
+}
+
+#[tokio::test]
 async fn listener_accepts_a_string_target_version() {
     let local = local_endpoint(HANDFAST_ID);
     let (listener, address) = bind(&local).await;
@@ -425,34 +593,9 @@ async fn correlates_the_hello_certificate_and_encrypted_identity() {
 }
 
 #[tokio::test]
-async fn framed_ping_round_trips_after_the_handshake() {
+async fn line_ping_round_trips_after_the_handshake() {
     let local = local_endpoint(HANDFAST_ID);
-    let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
-    let peer_id = device_id(&peer.identity.device_id);
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind the testkit listener");
-    let address = listener.local_addr().expect("read the testkit address");
-    let server = tokio::spawn(async move { accept(&listener, &peer).await });
-
-    let policy = policy();
-    let permit = policy
-        .reserve_outgoing(&peer_id, PeerTrust::Unpaired)
-        .expect("reserve the outbound slot");
-    let link = connect(
-        address,
-        local.as_ref(),
-        &peer_id,
-        PeerTrust::Unpaired,
-        &limits(),
-        permit,
-    )
-    .await
-    .expect("the dialer completes the link");
-    let mut peer = server
-        .await
-        .expect("the listener task completes")
-        .expect("the testkit accept succeeds");
+    let (link, mut peer) = dial_testkit(&local, TlsVersion::Tls13, CertificateKind::Ecdsa).await;
 
     let (_, mut reader, mut writer, _permit) = link.into_parts();
     writer
@@ -477,6 +620,46 @@ async fn framed_ping_round_trips_after_the_handshake() {
         reply.body.get("message").and_then(Value::as_str),
         Some("echo")
     );
+}
+
+#[tokio::test]
+async fn link_reader_accepts_a_raw_android_packet_line() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (link, mut peer) = dial_testkit(&local, TlsVersion::Tls13, CertificateKind::Ecdsa).await;
+    let (_, mut reader, _writer, _permit) = link.into_parts();
+
+    peer.send_raw(b"{\"id\":0,\"type\":\"kdeconnect.ping\",\"body\":{\"message\":\"raw\"}}\n")
+        .await
+        .expect("write the raw packet line");
+    let packet = reader
+        .recv()
+        .await
+        .expect("the link reads the raw packet line")
+        .expect("the link did not see EOF");
+
+    assert_eq!(packet.ptype, types::PING);
+    assert_eq!(
+        packet.body.get("message").and_then(Value::as_str),
+        Some("raw")
+    );
+}
+
+#[tokio::test]
+async fn link_reader_rejects_a_line_without_a_newline() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (link, mut peer) = dial_testkit(&local, TlsVersion::Tls13, CertificateKind::Ecdsa).await;
+    let (_, mut reader, _writer, _permit) = link.into_parts();
+
+    peer.send_raw(b"{\"id\":0,\"type\":\"kdeconnect.ping\",\"body\":{}}")
+        .await
+        .expect("write the packet without its newline");
+    peer.close().await.expect("close the testkit peer");
+
+    let error = reader
+        .recv()
+        .await
+        .expect_err("a line without a newline is rejected");
+    assert!(matches!(error, NetError::LinkClosed), "{error}");
 }
 
 #[tokio::test]
@@ -632,7 +815,7 @@ async fn listener_times_out_a_silent_peer() {
 }
 
 #[tokio::test]
-async fn listener_closes_a_peer_that_declares_an_oversized_frame() {
+async fn listener_closes_a_peer_that_sends_an_oversized_line() {
     let local = local_endpoint(HANDFAST_ID);
     let (listener, address) = bind(&local).await;
     let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
@@ -641,22 +824,26 @@ async fn listener_closes_a_peer_that_declares_an_oversized_frame() {
     let link = listener
         .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
         .await
-        .expect("the handshake completes before the bad frame");
+        .expect("the handshake completes before the bad line");
     let mut peer = dialer
         .await
         .expect("the dialer task completes")
         .expect("the dial succeeds");
-    peer.send_oversized_frame_header((MAX_FRAME_SIZE + 1) as u32)
-        .await
-        .expect("write the oversized header");
+    let send = tokio::spawn(async move { peer.send_oversized_line(MAX_LINK_LINE + 1).await });
 
-    let (_, mut reader, _, _permit) = link.into_parts();
+    let (_, mut reader, writer, _permit) = link.into_parts();
     let error = match reader.recv().await {
-        Ok(_) => panic!("an oversized frame must be rejected"),
+        Ok(_) => panic!("an oversized line must be rejected"),
         Err(error) => error,
     };
-    assert!(
-        matches!(error, NetError::Proto(ProtoError::FrameTooLarge { .. })),
-        "{error}"
-    );
+    drop(reader);
+    drop(writer);
+    let _ = send.await;
+    match error {
+        NetError::Proto(ProtoError::LineTooLarge { size, max }) => {
+            assert!(size > MAX_LINK_LINE, "{size}");
+            assert_eq!(max, MAX_LINK_LINE);
+        }
+        other => panic!("{other}"),
+    }
 }
