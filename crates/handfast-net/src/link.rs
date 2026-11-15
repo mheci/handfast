@@ -15,7 +15,7 @@ use handfast_proto::{
 };
 use rustls::pki_types::ServerName;
 use socket2::{SockRef, TcpKeepalive};
-use tokio::io::{AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
@@ -442,8 +442,11 @@ async fn send_frame<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-async fn read_hello(tcp: &mut TcpStream, limits: &LinkLimits) -> Result<IdentityHello> {
-    let packet = timeout(limits.handshake_timeout, frame::read_frame(tcp))
+async fn read_hello<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    limits: &LinkLimits,
+) -> Result<IdentityHello> {
+    let packet = timeout(limits.handshake_timeout, frame::read_frame(reader))
         .await
         .map_err(|_| NetError::Timeout("plaintext hello"))??;
     let packet = packet.ok_or(NetError::LinkClosed)?;
@@ -520,6 +523,14 @@ mod tests {
     use serde_json::json;
     use tokio::io::AsyncReadExt;
 
+    /// The phone's first bytes, from `NetworkPacket.serialize()`.
+    const ANDROID_HELLO_LINE: &str = concat!(
+        r#"{"id":0,"type":"kdeconnect.identity","body":{"deviceId":"fedcba9876543210fedcba9876543210","#,
+        r#""deviceName":"Pixel","deviceType":"phone","incomingCapabilities":["kdeconnect.ping"],"#,
+        r#""outgoingCapabilities":["kdeconnect.ping"],"protocolVersion":8,"tcpPort":1716,"#,
+        r#""targetDeviceId":"00112233445566778899aabbccddeeff","targetProtocolVersion":"8"}}"#,
+    );
+
     fn ping_packet() -> Packet {
         Packet::from_body(types::PING, &json!({ "message": "hello" })).expect("build a ping")
     }
@@ -542,6 +553,30 @@ mod tests {
         assert_eq!(limits.keepalive_interval, Duration::from_secs(10));
         assert_eq!(limits.keepalive_retries, 3);
         assert_eq!(limits.tcp_user_timeout, Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn read_hello_accepts_a_raw_android_line() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        client
+            .write_all(format!("{ANDROID_HELLO_LINE}\n").as_bytes())
+            .await
+            .expect("write the phone's hello line");
+
+        let hello = read_hello(&mut server, &LinkLimits::default())
+            .await
+            .expect("the listener reads the phone's newline-terminated hello");
+
+        assert_eq!(
+            hello.identity.device_id.as_str(),
+            "fedcba9876543210fedcba9876543210"
+        );
+        assert_eq!(
+            hello.target_device_id.as_str(),
+            "00112233445566778899aabbccddeeff"
+        );
+        assert_eq!(hello.identity.device_type.as_str(), "phone");
+        assert_eq!(hello.target_protocol_version, 8);
     }
 
     #[cfg(target_os = "linux")]
