@@ -1117,11 +1117,23 @@ fn interrupt(daemon: &Child) {
 }
 
 #[cfg(unix)]
+fn terminate(daemon: &Child) {
+    let status = Command::new("kill")
+        .args(["-TERM", &daemon.id().to_string()])
+        .status()
+        .expect("send SIGTERM");
+    assert!(status.success(), "kill -TERM failed");
+}
+
+#[cfg(unix)]
 fn wait_for_exit(mut daemon: Child) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(status) = daemon.try_wait().unwrap() {
-            assert!(status.success(), "handfast exits cleanly on SIGINT");
+            assert!(
+                status.success(),
+                "handfast exits cleanly on the stop signal"
+            );
             return;
         }
         assert!(Instant::now() < deadline, "handfast did not exit");
@@ -1808,6 +1820,48 @@ async fn shutdown_removes_the_control_socket() {
         !socket.exists(),
         "graceful shutdown removes the control socket"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sigterm_aborts_the_transfer_and_removes_the_control_socket() {
+    let _serial = serial().await;
+    let directory = tempfile::tempdir().unwrap();
+    let log = directory.path().join("daemon.log");
+    let (daemon, mut peer, config, _) =
+        spawn_and_pair(directory.path(), &log, free_udp_port()).await;
+
+    let port = free_payload_port();
+    let (listener, acceptor) = payload_server(&config, port);
+    let (release, release_rx) = oneshot::channel();
+    let send = tokio::spawn(serve_payload(
+        listener,
+        acceptor,
+        b"payload".to_vec(),
+        Some(release_rx),
+    ));
+    peer.send(&share_file_wire("partial.bin", 7, port))
+        .await
+        .expect("send a share request");
+    let temp = wait_for_temp(&incoming_dir(directory.path())).await;
+
+    let started = Instant::now();
+    terminate(&daemon);
+    wait_for_exit(daemon);
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "SIGTERM exits within the shutdown grace"
+    );
+    wait_for_absence(&temp).await;
+
+    assert!(!incoming_dir(directory.path()).join("partial.bin").exists());
+    assert_eq!(temp_entries(&incoming_dir(directory.path())), 0);
+    assert!(
+        !control_socket(directory.path()).exists(),
+        "SIGTERM removes the control socket"
+    );
+    drop(release);
+    send.abort();
 }
 
 #[tokio::test]

@@ -101,14 +101,38 @@ fn run_daemon(args: DaemonArgs) -> ExitCode {
         Ok(runtime) => runtime,
         Err(error) => return fail(error),
     };
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    let result = runtime.block_on(run(args, shutdown));
+    let result = runtime.block_on(run(args, shutdown_signal()));
     // A pending terminal read runs on a blocking thread. Bound runtime
     // shutdown so a prompt cannot hold the process open.
     runtime.shutdown_timeout(SHUTDOWN_GRACE);
     report(result)
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                eprintln!("handfast: cannot listen for SIGTERM: {error}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
 }
 
 fn run_share(args: ShareArgs, data_dir: PathBuf) -> ExitCode {
