@@ -13,7 +13,6 @@ const DEVICE: &str = "0123456789abcdef0123456789abcdef";
 // Serializes the process-global `XDG_RUNTIME_DIR` change.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Serializes the tests and gives each one its own runtime directory.
 struct TestEnv {
     _guard: tokio::sync::MutexGuard<'static, ()>,
     runtime: tempfile::TempDir,

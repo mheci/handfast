@@ -61,7 +61,6 @@ pub enum ControlRequest {
     PairingDecision {
         /// Device ID shown in the pairing prompt. The daemon validates it.
         device_id: String,
-        /// Whether to accept the request.
         accept: bool,
     },
 }
@@ -159,9 +158,7 @@ pub struct PairedDevice {
 /// A pairing request waiting for an answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairingSummary {
-    /// Device identifier.
     pub device_id: DeviceId,
-    /// Display name.
     pub device_name: String,
     /// SHA-256 of the peer certificate as hex.
     pub fingerprint: String,
@@ -206,7 +203,6 @@ pub enum DaemonCommand {
     PairingDecision {
         /// Device ID of the open prompt.
         device_id: DeviceId,
-        /// Whether to accept the request.
         accept: bool,
         /// Reply sender.
         reply: oneshot::Sender<ControlResponse>,

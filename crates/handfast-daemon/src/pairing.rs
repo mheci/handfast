@@ -26,7 +26,6 @@ const PROMPT_QUEUE: usize = 8;
 /// Lines read while no prompt is open are tagged and queued.
 const ANSWER_QUEUE: usize = 8;
 
-/// One answer to a pairing prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairingDecision {
     /// Write the pin and send the acceptance.

@@ -414,7 +414,6 @@ struct Daemon {
     shutdown: Option<oneshot::Sender<()>>,
 }
 
-/// One open pairing prompt.
 struct PendingPrompt {
     token: u64,
     summary: PairingSummary,
@@ -901,7 +900,6 @@ impl Daemon {
         }
     }
 
-    /// Answer the open prompt for `device_id`, if there is one.
     fn decide_pairing(&mut self, device_id: &DeviceId, accept: bool) -> ControlResponse {
         let Some(prompt) = self.prompts.get_mut(device_id) else {
             return ControlResponse::Err {

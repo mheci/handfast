@@ -319,7 +319,6 @@ async fn send_pair(
     decision_message(&device_id, accept, response)
 }
 
-/// Turn the daemon's reply into the line `handfast pair` prints.
 fn decision_message(
     device_id: &str,
     accept: bool,
