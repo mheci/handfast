@@ -235,3 +235,14 @@ Design risks carried into implementation:
 - Pairing clock skew and Windows state-file and incoming-file ACLs remain open.
 - The unpaired idle timeout must not close a link inside the 30-second pairing window.
 - The testkit TLS peer duplicates handshake logic on purpose.
+
+Parity wave 1, 2026-11-16, branch `feat/parity`:
+
+- Branding: two interlocking rings, teal `#128C7E` over copper `#E8833A`, from `scripts/branding.py`. Exports: 16 to 1024 PNG, a 7-size ICO, 128 px RGBA for the window, color, mono and wordmark SVG. Wired into the GUI window, the MSI product and shortcut icon, the deb and Arch hicolor trees, `handfast.desktop`, and `docs/branding.md`. The SVG rendered in Chromium with both ring colors; the ICO loads in .NET.
+- Windows backends: clipboard (`clipboard-win`), notifications (toast through in-box PowerShell with tag close), media (SMTC through in-box PowerShell), volume (WASAPI through `volumecontrol-windows`), screensaver (`keepawake` on a dedicated thread), lock (`rundll32.exe`), shell (`explorer.exe`, http and https only), files (existing ACL path). Every tool is an absolute System32 path. No new unsafe. The daemon now installs these on Windows instead of only Files.
+- Real Windows evidence: clipboard round trip, volume read and rewrite (44%, unmuted), keep-awake hold and release, live SMTC player list and now playing, and a toast show and close all passed with `cargo test -p handfast-desktop -- --ignored`.
+- Outbound clipboard: `Plugin::on_tick` plus a 2 s session timer. The plugin sends `clipboard.connect` on connect and `clipboard` on a local change, caps the selection at 256 KiB, and never echoes an inbound write. Roster now advertises clipboard outgoing.
+- Roster truth: fixed the inverted remotecommands, sftp and shareinputdevices entries, added remotekeyboard echo and keyboardstate incoming, removed sms.messages from SMS outgoing.
+- Docs: `docs/ARCHITECTURE.md` now lists Linux and Windows adapters; `docs/PARITY.md` has the Windows table and the named gaps (no Windows input, no player volume read, 2 s clipboard poll, toast AUMID follow-up).
+- Local checks: desktop 133 pass plus 5 ignored real tests, daemon 129 pass, plugins 132 pass, runtime 11 pass, fmt and clippy clean on the changed crates. The release `handfast.exe` builds at 10.99 MB. WiX is not installed locally, so the MSI build is unverified until CI or a release run.
+- Pending: comment review, commit and PR. Then findmyphone, remotesystemvolume, telephony, MPRIS both ways, sendnotifications, runcommand, input, contacts, SMS, sftp, virtualmonitor.
