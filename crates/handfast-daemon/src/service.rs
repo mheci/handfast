@@ -155,6 +155,7 @@ pub trait DaemonControl {
 pub struct LocalControl {
     data_dir: PathBuf,
     runtime: tokio::runtime::Runtime,
+    request_timeout: Duration,
 }
 
 impl LocalControl {
@@ -167,33 +168,44 @@ impl LocalControl {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        Ok(Self { data_dir, runtime })
+        Ok(Self {
+            data_dir,
+            runtime,
+            request_timeout: STOP_TIMEOUT,
+        })
+    }
+
+    fn request(&self, request: &ControlRequest) -> Result<ControlResponse, ControlError> {
+        self.runtime.block_on(async {
+            match tokio::time::timeout(self.request_timeout, send_request(&self.data_dir, request))
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(ControlError::Timeout("reply")),
+            }
+        })
     }
 }
 
 impl DaemonControl for LocalControl {
     fn status(&self) -> Result<DaemonStatus, ControlError> {
-        self.runtime.block_on(async {
-            match send_request(&self.data_dir, &ControlRequest::Status).await? {
-                ControlResponse::Status { status } => Ok(*status),
-                ControlResponse::Err { message } => Err(ControlError::Remote(message)),
-                ControlResponse::Ok { .. } | ControlResponse::ShuttingDown => Err(
-                    ControlError::Remote("unexpected control response".to_string()),
-                ),
-            }
-        })
+        match self.request(&ControlRequest::Status)? {
+            ControlResponse::Status { status } => Ok(*status),
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            ControlResponse::Ok { .. } | ControlResponse::ShuttingDown => Err(
+                ControlError::Remote("unexpected control response".to_string()),
+            ),
+        }
     }
 
     fn shutdown(&self) -> Result<(), ControlError> {
-        self.runtime.block_on(async {
-            match send_request(&self.data_dir, &ControlRequest::Shutdown).await? {
-                ControlResponse::ShuttingDown => Ok(()),
-                ControlResponse::Err { message } => Err(ControlError::Remote(message)),
-                ControlResponse::Ok { .. } | ControlResponse::Status { .. } => Err(
-                    ControlError::Remote("unexpected control response".to_string()),
-                ),
-            }
-        })
+        match self.request(&ControlRequest::Shutdown)? {
+            ControlResponse::ShuttingDown => Ok(()),
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            ControlResponse::Ok { .. } | ControlResponse::Status { .. } => Err(
+                ControlError::Remote("unexpected control response".to_string()),
+            ),
+        }
     }
 }
 
@@ -210,22 +222,28 @@ pub struct Service<'a> {
 
 impl<'a> Service<'a> {
     /// Describe the service for `exe`, `data_dir` and the daemon `log`.
-    #[must_use]
+    ///
+    /// Relative paths are resolved against the current directory, so the unit
+    /// and the task never depend on the working directory at logon.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a path cannot be made absolute.
     pub fn new(
         exe: PathBuf,
         data_dir: PathBuf,
         log: PathBuf,
         runner: &'a dyn CommandRunner,
-    ) -> Self {
-        Self {
-            exe,
-            data_dir,
-            log,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            exe: std::path::absolute(exe)?,
+            data_dir: std::path::absolute(data_dir)?,
+            log: std::path::absolute(log)?,
             #[cfg(any(unix, test))]
             unit_path: unit_path(),
             runner,
             stop_timeout: STOP_TIMEOUT,
-        }
+        })
     }
 
     /// Write the unit or task, enable it and start it.
@@ -284,16 +302,22 @@ impl<'a> Service<'a> {
     /// Send `Shutdown`, wait for the endpoint to stop answering, then fall
     /// back to the platform stop command.
     ///
-    /// A daemon that is not running counts as success.
+    /// A daemon that is not running counts as success. A daemon that rejects
+    /// the request or does not reply is stopped by the fallback, and a failed
+    /// fallback is an error.
     ///
     /// # Errors
     ///
     /// Fails when the fallback command is rejected.
     pub fn stop(&self, control: &dyn DaemonControl) -> Result<(), ServiceError> {
-        let _ = control.shutdown();
+        match control.shutdown() {
+            Ok(()) => {}
+            Err(ControlError::NotRunning) => return Ok(()),
+            Err(_) => return self.stop_service(),
+        }
         let deadline = Instant::now() + self.stop_timeout;
         loop {
-            if control.status().is_err() {
+            if matches!(control.status(), Err(ControlError::NotRunning)) {
                 return Ok(());
             }
             let now = Instant::now();
@@ -302,6 +326,10 @@ impl<'a> Service<'a> {
             }
             std::thread::sleep(STOP_POLL.min(deadline - now));
         }
+        self.stop_service()
+    }
+
+    fn stop_service(&self) -> Result<(), ServiceError> {
         #[cfg(unix)]
         self.run_checked(&unix_stop_command())?;
         #[cfg(windows)]
@@ -418,6 +446,8 @@ impl<'a> Service<'a> {
 
     #[cfg(any(unix, test))]
     fn write_unit(&self, content: &str) -> Result<(), ServiceError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
         if std::fs::read_to_string(&self.unit_path).is_ok_and(|existing| existing == content) {
             return Ok(());
         }
@@ -428,7 +458,11 @@ impl<'a> Service<'a> {
             )));
         };
         std::fs::create_dir_all(parent)?;
-        let temp = self.unit_path.with_extension("tmp");
+        static UNIT_FILE: AtomicU64 = AtomicU64::new(0);
+        let nonce = UNIT_FILE.fetch_add(1, Ordering::Relaxed);
+        let temp = self
+            .unit_path
+            .with_file_name(format!("{UNIT_NAME}.{}-{nonce}.tmp", std::process::id()));
         std::fs::write(&temp, content)?;
         std::fs::rename(&temp, &self.unit_path)?;
         Ok(())
@@ -589,7 +623,7 @@ fn config_home() -> PathBuf {
 }
 
 fn systemd_quote(path: &Path) -> String {
-    let text = path.display().to_string();
+    let text = path.display().to_string().replace('%', "%%");
     let needs_quotes = text
         .chars()
         .any(|character| character.is_whitespace() || character == '"' || character == '\'');
@@ -710,35 +744,86 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum Reply {
+        Answer,
+        NotRunning,
+        Timeout,
+        Rejected,
+    }
+
+    impl Reply {
+        fn status(self) -> Result<DaemonStatus, ControlError> {
+            match self {
+                Reply::Answer => Ok(sample_status()),
+                Reply::NotRunning => Err(ControlError::NotRunning),
+                Reply::Timeout => Err(ControlError::Timeout("reply")),
+                Reply::Rejected => Err(ControlError::Remote("rejected".to_string())),
+            }
+        }
+
+        fn shutdown(self) -> Result<(), ControlError> {
+            match self {
+                Reply::Answer => Ok(()),
+                Reply::NotRunning => Err(ControlError::NotRunning),
+                Reply::Timeout => Err(ControlError::Timeout("reply")),
+                Reply::Rejected => Err(ControlError::Remote("rejected".to_string())),
+            }
+        }
+    }
+
     struct FakeControl {
-        answers: RefCell<VecDeque<bool>>,
+        status_replies: RefCell<VecDeque<Reply>>,
+        shutdown_reply: Reply,
         shutdowns: Cell<usize>,
     }
 
     impl FakeControl {
-        fn answering(answers: &[bool]) -> Self {
+        fn answering(answers: &[Reply]) -> Self {
             Self {
-                answers: RefCell::new(answers.iter().copied().collect()),
+                status_replies: RefCell::new(answers.iter().copied().collect()),
+                shutdown_reply: Reply::Answer,
                 shutdowns: Cell::new(0),
             }
         }
 
         fn stopped() -> Self {
-            Self::answering(&[])
+            Self {
+                status_replies: RefCell::new(VecDeque::new()),
+                shutdown_reply: Reply::NotRunning,
+                shutdowns: Cell::new(0),
+            }
+        }
+
+        fn refusing() -> Self {
+            Self {
+                status_replies: RefCell::new(VecDeque::new()),
+                shutdown_reply: Reply::Rejected,
+                shutdowns: Cell::new(0),
+            }
+        }
+
+        fn timing_out() -> Self {
+            Self {
+                status_replies: RefCell::new(VecDeque::new()),
+                shutdown_reply: Reply::Timeout,
+                shutdowns: Cell::new(0),
+            }
         }
     }
 
     impl DaemonControl for FakeControl {
         fn status(&self) -> Result<DaemonStatus, ControlError> {
-            match self.answers.borrow_mut().pop_front().unwrap_or(false) {
-                true => Ok(sample_status()),
-                false => Err(ControlError::NotRunning),
-            }
+            self.status_replies
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or(Reply::NotRunning)
+                .status()
         }
 
         fn shutdown(&self) -> Result<(), ControlError> {
             self.shutdowns.set(self.shutdowns.get() + 1);
-            Ok(())
+            self.shutdown_reply.shutdown()
         }
     }
 
@@ -790,6 +875,26 @@ mod tests {
     }
 
     #[test]
+    fn service_resolves_relative_paths() {
+        let runner = FakeCommands::default();
+        let service = Service::new(
+            PathBuf::from("handfast"),
+            PathBuf::from("data"),
+            PathBuf::from("data/handfast.log"),
+            &runner,
+        )
+        .unwrap();
+
+        assert!(service.exe.is_absolute(), "{}", service.exe.display());
+        assert!(
+            service.data_dir.is_absolute(),
+            "{}",
+            service.data_dir.display()
+        );
+        assert!(service.log.is_absolute(), "{}", service.log.display());
+    }
+
+    #[test]
     fn unit_file_names_the_daemon_data_and_log_paths() {
         let unit = unit_file(
             Path::new("/opt/handfast/handfast"),
@@ -828,6 +933,21 @@ WantedBy=default.target
         assert!(
             unit.contains(
                 "ExecStart=\"/opt/my apps/handfast\" daemon --data-dir \"/home/me/My Data\" --log-file \"/home/me/My Data/handfast.log\""
+            ),
+            "{unit}"
+        );
+    }
+
+    #[test]
+    fn unit_file_escapes_percent_specifiers() {
+        let unit = unit_file(
+            Path::new("/opt/100%/handfast"),
+            Path::new("/home/me/My Data%"),
+            Path::new("/home/me/My Data%/handfast.log"),
+        );
+        assert!(
+            unit.contains(
+                "ExecStart=/opt/100%%/handfast daemon --data-dir \"/home/me/My Data%%\" --log-file \"/home/me/My Data%%/handfast.log\""
             ),
             "{unit}"
         );
@@ -1084,7 +1204,7 @@ WantedBy=default.target
             directory.path().join(UNIT_NAME),
             &runner,
         );
-        let control = FakeControl::answering(&[true]);
+        let control = FakeControl::answering(&[Reply::Answer]);
 
         service
             .install_task_with_sid("S-1-5-21-1-2-3-1001", &control)
@@ -1333,7 +1453,7 @@ WantedBy=default.target
             directory.path().join(UNIT_NAME),
             &runner,
         );
-        let control = FakeControl::answering(&[true]);
+        let control = FakeControl::answering(&[Reply::Answer]);
 
         service.start(&control).unwrap();
 
@@ -1350,7 +1470,7 @@ WantedBy=default.target
             directory.path().join(UNIT_NAME),
             &runner,
         );
-        let control = FakeControl::answering(&[true]);
+        let control = FakeControl::answering(&[Reply::Answer]);
 
         service.stop(&control).unwrap();
 
@@ -1372,7 +1492,7 @@ WantedBy=default.target
             directory.path().join(UNIT_NAME),
             &runner,
         );
-        let control = FakeControl::answering(&[true, true, true]);
+        let control = FakeControl::answering(&[Reply::Answer, Reply::Answer, Reply::Answer]);
 
         service.stop(&control).unwrap();
 
@@ -1402,6 +1522,67 @@ WantedBy=default.target
     }
 
     #[test]
+    fn stop_falls_back_when_the_daemon_rejects_shutdown() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::default();
+        let service = service_for(
+            "/opt/handfast/handfast",
+            directory.path(),
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+        let control = FakeControl::refusing();
+
+        service.stop(&control).unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        #[cfg(unix)]
+        assert_eq!(calls[0].1, ["--user", "stop", UNIT_NAME]);
+        #[cfg(windows)]
+        assert_eq!(calls[0].1, ["/End", "/TN", TASK_NAME]);
+    }
+
+    #[test]
+    fn stop_falls_back_when_the_request_times_out() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::default();
+        let service = service_for(
+            "/opt/handfast/handfast",
+            directory.path(),
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+        let control = FakeControl::timing_out();
+
+        service.stop(&control).unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        #[cfg(unix)]
+        assert_eq!(calls[0].1, ["--user", "stop", UNIT_NAME]);
+        #[cfg(windows)]
+        assert_eq!(calls[0].1, ["/End", "/TN", TASK_NAME]);
+    }
+
+    #[test]
+    fn stop_reports_a_failed_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::failing(&["systemctl --user stop", "schtasks /End"]);
+        let service = service_for(
+            "/opt/handfast/handfast",
+            directory.path(),
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+        let control = FakeControl::refusing();
+
+        let error = service.stop(&control).unwrap_err();
+
+        assert!(matches!(error, ServiceError::Command { .. }), "{error}");
+    }
+
+    #[test]
     fn status_reports_installed_running_pid_and_uptime() {
         let directory = tempfile::tempdir().unwrap();
         let runner = FakeCommands::default();
@@ -1411,7 +1592,7 @@ WantedBy=default.target
             directory.path().join(UNIT_NAME),
             &runner,
         );
-        let control = FakeControl::answering(&[true]);
+        let control = FakeControl::answering(&[Reply::Answer]);
 
         let status = service.status(&control);
 

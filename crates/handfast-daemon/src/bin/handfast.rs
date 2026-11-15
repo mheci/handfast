@@ -291,7 +291,10 @@ fn run_service(args: ServiceArgs, data_dir: PathBuf) -> ExitCode {
     };
     let log = data_dir.join("handfast.log");
     let commands = SystemCommands;
-    let service = Service::new(exe, data_dir.clone(), log, &commands);
+    let service = match Service::new(exe, data_dir.clone(), log, &commands) {
+        Ok(service) => service,
+        Err(error) => return fail(error),
+    };
     let control = match LocalControl::new(data_dir) {
         Ok(control) => control,
         Err(error) => return fail(error),
