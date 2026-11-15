@@ -1,11 +1,15 @@
-//! Independent 4-byte length-prefixed JSON framing.
+//! Independent wire codecs.
+//!
+//! The TLS link uses newline-delimited compact JSON. The plain peer harness
+//! uses 4-byte length-prefixed frames, which is the local control-channel
+//! format, not the KDE Connect link format.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// Maximum frame size accepted by the peer.
+/// Maximum frame size accepted by the plain peer harness.
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 /// A packet shaped like the KDE Connect wire format, independent of production
@@ -183,6 +187,10 @@ pub async fn write<W: AsyncWrite + Unpin>(writer: &mut W, packet: &WirePacket) -
 /// `readLineBounded` cap.
 pub const MAX_HELLO_LINE: usize = 512 * 1024;
 
+/// Maximum link packet line accepted by the peer, matching the 1 MiB packet
+/// policy.
+pub const MAX_LINK_LINE: usize = 1024 * 1024;
+
 /// Encode a packet as one compact JSON line terminated by `\n`.
 ///
 /// # Errors
@@ -197,13 +205,15 @@ pub fn encode_line(packet: &WirePacket) -> Result<Vec<u8>> {
 
 /// Read one newline-terminated JSON line, one byte at a time.
 ///
-/// Returns `Ok(None)` on a clean EOF before the first byte. A buffered reader
-/// could consume the TLS handshake bytes that follow the hello.
+/// Returns `Ok(None)` on a clean EOF before the first byte.
 ///
 /// # Errors
 ///
 /// Fails on a truncated or over-cap line or invalid JSON.
-pub async fn read_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<WirePacket>> {
+pub async fn read_line<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> Result<Option<WirePacket>> {
     let mut line = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -211,13 +221,13 @@ pub async fn read_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Wi
             if line.is_empty() {
                 return Ok(None);
             }
-            return Err(TestkitError::Protocol("truncated hello line".to_string()));
+            return Err(TestkitError::Protocol("truncated line".to_string()));
         }
         if byte[0] == b'\n' {
             break;
         }
-        if line.len() >= MAX_HELLO_LINE {
-            return Err(TestkitError::Protocol("hello line too large".to_string()));
+        if line.len() >= max {
+            return Err(TestkitError::Protocol("line too large".to_string()));
         }
         line.push(byte[0]);
     }
@@ -288,11 +298,22 @@ mod tests {
         assert_eq!(read(&mut server).await.unwrap().unwrap(), ping());
     }
 
+    #[test]
+    fn hello_line_cap_matches_android() {
+        assert_eq!(MAX_HELLO_LINE, 512 * 1024);
+    }
+
     #[tokio::test]
     async fn line_round_trip() {
         let (mut client, mut server) = duplex(1024);
         write_line(&mut client, &ping()).await.unwrap();
-        assert_eq!(read_line(&mut server).await.unwrap().unwrap(), ping());
+        assert_eq!(
+            read_line(&mut server, MAX_LINK_LINE)
+                .await
+                .unwrap()
+                .unwrap(),
+            ping()
+        );
     }
 
     #[tokio::test]
@@ -310,7 +331,7 @@ mod tests {
             .await
             .unwrap();
         drop(client);
-        assert!(read_line(&mut server).await.is_err());
+        assert!(read_line(&mut server, MAX_LINK_LINE).await.is_err());
     }
 
     #[tokio::test]
@@ -320,6 +341,6 @@ mod tests {
             .write_all(&vec![b'x'; MAX_HELLO_LINE + 1])
             .await
             .unwrap();
-        assert!(read_line(&mut server).await.is_err());
+        assert!(read_line(&mut server, MAX_HELLO_LINE).await.is_err());
     }
 }

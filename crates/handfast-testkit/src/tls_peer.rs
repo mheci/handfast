@@ -2,7 +2,8 @@
 //!
 //! The dialing side is the TLS server and the accepting side is the TLS client,
 //! matching KDE Connect. The peer builds its own certificates, configs and
-//! frames, so a link test never shares code with the production link.
+//! newline-delimited packets, so a link test never shares code with the
+//! production link.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -395,31 +396,50 @@ impl TlsPeer {
         &self.local_identity
     }
 
-    /// Write one framed packet.
+    /// Write one newline-delimited packet.
     ///
     /// # Errors
     ///
     /// Fails when the packet is invalid or the TLS write fails.
     pub async fn send(&mut self, packet: &WirePacket) -> Result<()> {
-        within_timeout(frame::write(&mut self.stream, packet)).await
+        within_timeout(frame::write_line(&mut self.stream, packet)).await
     }
 
-    /// Read one framed packet.
+    /// Read one newline-delimited packet.
     ///
     /// # Errors
     ///
-    /// Fails on a truncated or malformed frame.
+    /// Fails on a truncated, malformed or oversized line.
     pub async fn recv(&mut self) -> Result<Option<WirePacket>> {
-        within_timeout(frame::read(&mut self.stream)).await
+        within_timeout(frame::read_line(&mut self.stream, frame::MAX_LINK_LINE)).await
     }
 
-    /// Write a frame header that declares more than the 1 MiB cap, with no body.
+    /// Write raw bytes, for wire-format tests that bypass the line encoder.
     ///
     /// # Errors
     ///
-    /// Fails when the header write fails.
-    pub async fn send_oversized_frame_header(&mut self, size: u32) -> Result<()> {
-        self.stream.write_all(&size.to_be_bytes()).await?;
+    /// Fails when the TLS write fails.
+    pub async fn send_raw(&mut self, bytes: &[u8]) -> Result<()> {
+        within_timeout(async {
+            self.stream.write_all(bytes).await?;
+            self.stream.flush().await
+        })
+        .await
+    }
+
+    /// Write `size` bytes with no newline, to exercise the reader's line cap.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the TLS write fails.
+    pub async fn send_oversized_line(&mut self, size: usize) -> Result<()> {
+        let chunk = [b'x'; 8192];
+        let mut remaining = size;
+        while remaining > 0 {
+            let take = remaining.min(chunk.len());
+            self.stream.write_all(&chunk[..take]).await?;
+            remaining -= take;
+        }
         self.stream.flush().await?;
         Ok(())
     }
@@ -497,8 +517,8 @@ pub async fn dial_with_raw_hello(
     let protocol_version = negotiated_version(&stream)?;
 
     let local_identity = config.local_identity_packet();
-    within_timeout(frame::write(&mut stream, &local_identity)).await?;
-    let peer_identity = within_timeout(frame::read(&mut stream))
+    within_timeout(frame::write_line(&mut stream, &local_identity)).await?;
+    let peer_identity = within_timeout(frame::read_line(&mut stream, frame::MAX_LINK_LINE))
         .await?
         .ok_or_else(|| TestkitError::Protocol("peer closed before its identity".to_string()))?;
     check_identity(&peer_identity, expected_device_id)?;
@@ -534,7 +554,7 @@ pub async fn connect_silent(address: SocketAddr) -> Result<TcpStream> {
 pub async fn accept(listener: &TcpListener, config: &TlsPeerConfig) -> Result<TlsPeer> {
     let (mut tcp, _) = within_timeout(listener.accept()).await?;
     tcp.set_nodelay(true)?;
-    let hello = within_timeout(frame::read_line(&mut tcp))
+    let hello = within_timeout(frame::read_line(&mut tcp, frame::MAX_HELLO_LINE))
         .await?
         .ok_or_else(|| TestkitError::Protocol("dialer closed before its hello".to_string()))?;
     config.check_hello(&hello)?;
@@ -547,12 +567,12 @@ pub async fn accept(listener: &TcpListener, config: &TlsPeerConfig) -> Result<Tl
     let mut stream: tokio_rustls::TlsStream<TcpStream> = stream.into();
     let protocol_version = negotiated_version(&stream)?;
 
-    let peer_identity = within_timeout(frame::read(&mut stream))
+    let peer_identity = within_timeout(frame::read_line(&mut stream, frame::MAX_LINK_LINE))
         .await?
         .ok_or_else(|| TestkitError::Protocol("dialer closed before its identity".to_string()))?;
     check_identity(&peer_identity, &hello_device_id)?;
     let local_identity = config.local_identity_packet();
-    within_timeout(frame::write(&mut stream, &local_identity)).await?;
+    within_timeout(frame::write_line(&mut stream, &local_identity)).await?;
 
     Ok(TlsPeer {
         stream,

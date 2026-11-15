@@ -23,8 +23,9 @@
 The wire contract is frozen independently of the implementation:
 
 - Protocol version 8.
-- Packet frame: 4-byte big-endian length followed by UTF-8 JSON. Maximum frame
-  size 1 MiB.
+- LAN link packet: one UTF-8 JSON line terminated by `\n`. Maximum line size
+  1 MiB. The local control channel keeps 4-byte big-endian length framing with
+  a 1 MiB cap; it is not part of the KDE Connect wire protocol.
 - UDP discovery on port 1716. TCP control and payload links use the 1716-1764
   range.
 - TLS 1.2 and TLS 1.3. Certificates are self-signed, the device ID is the
@@ -43,7 +44,7 @@ production codec must not be the only implementation used to test itself.
 
 | Crate | Responsibility | Must not depend on |
 | --- | --- | --- |
-| `handfast-proto` | Packet model, framing, identity, capabilities | networking, desktop |
+| `handfast-proto` | Packet model, local IPC framing, identity, capabilities | networking, desktop |
 | `handfast-net` | UDP discovery, TCP links, pairing state machine | plugins, desktop |
 | `handfast-runtime` | Plugin trait, registry, per-device host, events, supervision | concrete plugins |
 | `handfast-plugins` | 31-plugin roster and plugin implementations | daemon, UI |
@@ -248,7 +249,7 @@ schema. Requests are idempotent; events are broadcast.
   Pairing code derivation lands in P1.
 - Unpaired devices can send only pair packets. Every other packet is dropped
   before the plugin layer, and no `DeviceHost` exists for an unpaired peer.
-- Frame size, payload size and JSON nesting are capped before allocation.
+- Line size, payload size and JSON nesting are capped before allocation.
 - The private key is held in `Zeroizing<Vec<u8>>` and zeroized when
   `TlsIdentity` drops.
 - File transfers reject absolute paths, `..`, symlink escapes and reserved names.

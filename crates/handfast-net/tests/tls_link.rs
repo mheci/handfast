@@ -9,15 +9,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use handfast_net::{
-    connect, Fingerprint, LinkLimits, LinkListener, LinkPolicy, LocalEndpoint, NetError, PeerTrust,
-    TlsError, TlsIdentity, TrustTable,
+    connect, Fingerprint, Link, LinkLimits, LinkListener, LinkPolicy, LocalEndpoint, NetError,
+    PeerTrust, TlsError, TlsIdentity, TrustTable,
 };
 use handfast_proto::{
     types, Capabilities, DeviceId, DeviceName, DeviceType, Identity, Packet, ProtoError,
 };
-use handfast_testkit::frame::MAX_FRAME_SIZE;
+use handfast_testkit::frame::MAX_LINK_LINE;
 use handfast_testkit::tls_peer::{
-    accept, connect_silent, dial, dial_with_hello, dial_with_raw_hello, CertificateKind,
+    accept, connect_silent, dial, dial_with_hello, dial_with_raw_hello, CertificateKind, TlsPeer,
     TlsPeerConfig, TlsVersion,
 };
 use handfast_testkit::WirePacket;
@@ -94,6 +94,39 @@ fn echo() -> WirePacket {
         payload_size: None,
         payload_transfer_info: None,
     }
+}
+
+async fn dial_testkit(
+    local: &Arc<LocalEndpoint>,
+    version: TlsVersion,
+    certificate: CertificateKind,
+) -> (Link, TlsPeer) {
+    let peer = peer_config(version, certificate);
+    let peer_id = device_id(&peer.identity.device_id);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the testkit listener");
+    let address = listener.local_addr().expect("read the testkit address");
+    let server = tokio::spawn(async move { accept(&listener, &peer).await });
+    let policy = policy();
+    let permit = policy
+        .reserve_outgoing(&peer_id, PeerTrust::Unpaired)
+        .expect("reserve the outbound slot");
+    let link = connect(
+        address,
+        local.as_ref(),
+        &peer_id,
+        PeerTrust::Unpaired,
+        &limits(),
+        permit,
+    )
+    .await
+    .expect("the dialer completes the link");
+    let peer = server
+        .await
+        .expect("the listener task completes")
+        .expect("the testkit accept succeeds");
+    (link, peer)
 }
 
 #[tokio::test]
@@ -544,34 +577,9 @@ async fn correlates_the_hello_certificate_and_encrypted_identity() {
 }
 
 #[tokio::test]
-async fn framed_ping_round_trips_after_the_handshake() {
+async fn line_ping_round_trips_after_the_handshake() {
     let local = local_endpoint(HANDFAST_ID);
-    let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
-    let peer_id = device_id(&peer.identity.device_id);
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind the testkit listener");
-    let address = listener.local_addr().expect("read the testkit address");
-    let server = tokio::spawn(async move { accept(&listener, &peer).await });
-
-    let policy = policy();
-    let permit = policy
-        .reserve_outgoing(&peer_id, PeerTrust::Unpaired)
-        .expect("reserve the outbound slot");
-    let link = connect(
-        address,
-        local.as_ref(),
-        &peer_id,
-        PeerTrust::Unpaired,
-        &limits(),
-        permit,
-    )
-    .await
-    .expect("the dialer completes the link");
-    let mut peer = server
-        .await
-        .expect("the listener task completes")
-        .expect("the testkit accept succeeds");
+    let (link, mut peer) = dial_testkit(&local, TlsVersion::Tls13, CertificateKind::Ecdsa).await;
 
     let (_, mut reader, mut writer, _permit) = link.into_parts();
     writer
@@ -596,6 +604,46 @@ async fn framed_ping_round_trips_after_the_handshake() {
         reply.body.get("message").and_then(Value::as_str),
         Some("echo")
     );
+}
+
+#[tokio::test]
+async fn link_reader_accepts_a_raw_android_packet_line() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (link, mut peer) = dial_testkit(&local, TlsVersion::Tls13, CertificateKind::Ecdsa).await;
+    let (_, mut reader, _writer, _permit) = link.into_parts();
+
+    peer.send_raw(b"{\"id\":0,\"type\":\"kdeconnect.ping\",\"body\":{\"message\":\"raw\"}}\n")
+        .await
+        .expect("write the raw packet line");
+    let packet = reader
+        .recv()
+        .await
+        .expect("the link reads the raw packet line")
+        .expect("the link did not see EOF");
+
+    assert_eq!(packet.ptype, types::PING);
+    assert_eq!(
+        packet.body.get("message").and_then(Value::as_str),
+        Some("raw")
+    );
+}
+
+#[tokio::test]
+async fn link_reader_rejects_a_line_without_a_newline() {
+    let local = local_endpoint(HANDFAST_ID);
+    let (link, mut peer) = dial_testkit(&local, TlsVersion::Tls13, CertificateKind::Ecdsa).await;
+    let (_, mut reader, _writer, _permit) = link.into_parts();
+
+    peer.send_raw(b"{\"id\":0,\"type\":\"kdeconnect.ping\",\"body\":{}}")
+        .await
+        .expect("write the packet without its newline");
+    peer.close().await.expect("close the testkit peer");
+
+    let error = reader
+        .recv()
+        .await
+        .expect_err("a line without a newline is rejected");
+    assert!(matches!(error, NetError::LinkClosed), "{error}");
 }
 
 #[tokio::test]
@@ -751,7 +799,7 @@ async fn listener_times_out_a_silent_peer() {
 }
 
 #[tokio::test]
-async fn listener_closes_a_peer_that_declares_an_oversized_frame() {
+async fn listener_closes_a_peer_that_sends_an_oversized_line() {
     let local = local_endpoint(HANDFAST_ID);
     let (listener, address) = bind(&local).await;
     let peer = peer_config(TlsVersion::Tls13, CertificateKind::Ecdsa);
@@ -760,22 +808,23 @@ async fn listener_closes_a_peer_that_declares_an_oversized_frame() {
     let link = listener
         .accept(local.as_ref(), &TrustTable::default(), &limits(), &policy())
         .await
-        .expect("the handshake completes before the bad frame");
+        .expect("the handshake completes before the bad line");
     let mut peer = dialer
         .await
         .expect("the dialer task completes")
         .expect("the dial succeeds");
-    peer.send_oversized_frame_header((MAX_FRAME_SIZE + 1) as u32)
-        .await
-        .expect("write the oversized header");
+    let send = tokio::spawn(async move { peer.send_oversized_line(MAX_LINK_LINE + 1).await });
 
-    let (_, mut reader, _, _permit) = link.into_parts();
+    let (_, mut reader, writer, _permit) = link.into_parts();
     let error = match reader.recv().await {
-        Ok(_) => panic!("an oversized frame must be rejected"),
+        Ok(_) => panic!("an oversized line must be rejected"),
         Err(error) => error,
     };
+    drop(reader);
+    drop(writer);
+    let _ = send.await;
     assert!(
-        matches!(error, NetError::Proto(ProtoError::FrameTooLarge { .. })),
+        matches!(error, NetError::Proto(ProtoError::LineTooLarge { .. })),
         "{error}"
     );
 }

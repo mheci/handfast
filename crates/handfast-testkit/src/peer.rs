@@ -1,4 +1,7 @@
-//! An Android-shaped Rust peer for conformance tests.
+//! A plain TCP peer harness for the packet schema.
+//!
+//! It uses the 4-byte frame codec, which the local control channel shares. The
+//! TLS link uses newline-delimited JSON instead.
 
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

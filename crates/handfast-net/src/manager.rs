@@ -2,8 +2,8 @@
 //!
 //! One task owns the listener, the trust snapshot, the admission policy, the
 //! peer table and the active links. Discovery sightings and trust updates are
-//! commands. Handshake tasks report back, link tasks forward frames, and the
-//! manager alone decides which frames pass the gate. Connection and pairing
+//! commands. Handshake tasks report back, link tasks forward packets, and the
+//! manager alone decides which packets pass the gate. Connection and pairing
 //! events are sent with backpressure; packet events use `try_send`. A dropped
 //! packet is counted and logged with its device and type. Share requests travel
 //! on a dedicated reliable channel; a full or closed share channel closes the

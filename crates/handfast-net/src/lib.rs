@@ -1,10 +1,11 @@
 //! Discovery, TCP links, pairing and payload transfers for Handfast.
 //!
 //! The link layer owns the plaintext hello, both TLS roles, the certificate
-//! and identity checks, the framed packet stream, and the manager that admits
-//! and supervises links. Discovery is unauthenticated; the encrypted identity
-//! exchange is authoritative. The payload layer moves share bytes over a
-//! separate TLS session with the certificate the control link authenticated.
+//! and identity checks, the newline-delimited packet stream, and the manager
+//! that admits and supervises links. Discovery is unauthenticated; the
+//! encrypted identity exchange is authoritative. The payload layer moves share
+//! bytes over a separate TLS session with the certificate the control link
+//! authenticated.
 
 #![deny(missing_docs)]
 
