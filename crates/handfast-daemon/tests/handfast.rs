@@ -53,7 +53,20 @@ fn help_lists_the_daemon_share_identity_and_version_subcommands() {
     let output = handfast(&["--help"]);
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let commands = subcommands(&stdout(&output));
-    for command in ["daemon", "share", "identity", "version"] {
+    for command in ["daemon", "share", "service", "identity", "version"] {
+        assert!(
+            commands.iter().any(|listed| listed == command),
+            "{command} missing from {commands:?}"
+        );
+    }
+}
+
+#[test]
+fn service_help_lists_the_five_commands() {
+    let output = handfast(&["service", "--help"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let commands = subcommands(&stdout(&output));
+    for command in ["install", "uninstall", "start", "stop", "status"] {
         assert!(
             commands.iter().any(|listed| listed == command),
             "{command} missing from {commands:?}"

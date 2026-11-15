@@ -3,6 +3,7 @@
 //! [`run`] is the daemon composition root.
 
 pub mod control;
+pub mod service;
 
 mod daemon;
 mod identity;
