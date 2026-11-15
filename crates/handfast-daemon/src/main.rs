@@ -242,8 +242,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         loop {
             tokio::select! {
                 _ = announce.tick() => {
-                    if let Err(error) = discovery.announce_broadcast().await {
-                        tracing::warn!(%error, "discovery announcement failed");
+                    if should_announce(&discovery_links) {
+                        if let Err(error) = discovery.announce_broadcast().await {
+                            tracing::warn!(%error, "discovery announcement failed");
+                        }
                     }
                 }
                 received = discovery.recv() => {
@@ -851,6 +853,10 @@ impl DiscoveryWrites {
     }
 }
 
+fn should_announce(links: &LinkManagerHandle) -> bool {
+    links.active_links() == 0
+}
+
 fn unix_now() -> Option<i64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1115,6 +1121,85 @@ mod tests {
             writes.should_write(&fresh, start + DISCOVERY_WRITE_INTERVAL),
             "a new peer is written once an entry expires"
         );
+    }
+
+    #[tokio::test]
+    async fn discovery_announces_only_while_no_link_is_active() {
+        use std::net::Ipv4Addr;
+
+        use handfast_net::TlsIdentity;
+        use handfast_proto::Capabilities;
+        use handfast_testkit::peer::PeerConfig;
+        use handfast_testkit::tls_peer::{dial, TlsPeerConfig, TlsVersion};
+
+        let local_id = DeviceId::new("ffeeddccbbaa99887766554433221100").expect("valid local ID");
+        let tls = Arc::new(TlsIdentity::generate(local_id.clone()).expect("generate the identity"));
+        let local = Arc::new(
+            LocalEndpoint::new(
+                Arc::clone(&tls),
+                Identity::new(
+                    local_id.clone(),
+                    DeviceName::new("Discovery pause test"),
+                    DeviceType::Desktop,
+                    Capabilities::default(),
+                    Some(1716),
+                ),
+            )
+            .expect("the IDs match"),
+        );
+        let listener = LinkListener::bind_in_range(1716, Arc::clone(&tls))
+            .await
+            .expect("bind a listener in the KDE Connect range");
+        let address = SocketAddr::from((
+            Ipv4Addr::LOCALHOST,
+            listener
+                .local_addr()
+                .expect("read the bound address")
+                .port(),
+        ));
+        let (link_tx, mut link_rx) = mpsc::channel(16);
+        let (share_tx, _share_rx) = mpsc::channel(16);
+        let (links, manager_task) = LinkManager::start(
+            listener,
+            local,
+            TrustTable::default(),
+            LinkLimits::default(),
+            link_tx,
+            share_tx,
+        );
+
+        assert!(should_announce(&links), "an idle daemon announces");
+
+        let mut peer_identity = PeerConfig::client();
+        peer_identity.device_id = "fedcba9876543210fedcba9876543210".to_string();
+        let peer_config =
+            TlsPeerConfig::ecdsa(peer_identity, TlsVersion::Both).expect("build the testkit peer");
+        let peer = dial(address, local_id.as_str(), &peer_config)
+            .await
+            .expect("the testkit peer completes the link");
+        let connected = tokio::time::timeout(Duration::from_secs(5), link_rx.recv())
+            .await
+            .expect("Connected arrives")
+            .expect("the manager is running");
+        assert!(matches!(connected, LinkEvent::Connected { .. }));
+        assert!(
+            !should_announce(&links),
+            "an active link pauses the broadcast"
+        );
+
+        peer.close().await.expect("close the testkit link");
+        let disconnected = tokio::time::timeout(Duration::from_secs(5), link_rx.recv())
+            .await
+            .expect("Disconnected arrives")
+            .expect("the manager is running");
+        assert!(matches!(disconnected, LinkEvent::Disconnected { .. }));
+        assert!(
+            should_announce(&links),
+            "the tick after the last close announces again"
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
     }
 
     #[tokio::test]

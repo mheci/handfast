@@ -1387,6 +1387,7 @@ Both candidates converged on the important security shape: ECDSA P-256, CN = dev
 - The testkit TLS peer duplicates handshake logic on purpose. It must stay independent enough to catch a production bug. This is a maintenance cost, not a one-time cost.
 - The runtime's `DeviceHost` has no event bus. This unit logs plugin events. The IPC/event surface is future work.
 - The real-client tests are still needed before the P1 exit: one Android TLS 1.2 connection and one desktop TLS 1.3 connection, including an RSA certificate case if a real peer presents one.
+- Discovery announcements pause while a link is active. The official clients dial on every announcement they receive, so a broadcast every 5 s made Android replace its link and drop in-flight packets. The daemon now broadcasts only when `LinkManagerHandle::active_links()` is zero and resumes on the next 5 s tick after the last link closes. The cost is that a second device cannot discover this daemon while one link is up. The follow-up is link and session reuse on both sides, which lets announcements resume without replacing a live link.
 
 ## Next implementation step
 
