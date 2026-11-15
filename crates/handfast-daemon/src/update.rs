@@ -4,7 +4,7 @@
 //! tag with this build's version. [`Updater::apply`] downloads the bare binary
 //! for this target, checks it against `SHA256SUMS` and, on Windows, its
 //! Authenticode signature, then replaces the running executable with a rename
-//! pair so a crash leaves a state the next start finishes. On Unix the
+//! pair. A leftover `.old` is removed on the next start. On Unix the
 //! same-release SHA-256 is the whole check.
 //!
 //! The network and the signature check sit behind [`ReleaseSource`] and
@@ -131,6 +131,8 @@ impl Release {
         self.assets.iter().find(|asset| asset.name == name)
     }
 
+    /// Parse the tag into a version.
+    ///
     /// # Errors
     ///
     /// Fails when the tag is not `vX.Y.Z`.
@@ -569,7 +571,7 @@ impl<'a> Updater<'a> {
             }
             let now = Instant::now();
             if now >= deadline {
-                return Err(UpdateError::DaemonRunning(STOP_TIMEOUT));
+                return Err(UpdateError::DaemonRunning);
             }
             std::thread::sleep(STOP_POLL.min(deadline - now));
         }
@@ -712,8 +714,8 @@ pub enum UpdateError {
     #[error("the download exceeds {0} bytes")]
     TooLarge(u64),
 
-    #[error("the daemon did not stop within {0:?}")]
-    DaemonRunning(Duration),
+    #[error("the daemon did not stop")]
+    DaemonRunning,
 
     #[error(
         "cannot remove {}: close the previous Handfast process and retry",
