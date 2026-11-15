@@ -1,20 +1,23 @@
 # Template. CI replaces __VERSION__ with the Cargo version, using _ for -.
-pkgname=handfastd-bin
+pkgname=handfast-bin
 pkgver=__VERSION__
 pkgrel=1
-pkgdesc="Clean-room KDE Connect daemon (prebuilt binary)"
+pkgdesc="Clean-room KDE Connect client (prebuilt binary)"
 arch=('x86_64')
 url="https://github.com/mheci/handfast"
 license=('MIT')
 depends=('glibc' 'gcc-libs')
-provides=('handfastd')
-conflicts=('handfastd')
+provides=('handfast')
+conflicts=('handfastd-bin')
+replaces=('handfastd-bin')
 options=('!debug')
-source=('handfastd' 'README.md' 'LICENSE-MIT')
-sha256sums=('SKIP' 'SKIP' 'SKIP')
+source=('handfast' 'README.md' 'LICENSE-MIT' 'THIRD-PARTY-NOTICES.md' 'handfast.service')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
-    install -Dm755 "$srcdir/handfastd" "$pkgdir/usr/bin/handfastd"
-    install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/handfastd-bin/README.md"
-    install -Dm644 "$srcdir/LICENSE-MIT" "$pkgdir/usr/share/licenses/handfastd-bin/LICENSE-MIT"
+    install -Dm755 "$srcdir/handfast" "$pkgdir/usr/bin/handfast"
+    install -Dm644 "$srcdir/handfast.service" "$pkgdir/usr/lib/systemd/user/handfast.service"
+    install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/handfast-bin/README.md"
+    install -Dm644 "$srcdir/LICENSE-MIT" "$pkgdir/usr/share/licenses/handfast-bin/LICENSE-MIT"
+    install -Dm644 "$srcdir/THIRD-PARTY-NOTICES.md" "$pkgdir/usr/share/licenses/handfast-bin/THIRD-PARTY-NOTICES.md"
 }
