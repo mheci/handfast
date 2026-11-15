@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -13,8 +15,7 @@ use tokio::sync::mpsc;
 const DEVICE: &str = "0123456789abcdef0123456789abcdef";
 const PEER: &str = "fedcba9876543210fedcba9876543210";
 
-// Serializes the process-global `XDG_RUNTIME_DIR` change. The Windows pipe is
-// per user, so the two tests must not use the endpoint at the same time.
+// Serializes the process-global `XDG_RUNTIME_DIR` change.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Serializes the tests and gives each one its own runtime directory on Unix.
@@ -49,12 +50,14 @@ fn sample_status() -> DaemonStatus {
             device_name: "Laptop".to_string(),
             device_type: "desktop".to_string(),
             fingerprint: "ab".repeat(32),
+            tcp_port: 1716,
         },
         incoming_dir: PathBuf::from("/home/me/Downloads"),
         connected: vec![DeviceSummary {
             device_id: device_id(PEER),
             device_name: "Pixel".to_string(),
             device_type: "phone".to_string(),
+            connected: true,
         }],
         paired: vec![PairedDevice {
             device_id: device_id(PEER),
@@ -131,6 +134,7 @@ async fn status_prints_human_fields_rows_and_json() {
         "device name: Laptop".to_string(),
         "device type: desktop".to_string(),
         format!("fingerprint: {}", "ab".repeat(32)),
+        "tcp port: 1716".to_string(),
         "incoming dir: /home/me/Downloads".to_string(),
         "connected: 1".to_string(),
         "paired: 1".to_string(),
@@ -156,8 +160,10 @@ async fn status_prints_human_fields_rows_and_json() {
     assert_eq!(status["identity"]["device_name"], json!("Laptop"));
     assert_eq!(status["identity"]["device_type"], json!("desktop"));
     assert_eq!(status["identity"]["fingerprint"], json!("ab".repeat(32)));
+    assert_eq!(status["identity"]["tcp_port"], json!(1716));
     assert_eq!(status["incoming_dir"], json!("/home/me/Downloads"));
     assert_eq!(status["connected"][0]["device_id"], json!(PEER));
+    assert_eq!(status["connected"][0]["connected"], json!(true));
     assert_eq!(status["paired"][0]["connected"], json!(true));
     assert_eq!(status["transfers"][0]["transfer_id"], json!(7));
     assert_eq!(status["transfers"][0]["total"], json!(4096));

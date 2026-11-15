@@ -115,6 +115,8 @@ pub struct IdentitySummary {
     pub device_type: String,
     /// SHA-256 of the DER certificate as hex.
     pub fingerprint: String,
+    /// Advertised KDE Connect TCP port.
+    pub tcp_port: u16,
 }
 
 /// A connected device.
@@ -126,6 +128,8 @@ pub struct DeviceSummary {
     pub device_name: String,
     /// Device type string.
     pub device_type: String,
+    /// Whether a link to this device is open. Always `true` in `connected`.
+    pub connected: bool,
 }
 
 /// A paired device from the store.
@@ -716,12 +720,14 @@ mod tests {
                 device_name: "Laptop".to_string(),
                 device_type: "desktop".to_string(),
                 fingerprint: "ab".repeat(32),
+                tcp_port: 1716,
             },
             incoming_dir: PathBuf::from("/home/me/Downloads"),
             connected: vec![DeviceSummary {
                 device_id: DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id"),
                 device_name: "Pixel".to_string(),
                 device_type: "phone".to_string(),
+                connected: true,
             }],
             paired: vec![PairedDevice {
                 device_id: DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id"),
@@ -796,6 +802,7 @@ mod tests {
                 device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
                 device_name: "Handfast test peer".to_string(),
                 device_type: "phone".to_string(),
+                connected: true,
             })
             .collect();
         status.paired = (0..MAX_STATUS_DEVICES)

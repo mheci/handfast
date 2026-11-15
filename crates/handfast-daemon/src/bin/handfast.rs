@@ -221,6 +221,7 @@ fn print_status(status: &DaemonStatus) {
     println!("device name: {}", status.identity.device_name);
     println!("device type: {}", status.identity.device_type);
     println!("fingerprint: {}", status.identity.fingerprint);
+    println!("tcp port: {}", status.identity.tcp_port);
     println!("incoming dir: {}", status.incoming_dir.display());
     println!("connected: {}", status.connected.len());
     for device in &status.connected {

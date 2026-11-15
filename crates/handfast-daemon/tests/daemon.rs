@@ -1296,6 +1296,7 @@ async fn status_reports_identity_devices_and_transfers() {
     let (daemon, mut peer, config, daemon_id) =
         spawn_and_pair(directory.path(), &log, free_udp_port()).await;
     let data_dir = directory.path().to_path_buf();
+    let bound_port = logged_tcp_port(&log).expect("the daemon logs the bound port");
 
     let output = run_status(data_dir.clone(), false).await;
     assert!(output.status.success(), "stderr: {}", stderr(&output));
@@ -1303,6 +1304,7 @@ async fn status_reports_identity_devices_and_transfers() {
     for line in [
         format!("pid: {}", daemon.id()),
         format!("device id: {daemon_id}"),
+        format!("tcp port: {bound_port}"),
         format!("incoming dir: {}", incoming_dir(directory.path()).display()),
         "connected: 1".to_string(),
         "paired: 1".to_string(),
@@ -1329,12 +1331,14 @@ async fn status_reports_identity_devices_and_transfers() {
         Some(64),
         "the fingerprint is a hex SHA-256"
     );
+    assert_eq!(status["identity"]["tcp_port"], json!(bound_port));
     assert_eq!(
         status["incoming_dir"],
         json!(incoming_dir(directory.path()))
     );
     assert_eq!(status["connected"].as_array().map(Vec::len), Some(1));
     assert_eq!(status["connected"][0]["device_id"], json!(TEST_PEER_ID));
+    assert_eq!(status["connected"][0]["connected"], json!(true));
     assert_eq!(status["paired"].as_array().map(Vec::len), Some(1));
     assert_eq!(status["paired"][0]["device_id"], json!(TEST_PEER_ID));
     assert_eq!(status["paired"][0]["connected"], json!(true));

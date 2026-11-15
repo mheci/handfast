@@ -210,6 +210,7 @@ pub async fn run(
         device_name: identity.device_name.as_str().to_string(),
         device_type: identity.device_type.as_str().to_string(),
         fingerprint,
+        tcp_port: identity.tcp_port.unwrap_or(tcp_port),
     };
     let local = Arc::new(LocalEndpoint::new(tls, identity.clone())?);
 
@@ -485,6 +486,7 @@ impl Daemon {
                         device_id: device_id.clone(),
                         device_name: name.clone(),
                         device_type: device_type.clone(),
+                        connected: true,
                     },
                 );
                 if let Err(error) = Arc::clone(&self.store)
@@ -545,6 +547,9 @@ impl Daemon {
             }
             LinkEvent::Disconnected { device_id, reason } => {
                 self.connected.remove(&device_id);
+                // A mid-transfer disconnect aborts the session without a
+                // ShareFailed, so the row would otherwise stay forever.
+                self.transfers.retain(|(id, _), _| id != &device_id);
                 if let Some(session) = self.sessions.remove(&device_id) {
                     session.handle().stop(reason.clone());
                 }
@@ -1418,6 +1423,7 @@ mod tests {
                 device_name: "Daemon test".to_string(),
                 device_type: "desktop".to_string(),
                 fingerprint: "00".repeat(32),
+                tcp_port: 1716,
             },
             incoming_dir: directory.path().join("incoming"),
             connected: HashMap::new(),
@@ -1557,6 +1563,151 @@ mod tests {
                 LinkEvent::Disconnected { reason, .. } if reason == "closed by manager"
             ),
             "a share with no session and no pending link closes the link"
+        );
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    async fn status_daemon(
+        store: Arc<Store>,
+        directory: &std::path::Path,
+    ) -> (
+        Daemon,
+        LinkManagerHandle,
+        JoinHandle<handfast_net::Result<()>>,
+    ) {
+        use handfast_net::{PayloadLimits, TlsIdentity};
+        use handfast_proto::Capabilities;
+
+        let local_id = DeviceId::new("ffeeddccbbaa99887766554433221100").expect("valid local ID");
+        let tls =
+            Arc::new(TlsIdentity::generate(local_id.clone()).expect("generate the local identity"));
+        let local = Arc::new(
+            LocalEndpoint::new(
+                Arc::clone(&tls),
+                Identity::new(
+                    local_id.clone(),
+                    DeviceName::new("Status test"),
+                    DeviceType::Desktop,
+                    Capabilities::default(),
+                    Some(1716),
+                ),
+            )
+            .expect("the IDs match"),
+        );
+        let listener = LinkListener::bind_in_range(1716, Arc::clone(&tls))
+            .await
+            .expect("bind a listener in the KDE Connect range");
+        let (link_tx, _link_rx) = mpsc::channel(16);
+        let (share_tx, _share_rx) = mpsc::channel(16);
+        let (links, manager_task) = LinkManager::start(
+            listener,
+            local,
+            TrustTable::default(),
+            LinkLimits::default(),
+            link_tx,
+            share_tx,
+        );
+        let (events, _events_rx) = mpsc::channel(16);
+        let (prompt_tx, _prompt_rx) = mpsc::channel(8);
+        let (shutdown, _shutdown_rx) = oneshot::channel();
+        let daemon = Daemon {
+            store,
+            registry: Arc::new(registry()),
+            desktop: Desktop::default(),
+            links: links.clone(),
+            payloads: Arc::new(PayloadService::new(
+                Arc::clone(&tls),
+                PayloadLimits::default(),
+            )),
+            limits: ShareLimits::default(),
+            events,
+            sessions: HashMap::new(),
+            pending: HashMap::new(),
+            prompts: HashMap::new(),
+            next_prompt: 0,
+            prompt_tx,
+            prompt_task: tokio::spawn(async {}),
+            started_at: Instant::now(),
+            identity: IdentitySummary {
+                device_id: local_id,
+                device_name: "Status test".to_string(),
+                device_type: "desktop".to_string(),
+                fingerprint: "00".repeat(32),
+                tcp_port: 1716,
+            },
+            incoming_dir: directory.join("incoming"),
+            connected: HashMap::new(),
+            transfers: HashMap::new(),
+            shutdown: Some(shutdown),
+        };
+        (daemon, links, manager_task)
+    }
+
+    #[tokio::test]
+    async fn status_caps_device_lists_at_128_and_sets_truncated() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        for index in 0..=MAX_STATUS_DEVICES {
+            let id = format!("{index:032x}");
+            store
+                .record_authenticated_identity(&id, "Peer", "phone")
+                .expect("record the paired peer");
+            store
+                .set_trusted(&id, Some([index as u8; 32]))
+                .expect("pin the paired peer");
+        }
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        for index in 0..=MAX_STATUS_DEVICES {
+            let device_id = DeviceId::new(format!("{index:032x}")).expect("a device id");
+            daemon.connected.insert(
+                device_id.clone(),
+                DeviceSummary {
+                    device_id,
+                    device_name: "Peer".to_string(),
+                    device_type: "phone".to_string(),
+                    connected: true,
+                },
+            );
+        }
+
+        let status = daemon.status().await.expect("build the status");
+        assert!(status.truncated, "129 rows in one list set the flag");
+        assert_eq!(status.connected.len(), MAX_STATUS_DEVICES);
+        assert_eq!(status.paired.len(), MAX_STATUS_DEVICES);
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn disconnect_clears_the_device_transfers() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        daemon.transfers.insert(
+            (peer.clone(), 1),
+            TransferSummary {
+                device_id: peer.clone(),
+                transfer_id: 1,
+                bytes: 1024,
+                total: Some(4096),
+            },
+        );
+
+        daemon
+            .handle_link_event(LinkEvent::Disconnected {
+                device_id: peer,
+                reason: "link closed".to_string(),
+            })
+            .await;
+        assert!(
+            daemon.transfers.is_empty(),
+            "a mid-transfer disconnect drops the row"
         );
 
         links.shutdown();
