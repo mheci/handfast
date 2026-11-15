@@ -434,10 +434,6 @@ struct ManagerState {
 }
 
 impl ManagerState {
-    /// Publish the installed link count after a change to the active map.
-    ///
-    /// A replacement keeps the old count until the new link is in the map, so
-    /// discovery never sees a gap while one link hands over to another.
     fn sync_active_links(&self) {
         self.active_links
             .store(self.active.len(), Ordering::Relaxed);

@@ -853,11 +853,6 @@ impl DiscoveryWrites {
     }
 }
 
-/// Whether discovery may broadcast this tick.
-///
-/// The official clients dial on every announcement and replace their live link,
-/// so a broadcast during a session drops packets. Announcements resume on the
-/// next tick after the last link closes.
 fn should_announce(links: &LinkManagerHandle) -> bool {
     links.active_links() == 0
 }
