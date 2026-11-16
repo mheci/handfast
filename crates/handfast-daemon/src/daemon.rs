@@ -34,7 +34,7 @@ use crate::control::{
     CommandConfigAction, CommandSummary, ControlResponse, ControlServer, DaemonCommand,
     DaemonStatus, DeviceSummary, IdentitySummary, PairedDevice, PairingSummary,
     RemoteCommandRequest, RemoteDeviceCommands, RemoteDevicePlayers, RemoteDeviceSinks,
-    RemoteMediaCommand, TransferSummary, MAX_STATUS_DEVICES,
+    RemoteInputAction, RemoteMediaCommand, TransferSummary, MAX_STATUS_DEVICES,
 };
 use crate::default_data_dir;
 use crate::identity;
@@ -1226,6 +1226,57 @@ impl Daemon {
                         handfast_plugins::remotecommands::setup_request()
                     }
                     RemoteCommandRequest::Stop => handfast_plugins::remotecommands::stop_request(),
+                };
+                let packet = match packet {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        let _ = reply.send(ControlResponse::Err {
+                            message: error.to_string(),
+                        });
+                        return;
+                    }
+                };
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let response = match handle.send_packet(packet).await {
+                        Ok(()) => ControlResponse::Ok { bytes: 0 },
+                        Err(error) => ControlResponse::Err {
+                            message: error.to_string(),
+                        },
+                    };
+                    let _ = reply.send(response);
+                });
+            }
+            DaemonCommand::RemoteInput {
+                device_id,
+                action,
+                reply,
+            } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                let packet = match action {
+                    RemoteInputAction::Move { dx, dy } => {
+                        handfast_plugins::remotecontrol::move_request(f64::from(dx), f64::from(dy))
+                    }
+                    RemoteInputAction::Scroll { dx, dy } => {
+                        handfast_plugins::remotecontrol::scroll_request(
+                            f64::from(dx),
+                            f64::from(dy),
+                        )
+                    }
+                    RemoteInputAction::Click { button } => {
+                        handfast_plugins::remotecontrol::click_request(button)
+                    }
+                    RemoteInputAction::Key { text, modifiers } => {
+                        handfast_plugins::remotecontrol::key_request(&text, modifiers)
+                    }
+                    RemoteInputAction::SpecialKey { code, modifiers } => {
+                        handfast_plugins::remotecontrol::special_key_request(code, modifiers)
+                    }
                 };
                 let packet = match packet {
                     Ok(packet) => packet,
@@ -2448,6 +2499,32 @@ mod tests {
             .handle_command(DaemonCommand::Media {
                 device_id: peer,
                 command: RemoteMediaCommand::RequestList,
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("is not connected")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn remote_input_to_an_unknown_device_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::RemoteInput {
+                device_id: peer,
+                action: RemoteInputAction::Move { dx: 1, dy: -1 },
                 reply,
             })
             .await;

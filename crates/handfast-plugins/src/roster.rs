@@ -186,7 +186,7 @@ pub const REMOTECOMMANDS: PluginMeta = PluginMeta {
 pub const REMOTECONTROL: PluginMeta = PluginMeta {
     name: "remotecontrol",
     title: "Send remote mouse input",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[],
     outgoing: &[types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::None,
@@ -196,7 +196,7 @@ pub const REMOTECONTROL: PluginMeta = PluginMeta {
 pub const REMOTEKEYBOARD: PluginMeta = PluginMeta {
     name: "remotekeyboard",
     title: "Send remote keyboard input",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::MOUSEPAD_ECHO, types::MOUSEPAD_KEYBOARDSTATE],
     outgoing: &[types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::None,

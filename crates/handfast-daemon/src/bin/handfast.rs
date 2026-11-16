@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
 
-use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 use handfast_daemon::control::{
     send_request, CommandConfigAction, ControlError, ControlRequest, ControlResponse, DaemonStatus,
-    PairingSummary, RemoteCommandRequest, RemoteMediaCommand,
+    PairingSummary, RemoteCommandRequest, RemoteInputAction, RemoteMediaCommand,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::update::{Authenticode, GitHub, Updater};
@@ -13,6 +13,7 @@ use handfast_daemon::{
     default_data_dir, no_subcommand, parse_tcp_port, run, DaemonArgs, NoSubcommand,
     DEFAULT_TCP_PORT, SHUTDOWN_GRACE,
 };
+use handfast_plugins::remotecontrol::{RemoteClick, RemoteInputModifiers};
 use handfast_proto::DeviceId;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -48,6 +49,9 @@ enum Command {
     /// List or trigger a connected device's commands.
     #[command(name = "remote-command")]
     RemoteCommands(RemoteCommandArgs),
+    /// Send mouse or keyboard input to a connected device.
+    #[command(name = "remote-input")]
+    RemoteInput(RemoteInputArgs),
     /// List or edit the local runcommand configuration.
     #[command(name = "command")]
     Commands(CommandArgs),
@@ -209,6 +213,75 @@ struct RemoteCommandArgs {
     stop: bool,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ClickArg {
+    /// Left click.
+    Left,
+    /// Left double click.
+    Double,
+    /// Middle click.
+    Middle,
+    /// Right click.
+    Right,
+    /// Left button press.
+    Hold,
+    /// Left button release.
+    Release,
+}
+
+#[derive(Debug, Parser)]
+struct RemoteInputArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Relative pointer move.
+    #[arg(
+        long = "move",
+        num_args = 2,
+        value_names = ["DX", "DY"],
+        allow_negative_numbers = true
+    )]
+    r#move: Option<Vec<i32>>,
+
+    /// Scroll step.
+    #[arg(
+        long,
+        num_args = 2,
+        value_names = ["DX", "DY"],
+        allow_negative_numbers = true
+    )]
+    scroll: Option<Vec<i32>>,
+
+    /// Mouse click.
+    #[arg(long, value_enum)]
+    click: Option<ClickArg>,
+
+    /// Text to type on the peer.
+    #[arg(long, value_name = "TEXT")]
+    key: Option<String>,
+
+    /// Special key code, 1-32.
+    #[arg(long, value_name = "CODE", value_parser = clap::value_parser!(u8).range(1..=32))]
+    special: Option<u8>,
+
+    /// Hold Alt.
+    #[arg(long)]
+    alt: bool,
+
+    /// Hold Control.
+    #[arg(long)]
+    ctrl: bool,
+
+    /// Hold Shift.
+    #[arg(long)]
+    shift: bool,
+
+    /// Hold Super.
+    #[arg(long)]
+    sup: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum CommandAction {
     /// List the configured commands.
@@ -346,6 +419,10 @@ fn main() -> ExitCode {
         Command::RemoteCommands(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_remote_command(args, data_dir)
+        }
+        Command::RemoteInput(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_remote_input(args, data_dir)
         }
         Command::Commands(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
@@ -830,6 +907,102 @@ async fn send_remote_command(
     };
     match send_request(&data_dir, &request).await? {
         ControlResponse::Ok { .. } => Ok(success),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_remote_input(args: RemoteInputArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_remote_input(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_remote_input(
+    args: RemoteInputArgs,
+    data_dir: PathBuf,
+) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let operations = [
+        args.r#move.is_some(),
+        args.scroll.is_some(),
+        args.click.is_some(),
+        args.key.is_some(),
+        args.special.is_some(),
+    ];
+    if operations.iter().filter(|selected| **selected).count() != 1 {
+        return Err(ControlError::Remote(
+            "remote-input needs one operation".to_string(),
+        ));
+    }
+    let modifiers = RemoteInputModifiers {
+        alt: args.alt,
+        ctrl: args.ctrl,
+        shift: args.shift,
+        sup: args.sup,
+    };
+    if (args.alt || args.ctrl || args.shift || args.sup)
+        && args.key.is_none()
+        && args.special.is_none()
+    {
+        return Err(ControlError::Remote(
+            "modifiers need --key or --special".to_string(),
+        ));
+    }
+    let action = if let Some(delta) = args.r#move.as_deref() {
+        RemoteInputAction::Move {
+            dx: delta[0],
+            dy: delta[1],
+        }
+    } else if let Some(delta) = args.scroll.as_deref() {
+        RemoteInputAction::Scroll {
+            dx: delta[0],
+            dy: delta[1],
+        }
+    } else if let Some(click) = args.click {
+        RemoteInputAction::Click {
+            button: match click {
+                ClickArg::Left => RemoteClick::Single,
+                ClickArg::Double => RemoteClick::Double,
+                ClickArg::Middle => RemoteClick::Middle,
+                ClickArg::Right => RemoteClick::Right,
+                ClickArg::Hold => RemoteClick::Hold,
+                ClickArg::Release => RemoteClick::Release,
+            },
+        }
+    } else if let Some(text) = args.key {
+        RemoteInputAction::Key { text, modifiers }
+    } else if let Some(code) = args.special {
+        RemoteInputAction::SpecialKey { code, modifiers }
+    } else {
+        return Err(ControlError::Remote(
+            "remote-input needs one operation".to_string(),
+        ));
+    };
+    let request = ControlRequest::RemoteInput {
+        device_id: args.device_id.clone(),
+        action,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("sent input to {}", args.device_id)),
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
         response => Err(ControlError::Remote(format!(
             "unexpected control response: {response:?}"

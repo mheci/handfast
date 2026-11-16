@@ -326,3 +326,11 @@ Parity wave 12, 2026-11-16, same branch:
 - Control: `CommandConfig { List, Add { key, name, argv }, Remove { key } }`, `ControlResponse::Commands`, and `handfast command list|add|remove`. `add` generates a UUID key and prints it; `remove` reports whether the key existed. The peer cannot add commands; `canAddCommand` is always false.
 - Evidence: store 23 pass (command round-trip), plugins 195 pass (6 runcommand tests), daemon lib 147 pass (CommandConfig round-trip and missing-adapter error), runtime 12 pass, desktop 143 pass, bin 4 pass, clippy/fmt/docs clean. The six `command_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
 - Gaps: no GUI surface; `.runcommand.output` is not consumed by `remotecommands` yet; the MSI and `service install` still use different firewall rule names.
+
+Parity wave 13, 2026-11-16, same branch:
+
+- emotecontrol and emotekeyboard are implemented and registered. Both are stateless; the desktop sends kdeconnect.mousepad.request and the phone injects the input. No local input is injected.
+- Packet builders: relative move, scroll, six click fields, text keys with modifiers, and special key codes 1-32. handfast remote-input <device-id> exposes them with --move DX DY, --scroll DX DY, --click left|double|middle|right|hold|release, --key TEXT, --special CODE and --alt/--ctrl/--shift/--sup.
+- Validation: deltas are limited to +/-10000, key text to 64 bytes with no control characters, special codes to 1-32, and exactly one operation per request. Modifiers require --key or --special.
+- Evidence: plugins 201 pass (6 remotecontrol tests), daemon lib 148 pass (RemoteInput round-trip and offline device), bin 4 pass, clippy/fmt/docs clean. The seven emoteinput_cli tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: no GUI surface; the phone must enable its remote control and remote keyboard plugins; special key codes are numeric only.

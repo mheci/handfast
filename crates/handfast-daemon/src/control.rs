@@ -14,6 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use handfast_plugins::remotecontrol::{RemoteClick, RemoteInputModifiers};
 use handfast_proto::DeviceId;
 use handfast_runtime::{RemoteCommand, RemoteMediaAction, RemotePlayer, RemoteSink};
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,13 @@ pub enum ControlRequest {
         device_id: String,
         /// The command to send.
         request: RemoteCommandRequest,
+    },
+    /// Send mouse or keyboard input to a connected device.
+    RemoteInput {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// The input to send.
+        action: RemoteInputAction,
     },
     /// List or edit the local runcommand configuration.
     CommandConfig {
@@ -219,6 +227,44 @@ pub enum RemoteCommandRequest {
     Setup,
     /// Ask the peer to close its command editor.
     Stop,
+}
+
+/// One input action sent to a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteInputAction {
+    /// Relative pointer movement.
+    Move {
+        /// Horizontal delta.
+        dx: i32,
+        /// Vertical delta.
+        dy: i32,
+    },
+    /// Scroll step.
+    Scroll {
+        /// Horizontal delta.
+        dx: i32,
+        /// Vertical delta.
+        dy: i32,
+    },
+    /// One mouse click or button action.
+    Click {
+        /// The click to perform.
+        button: RemoteClick,
+    },
+    /// Text typed on the peer.
+    Key {
+        /// Text to type.
+        text: String,
+        /// Modifiers held while typing.
+        modifiers: RemoteInputModifiers,
+    },
+    /// One special key press.
+    SpecialKey {
+        /// Special key code, 1-32.
+        code: u8,
+        /// Modifiers held while pressing.
+        modifiers: RemoteInputModifiers,
+    },
 }
 
 /// One local command configuration action.
@@ -388,6 +434,12 @@ pub enum DaemonCommand {
     RemoteCommand {
         device_id: DeviceId,
         request: RemoteCommandRequest,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Send one input action to a connected device and reply.
+    RemoteInput {
+        device_id: DeviceId,
+        action: RemoteInputAction,
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Apply one local command configuration action.
@@ -627,6 +679,28 @@ fn validate_media_command(command: &RemoteMediaCommand) -> Result<(), String> {
     }
 }
 
+fn validate_input_action(action: &RemoteInputAction) -> Result<(), String> {
+    match action {
+        RemoteInputAction::Move { dx, dy } | RemoteInputAction::Scroll { dx, dy } => {
+            if dx.unsigned_abs() > 10_000 || dy.unsigned_abs() > 10_000 {
+                return Err("the pointer delta is out of range".to_string());
+            }
+        }
+        RemoteInputAction::Key { text, .. } => {
+            if text.is_empty() || text.len() > 64 || text.chars().any(char::is_control) {
+                return Err("the key text is not valid".to_string());
+            }
+        }
+        RemoteInputAction::SpecialKey { code, .. } => {
+            if !(1..=handfast_plugins::remotecontrol::MAX_SPECIAL_KEY).contains(code) {
+                return Err("the special key code is out of range".to_string());
+            }
+        }
+        RemoteInputAction::Click { .. } => {}
+    }
+    Ok(())
+}
+
 async fn dispatch(
     request: ControlRequest,
     commands: mpsc::Sender<DaemonCommand>,
@@ -712,6 +786,21 @@ async fn dispatch(
             DaemonCommand::RemoteCommand {
                 device_id,
                 request,
+                reply,
+            }
+        }
+        ControlRequest::RemoteInput { device_id, action } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            if let Err(message) = validate_input_action(&action) {
+                return ControlResponse::Err { message };
+            }
+            DaemonCommand::RemoteInput {
+                device_id,
+                action,
                 reply,
             }
         }
@@ -1211,6 +1300,33 @@ mod tests {
                 device_id: "0123456789abcdef0123456789abcdef".to_string(),
                 request: RemoteCommandRequest::Run {
                     key: "abc".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::RemoteInput {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: RemoteInputAction::Key {
+                    text: "hello".to_string(),
+                    modifiers: RemoteInputModifiers {
+                        alt: true,
+                        ctrl: false,
+                        shift: true,
+                        sup: false,
+                    },
+                },
+            })
+            .await,
+            ControlRequest::RemoteInput {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: RemoteInputAction::Key {
+                    text: "hello".to_string(),
+                    modifiers: RemoteInputModifiers {
+                        alt: true,
+                        ctrl: false,
+                        shift: true,
+                        sup: false,
+                    },
                 },
             }
         );

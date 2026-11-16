@@ -20,6 +20,7 @@ pub mod pausemusic;
 pub mod ping;
 pub mod presenter;
 pub mod remotecommands;
+pub mod remotecontrol;
 pub mod remotesystemvolume;
 pub mod roster;
 pub mod runcommand;
@@ -44,6 +45,11 @@ pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
 pub use presenter::{PresenterFactory, PresenterPlugin};
 pub use remotecommands::{valid_command_key, RemoteCommandsFactory, RemoteCommandsPlugin};
+pub use remotecontrol::{
+    click_request, key_request, move_request, scroll_request, special_key_request, RemoteClick,
+    RemoteControlFactory, RemoteControlPlugin, RemoteInputModifiers, RemoteKeyboardFactory,
+    RemoteKeyboardPlugin,
+};
 pub use remotesystemvolume::{
     mute_request, valid_sink_name, volume_request, RemoteSystemVolumeFactory,
     RemoteSystemVolumePlugin,
@@ -73,6 +79,8 @@ pub fn registry() -> Registry {
         Box::new(remotesystemvolume::RemoteSystemVolumeFactory),
         Box::new(runcommand::RunCommandFactory),
         Box::new(remotecommands::RemoteCommandsFactory),
+        Box::new(remotecontrol::RemoteControlFactory),
+        Box::new(remotecontrol::RemoteKeyboardFactory),
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
         Box::new(lockdevice::LockDeviceFactory),
         Box::new(presenter::PresenterFactory),

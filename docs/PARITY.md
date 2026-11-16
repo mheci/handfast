@@ -31,8 +31,8 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 15 | `ping` | bidirectional | `kdeconnect.ping` | none | P0 | yes | n/a | no |
 | 16 | `presenter` | phone -> desktop | `kdeconnect.presenter` | `ydotool` and `wtype` on Wayland; `enigo` on Windows | P3 | yes | yes | no |
 | 17 | `remotecommands` | bidirectional | `kdeconnect.runcommand`, `.runcommand.request` | peer command model | P3 | yes | n/a | no |
-| 18 | `remotecontrol` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
-| 19 | `remotekeyboard` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
+| 18 | `remotecontrol` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | yes | n/a | no |
+| 19 | `remotekeyboard` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | yes | n/a | no |
 | 20 | `remotesystemvolume` | bidirectional | `kdeconnect.systemvolume`, `.systemvolume.request` | peer sink model | P2 | yes | n/a | no |
 | 21 | `runcommand` | bidirectional | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | yes | yes | no |
 | 22 | `screensaver-inhibit` | connection state | none (uses link state) | `systemd-inhibit` | P2 | yes | yes | no |
@@ -109,6 +109,10 @@ Gaps, named rather than hidden:
   `enigo` on Windows and `ydotool` plus `wtype` on Wayland. Absolute pointer and
   pressure for `digitizer`, and input capture for `shareinputdevices`, are still
   missing.
+- **Remote input**: `handfast remote-input` sends pointer moves, scrolls,
+  clicks and keys to a phone over `kdeconnect.mousepad.request`. The phone
+  injects the input; nothing is injected locally. Special key codes are 1-32,
+  matching the codes the desktop `mousepad` plugin accepts.
 - **Player volume read**: SMTC exposes `TryChangeVolumeAsync` but no per-session
   volume getter, so `PlaybackState.volume` is `None` on Windows.
 - **Clipboard push**: the session polls every 2 s because the clipboard trait has

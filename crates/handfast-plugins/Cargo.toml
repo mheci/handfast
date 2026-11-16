@@ -11,6 +11,7 @@ async-trait.workspace = true
 handfast-desktop = { path = "../handfast-desktop", version = "0.3.0" }
 handfast-proto = { path = "../handfast-proto", version = "0.3.0" }
 handfast-runtime = { path = "../handfast-runtime", version = "0.3.0" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
