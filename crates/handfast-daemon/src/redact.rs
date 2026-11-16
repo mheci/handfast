@@ -36,6 +36,14 @@ fn log_plugin_event(device_id: &DeviceId, event: &PluginEvent) {
                 "plugin event"
             );
         }
+        PluginEvent::RemoteSinks { sinks } => {
+            tracing::info!(
+                %device_id,
+                event = "RemoteSinks",
+                sinks = sinks.len(),
+                "plugin event"
+            );
+        }
         PluginEvent::Clipboard { text, .. } => {
             tracing::info!(
                 %device_id,

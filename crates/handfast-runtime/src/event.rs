@@ -3,7 +3,37 @@
 use std::path::PathBuf;
 
 use handfast_proto::{DeviceId, Packet};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// One audio sink reported by a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSink {
+    /// Stable sink name used in requests.
+    pub name: String,
+    /// Display name.
+    pub description: String,
+    /// Current volume in the peer's units.
+    pub volume: u32,
+    /// Whether the sink is muted.
+    pub muted: bool,
+    /// Maximum volume in the peer's units.
+    pub max_volume: u32,
+    /// Whether the sink is the peer's default.
+    pub enabled: bool,
+}
+
+impl RemoteSink {
+    /// Current volume as a percentage of [`Self::max_volume`], rounded to the
+    /// nearest point.
+    #[must_use]
+    pub fn percent(&self) -> u8 {
+        if self.max_volume == 0 {
+            return 0;
+        }
+        let scaled = u64::from(self.volume) * 100 + u64::from(self.max_volume) / 2;
+        (scaled / u64::from(self.max_volume)).min(100) as u8
+    }
+}
 
 /// Battery state reported by a peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -37,6 +67,11 @@ pub enum PluginEvent {
     },
     /// Battery state changed.
     Battery(BatteryState),
+    /// A peer reported its audio sinks.
+    RemoteSinks {
+        /// Sinks in name order.
+        sinks: Vec<RemoteSink>,
+    },
     /// Clipboard text arrived.
     Clipboard {
         /// Text content.
@@ -129,6 +164,35 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sink_percent_rounds_to_the_nearest_point() {
+        let sink = RemoteSink {
+            name: "speakers".to_string(),
+            description: String::new(),
+            volume: 26214,
+            muted: false,
+            max_volume: 65536,
+            enabled: false,
+        };
+        assert_eq!(sink.percent(), 40);
+        assert_eq!(
+            RemoteSink {
+                max_volume: 0,
+                ..sink.clone()
+            }
+            .percent(),
+            0
+        );
+        assert_eq!(
+            RemoteSink {
+                volume: 65536,
+                ..sink
+            }
+            .percent(),
+            100
+        );
+    }
 
     #[test]
     fn share_events_construct_and_compare() {

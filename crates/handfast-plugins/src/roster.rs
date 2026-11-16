@@ -205,11 +205,11 @@ pub const REMOTEKEYBOARD: PluginMeta = PluginMeta {
 /// Control remote volume.
 pub const REMOTESYSTEMVOLUME: PluginMeta = PluginMeta {
     name: "remotesystemvolume",
-    title: "Remote volume control",
-    status: PLANNED,
+    title: "Control a peer's audio sinks",
+    status: IMPLEMENTED,
     incoming: &[types::SYSTEMVOLUME],
     outgoing: &[types::SYSTEMVOLUME_REQUEST],
-    desktop: DesktopRequirement::Volume,
+    desktop: DesktopRequirement::None,
 };
 
 /// Execute commands configured on this device.

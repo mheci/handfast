@@ -33,7 +33,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 17 | `remotecommands` | phone -> desktop | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | no | no | no |
 | 18 | `remotecontrol` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
 | 19 | `remotekeyboard` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
-| 20 | `remotesystemvolume` | desktop -> phone | `kdeconnect.systemvolume`, `.systemvolume.request` | PipeWire or wpctl | P2 | no | no | no |
+| 20 | `remotesystemvolume` | bidirectional | `kdeconnect.systemvolume`, `.systemvolume.request` | peer sink model | P2 | yes | n/a | no |
 | 21 | `runcommand` | bidirectional | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | no | no | no |
 | 22 | `screensaver-inhibit` | connection state | none (uses link state) | `systemd-inhibit` | P2 | yes | yes | no |
 | 23 | `sendnotifications` | desktop -> phone | `kdeconnect.notification`, `.notification.request` | freedesktop notifications DBus | P2 | no | no | no |
@@ -66,6 +66,10 @@ have.
 - **Telephony**: the desktop shows incoming, missed and active call
   notifications and closes them on cancel. The phone-side mute action is not
   implemented yet.
+- **Remote system volume**: the desktop keeps the audio sinks a peer reports and
+  sends volume and mute requests. The official Android app's SystemVolume plugin
+  is a controller, not a sink provider, so this plugin is exercised between two
+  desktops until a peer app provides sinks.
 
 ## Windows 11 backends
 

@@ -237,6 +237,37 @@ impl LocalControl {
             )),
         }
     }
+
+    /// Change one audio sink on a connected device.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no daemon answers, the device is not connected or has not
+    /// reported the sink, the percent is over 100, both or neither of `percent`
+    /// and `muted` are set, or the response is not an acknowledgement.
+    pub fn set_remote_volume(
+        &self,
+        device_id: &DeviceId,
+        sink: &str,
+        percent: Option<u8>,
+        muted: Option<bool>,
+    ) -> Result<(), ControlError> {
+        let request = ControlRequest::RemoteVolume {
+            device_id: device_id.as_str().to_string(),
+            sink: sink.to_string(),
+            percent,
+            muted,
+        };
+        match self.request(&request)? {
+            ControlResponse::Ok { .. } => Ok(()),
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            ControlResponse::Status { .. }
+            | ControlResponse::ShuttingDown
+            | ControlResponse::Decided => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
+        }
+    }
 }
 
 impl DaemonControl for LocalControl {
@@ -901,6 +932,7 @@ mod tests {
             paired: Vec::<PairedDevice>::new(),
             pending_pairings: Vec::new(),
             transfers: Vec::<TransferSummary>::new(),
+            remote_sinks: Vec::new(),
             truncated: false,
         }
     }

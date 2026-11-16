@@ -40,6 +40,8 @@ enum Command {
     Pair(PairArgs),
     /// Ask a connected device to ring.
     Ring(RingArgs),
+    /// List or change a connected device's audio sinks.
+    Volume(VolumeArgs),
     /// Print the running daemon's status.
     Status(StatusArgs),
     /// Install and control the per-user autostart service.
@@ -81,6 +83,34 @@ struct RingArgs {
     /// Connected device ID from `handfast status`.
     #[arg(value_name = "DEVICE_ID")]
     device_id: String,
+}
+
+#[derive(Debug, Parser)]
+struct VolumeArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Sink name from the listing.
+    #[arg(long, value_name = "NAME")]
+    sink: Option<String>,
+
+    /// Set the sink volume as a percentage of its maximum.
+    #[arg(
+        long,
+        value_name = "PERCENT",
+        value_parser = clap::value_parser!(u8).range(0..=100),
+        conflicts_with_all = ["mute", "unmute"]
+    )]
+    percent: Option<u8>,
+
+    /// Mute the sink.
+    #[arg(long, conflicts_with = "unmute")]
+    mute: bool,
+
+    /// Unmute the sink.
+    #[arg(long)]
+    unmute: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -182,6 +212,10 @@ fn main() -> ExitCode {
         Command::Ring(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_ring(args, data_dir)
+        }
+        Command::Volume(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_volume(args, data_dir)
         }
         Command::Status(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
@@ -347,6 +381,97 @@ async fn send_ring(device_id: String, data_dir: PathBuf) -> Result<String, Contr
     };
     match send_request(&data_dir, &request).await? {
         ControlResponse::Ok { .. } => Ok(format!("ringing {device_id}")),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_volume(args: VolumeArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_volume(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_volume(args: VolumeArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let changing = args.percent.is_some() || args.mute || args.unmute;
+    if !changing {
+        let status = request_status(&data_dir).await?;
+        if !status
+            .connected
+            .iter()
+            .any(|device| device.device_id.as_str() == args.device_id)
+        {
+            return Err(ControlError::Remote(format!(
+                "device {} is not connected",
+                args.device_id
+            )));
+        }
+        let Some(device) = status
+            .remote_sinks
+            .iter()
+            .find(|device| device.device_id.as_str() == args.device_id)
+        else {
+            return Ok(format!(
+                "{} has not reported any audio sinks",
+                args.device_id
+            ));
+        };
+        let mut lines = Vec::with_capacity(device.sinks.len());
+        for sink in &device.sinks {
+            let state = if sink.muted { "muted" } else { "unmuted" };
+            let default = if sink.enabled { " (default)" } else { "" };
+            lines.push(format!(
+                "{}\t{}%\t{state}\t{}{default}",
+                sink.name,
+                sink.percent(),
+                sink.description
+            ));
+        }
+        return Ok(lines.join("\n"));
+    }
+    let Some(sink) = args.sink else {
+        return Err(ControlError::Remote(
+            "volume needs --sink <NAME> with --percent, --mute or --unmute".to_string(),
+        ));
+    };
+    let (percent, muted) = if let Some(percent) = args.percent {
+        (Some(percent), None)
+    } else if args.mute {
+        (None, Some(true))
+    } else if args.unmute {
+        (None, Some(false))
+    } else {
+        return Err(ControlError::Remote(
+            "send one of --percent, --mute or --unmute".to_string(),
+        ));
+    };
+    let request = ControlRequest::RemoteVolume {
+        device_id: args.device_id.clone(),
+        sink: sink.clone(),
+        percent,
+        muted,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("set {sink} on {}", args.device_id)),
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
         response => Err(ControlError::Remote(format!(
             "unexpected control response: {response:?}"

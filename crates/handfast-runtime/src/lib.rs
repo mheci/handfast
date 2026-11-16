@@ -15,7 +15,7 @@ pub mod transfer;
 
 pub use device::Device;
 pub use error::{PluginError, RuntimeError};
-pub use event::{BatteryState, Event, LogLevel, PluginEvent};
+pub use event::{BatteryState, Event, LogLevel, PluginEvent, RemoteSink};
 pub use host::{DeviceHost, Dispatch};
 pub use plugin::{
     DesktopRequirement, Plugin, PluginContext, PluginFactory, PluginMeta, PluginOutput,

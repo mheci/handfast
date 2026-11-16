@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use handfast_proto::DeviceId;
+use handfast_runtime::RemoteSink;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -61,6 +62,17 @@ pub enum ControlRequest {
     Ring {
         /// Paired device ID. The daemon validates it.
         device_id: String,
+    },
+    /// Change one audio sink on a connected device.
+    RemoteVolume {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// Sink name from the device's reported list.
+        sink: String,
+        /// Volume as a percentage of the sink's maximum.
+        percent: Option<u8>,
+        /// Mute state. Exactly one of `percent` and `muted` is set.
+        muted: Option<bool>,
     },
     /// Accept or reject a pending pairing request.
     PairingDecision {
@@ -119,8 +131,19 @@ pub struct DaemonStatus {
     pub pending_pairings: Vec<PairingSummary>,
     /// In-flight transfers, sorted by device ID then transfer ID.
     pub transfers: Vec<TransferSummary>,
+    /// Peer audio sinks, sorted by device ID.
+    pub remote_sinks: Vec<RemoteDeviceSinks>,
     /// Whether a device list hit [`MAX_STATUS_DEVICES`].
     pub truncated: bool,
+}
+
+/// Audio sinks reported by one peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteDeviceSinks {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Sinks in name order.
+    pub sinks: Vec<RemoteSink>,
 }
 
 /// This device's public identity.
@@ -211,6 +234,13 @@ pub enum DaemonCommand {
     /// Send the ring request to one connected device and reply.
     Ring {
         device_id: DeviceId,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    RemoteVolume {
+        device_id: DeviceId,
+        sink: String,
+        percent: Option<u8>,
+        muted: Option<bool>,
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Answer one open pairing prompt and reply.
@@ -442,6 +472,39 @@ async fn dispatch(
                 };
             };
             DaemonCommand::Ring { device_id, reply }
+        }
+        ControlRequest::RemoteVolume {
+            device_id,
+            sink,
+            percent,
+            muted,
+        } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            if !handfast_plugins::remotesystemvolume::valid_sink_name(&sink) {
+                return ControlResponse::Err {
+                    message: "the sink name is not valid".to_string(),
+                };
+            }
+            match (percent, muted) {
+                (Some(percent), None) if percent <= 100 => {}
+                (None, Some(_)) => {}
+                _ => {
+                    return ControlResponse::Err {
+                        message: "send exactly one of percent and muted".to_string(),
+                    };
+                }
+            }
+            DaemonCommand::RemoteVolume {
+                device_id,
+                sink,
+                percent,
+                muted,
+                reply,
+            }
         }
         ControlRequest::PairingDecision {
             device_id,
@@ -815,6 +878,7 @@ mod tests {
                 bytes: 1024,
                 total: Some(4096),
             }],
+            remote_sinks: Vec::new(),
             truncated: false,
         }
     }
@@ -877,6 +941,21 @@ mod tests {
             .await,
             ControlRequest::Ring {
                 device_id: "0123456789abcdef0123456789abcdef".to_string(),
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::RemoteVolume {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                sink: "speakers".to_string(),
+                percent: Some(40),
+                muted: None,
+            })
+            .await,
+            ControlRequest::RemoteVolume {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                sink: "speakers".to_string(),
+                percent: Some(40),
+                muted: None,
             }
         );
         assert_eq!(

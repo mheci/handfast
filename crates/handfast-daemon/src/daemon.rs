@@ -24,14 +24,14 @@ use handfast_plugins::registry;
 use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
-use handfast_runtime::{PluginEvent, Registry};
+use handfast_runtime::{PluginEvent, Registry, RemoteSink};
 use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::control::{
     ControlResponse, ControlServer, DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary,
-    PairedDevice, PairingSummary, TransferSummary, MAX_STATUS_DEVICES,
+    PairedDevice, PairingSummary, RemoteDeviceSinks, TransferSummary, MAX_STATUS_DEVICES,
 };
 use crate::default_data_dir;
 use crate::identity;
@@ -324,6 +324,7 @@ pub async fn run(
         incoming_dir: incoming_dir.clone(),
         connected: HashMap::new(),
         transfers: HashMap::new(),
+        remote_sinks: HashMap::new(),
         shutdown: Some(shutdown_tx),
     };
 
@@ -411,6 +412,7 @@ struct Daemon {
     incoming_dir: PathBuf,
     connected: HashMap<DeviceId, DeviceSummary>,
     transfers: HashMap<(DeviceId, u64), TransferSummary>,
+    remote_sinks: HashMap<DeviceId, Vec<RemoteSink>>,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -563,6 +565,7 @@ impl Daemon {
                 }
                 self.pending.remove(&device_id);
                 self.cancel_prompt(&device_id);
+                self.remote_sinks.remove(&device_id);
                 tracing::info!(%device_id, %reason, "device link closed");
             }
         }
@@ -676,6 +679,7 @@ impl Daemon {
         match event {
             DaemonEvent::PluginEvents { device_id, events } => {
                 self.record_transfers(&device_id, &events);
+                self.record_remote_sinks(&device_id, &events);
                 redact::log_plugin_events(&device_id, &events);
             }
             DaemonEvent::PairingAccepted { device_id, token } => {
@@ -781,6 +785,18 @@ impl Daemon {
         }
     }
 
+    fn record_remote_sinks(&mut self, device_id: &DeviceId, events: &[PluginEvent]) {
+        for event in events {
+            if let PluginEvent::RemoteSinks { sinks } = event {
+                if sinks.is_empty() {
+                    self.remote_sinks.remove(device_id);
+                } else {
+                    self.remote_sinks.insert(device_id.clone(), sinks.clone());
+                }
+            }
+        }
+    }
+
     async fn status(&self) -> Result<DaemonStatus, StoreError> {
         let records = Arc::clone(&self.store)
             .run_blocking(|store| {
@@ -826,6 +842,16 @@ impl Daemon {
                 .then(left.transfer_id.cmp(&right.transfer_id))
         });
 
+        let mut remote_sinks: Vec<RemoteDeviceSinks> = self
+            .remote_sinks
+            .iter()
+            .map(|(device_id, sinks)| RemoteDeviceSinks {
+                device_id: device_id.clone(),
+                sinks: sinks.clone(),
+            })
+            .collect();
+        remote_sinks.sort_by(|left, right| left.device_id.as_str().cmp(right.device_id.as_str()));
+
         let truncated = connected.len() > MAX_STATUS_DEVICES
             || paired.len() > MAX_STATUS_DEVICES
             || pending_pairings.len() > MAX_STATUS_DEVICES;
@@ -843,6 +869,7 @@ impl Daemon {
             paired,
             pending_pairings,
             transfers,
+            remote_sinks,
             truncated,
         })
     }
@@ -898,6 +925,66 @@ impl Daemon {
                     return;
                 };
                 let packet = match handfast_plugins::findmyphone::findmyphone_packet() {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        let _ = reply.send(ControlResponse::Err {
+                            message: error.to_string(),
+                        });
+                        return;
+                    }
+                };
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let response = match handle.send_packet(packet).await {
+                        Ok(()) => ControlResponse::Ok { bytes: 0 },
+                        Err(error) => ControlResponse::Err {
+                            message: error.to_string(),
+                        },
+                    };
+                    let _ = reply.send(response);
+                });
+            }
+            DaemonCommand::RemoteVolume {
+                device_id,
+                sink,
+                percent,
+                muted,
+                reply,
+            } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                let Some(sinks) = self.remote_sinks.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} has not reported any audio sinks"),
+                    });
+                    return;
+                };
+                let Some(model) = sinks.iter().find(|candidate| candidate.name == sink) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} has not reported the sink {sink}"),
+                    });
+                    return;
+                };
+                let packet = match (percent, muted) {
+                    (Some(percent), None) => {
+                        let volume = scaled_volume(percent, model.max_volume);
+                        handfast_plugins::remotesystemvolume::volume_request(&sink, volume)
+                    }
+                    (None, Some(muted)) => {
+                        handfast_plugins::remotesystemvolume::mute_request(&sink, muted)
+                    }
+                    _ => {
+                        let _ = reply.send(ControlResponse::Err {
+                            message: "send exactly one of percent and muted".to_string(),
+                        });
+                        return;
+                    }
+                };
+                let packet = match packet {
                     Ok(packet) => packet,
                     Err(error) => {
                         let _ = reply.send(ControlResponse::Err {
@@ -1038,8 +1125,11 @@ impl Daemon {
     }
 }
 
+fn scaled_volume(percent: u8, max_volume: u32) -> u32 {
+    (u64::from(percent) * u64::from(max_volume) / 100) as u32
+}
+
 /// Parse and range-check a KDE Connect TCP port.
-///
 /// # Errors
 ///
 /// Fails when the value is not a number or outside the KDE Connect TCP range.
@@ -1658,6 +1748,7 @@ mod tests {
             incoming_dir: directory.path().join("incoming"),
             connected: HashMap::new(),
             transfers: HashMap::new(),
+            remote_sinks: HashMap::new(),
             shutdown: Some(shutdown),
         };
 
@@ -1870,6 +1961,7 @@ mod tests {
             incoming_dir: directory.join("incoming"),
             connected: HashMap::new(),
             transfers: HashMap::new(),
+            remote_sinks: HashMap::new(),
             shutdown: Some(shutdown),
         };
         (daemon, links, manager_task)
@@ -1991,6 +2083,89 @@ mod tests {
             reply_rx.await.expect("the daemon replies"),
             ControlResponse::Err { message } if message.contains("is not connected")
         ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_remote_volume_to_an_unknown_device_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::RemoteVolume {
+                device_id: peer,
+                sink: "speakers".to_string(),
+                percent: Some(40),
+                muted: None,
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("is not connected")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[test]
+    fn volume_percent_scales_to_the_sink_maximum() {
+        assert_eq!(scaled_volume(0, 65536), 0);
+        assert_eq!(scaled_volume(50, 65536), 32768);
+        assert_eq!(scaled_volume(100, 65536), 65536);
+        assert_eq!(scaled_volume(40, 100), 40);
+    }
+
+    #[tokio::test]
+    async fn remote_sinks_reach_the_status() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let sinks = vec![RemoteSink {
+            name: "speakers".to_string(),
+            description: "Built-in speakers".to_string(),
+            volume: 32768,
+            muted: false,
+            max_volume: 65536,
+            enabled: true,
+        }];
+
+        daemon
+            .handle_daemon_event(DaemonEvent::PluginEvents {
+                device_id: peer.clone(),
+                events: vec![PluginEvent::RemoteSinks {
+                    sinks: sinks.clone(),
+                }],
+            })
+            .await;
+
+        let status = daemon.status().await.expect("build the status");
+        assert_eq!(status.remote_sinks.len(), 1);
+        assert_eq!(status.remote_sinks[0].device_id, peer);
+        assert_eq!(status.remote_sinks[0].sinks, sinks);
+
+        daemon
+            .handle_daemon_event(DaemonEvent::PluginEvents {
+                device_id: peer,
+                events: vec![PluginEvent::RemoteSinks { sinks: Vec::new() }],
+            })
+            .await;
+        assert!(daemon
+            .status()
+            .await
+            .expect("build the status")
+            .remote_sinks
+            .is_empty());
 
         links.shutdown();
         let _ = manager_task.await;

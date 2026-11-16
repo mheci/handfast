@@ -76,6 +76,7 @@ fn sample_status() -> DaemonStatus {
             bytes: 1024,
             total: Some(4096),
         }],
+        remote_sinks: Vec::new(),
         truncated: false,
     }
 }

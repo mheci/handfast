@@ -286,3 +286,11 @@ Parity wave 7, 2026-11-16, same branch:
 - Evidence: desktop 154 pass (input argv tests and enigo key mapping), plugins 156 pass, daemon 132 pass, clippy clean. The real injection needs the manual phone touchpad/keyboard check.
 - The real Windows enigo connection initialized in `the_real_input_backend_initializes` without injecting input. The first CI run on the input wave failed on a Linux-only test compile because the input probe used `registry` as a function; fixed by building the registry in the test.
 - Still open for full input parity: absolute pointer and pressure for `digitizer`, input capture for `shareinputdevices`, and `singlehold`/`singlerelease` on Linux use the ydotool down/up masks.
+
+Parity wave 8, 2026-11-16, same branch:
+
+- `remotesystemvolume` is implemented and registered. The plugin keeps a per-device sink model from `kdeconnect.systemvolume` `sinkList` packets and deltas, capped at 64 sinks, and emits `PluginEvent::RemoteSinks` to the daemon. Invalid sink entries are skipped; out-of-range volumes and unknown sinks are warnings.
+- The control channel has `RemoteVolume { device_id, sink, percent, muted }` with exactly one of percent and muted. The daemon scales percent to the sink's `maxVolume`, validates the sink against the model, and sends `{name, volume}` or `{name, muted}`. `handfast volume <device-id>` lists sinks; `--sink NAME --percent N`, `--mute` and `--unmute` change one. The window shows a slider and mute checkbox per reported sink.
+- The `RemoteSink` model lives in `handfast-runtime`, carries `volume`/`maxVolume` raw units, and rounds `percent()` to the nearest point so 40% of 65536 reads back as 40.
+- Evidence: plugins 166 pass, runtime 12 pass, daemon lib 134 pass (including the unknown-device and percent-scaling tests), bin 4 pass, clippy and fmt clean. `volume_cli.rs` type-checks and runs on Unix in CI.
+- Android note: the official Android SystemVolume plugin is a controller, not a sink provider, so `remotesystemvolume` has no Android counterpart. It is exercised between two desktops.

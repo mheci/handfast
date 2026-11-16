@@ -61,6 +61,12 @@ enum WorkerCommand {
     Ring {
         device_id: DeviceId,
     },
+    RemoteVolume {
+        device_id: DeviceId,
+        sink: String,
+        percent: Option<u8>,
+        muted: Option<bool>,
+    },
     PairingDecision {
         device_id: DeviceId,
         accept: bool,
@@ -143,6 +149,16 @@ fn worker(
                     eprintln!("handfast: cannot ring the device: {error}");
                 }
             }
+            Ok(WorkerCommand::RemoteVolume {
+                device_id,
+                sink,
+                percent,
+                muted,
+            }) => {
+                if let Err(error) = control.set_remote_volume(&device_id, &sink, percent, muted) {
+                    eprintln!("handfast: cannot change the remote volume: {error}");
+                }
+            }
             Ok(WorkerCommand::PairingDecision {
                 device_id,
                 accept,
@@ -181,6 +197,7 @@ pub fn run(data_dir: PathBuf, hide_console: bool) -> ExitCode {
         commands,
         states,
         state: DaemonState::Unknown,
+        pending_volumes: std::collections::HashMap::new(),
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -254,6 +271,7 @@ struct HandfastApp {
     commands: Sender<WorkerCommand>,
     states: Receiver<DaemonState>,
     state: DaemonState,
+    pending_volumes: std::collections::HashMap<(String, String), u8>,
 }
 
 impl HandfastApp {
@@ -445,7 +463,68 @@ impl HandfastApp {
         if status.truncated {
             ui.label("The list is truncated.");
         }
+        let remote_sinks = status.remote_sinks.clone();
         ui.label("Send a file from a terminal with handfast share --device <id> <path>.");
+        self.remote_volume(ui, &remote_sinks);
+    }
+
+    fn remote_volume(&mut self, ui: &mut egui::Ui, devices: &[crate::control::RemoteDeviceSinks]) {
+        if devices.is_empty() {
+            return;
+        }
+        ui.separator();
+        ui.heading("Remote audio");
+        self.pending_volumes.retain(|(device, sink), percent| {
+            devices.iter().any(|reported| {
+                reported.device_id.as_str() == device
+                    && reported
+                        .sinks
+                        .iter()
+                        .any(|reported| &reported.name == sink && reported.percent() == *percent)
+            })
+        });
+        let mut commands = Vec::new();
+        for device in devices {
+            ui.label(format!("Device {}", device.device_id));
+            for sink in &device.sinks {
+                let key = (device.device_id.to_string(), sink.name.clone());
+                let mut percent = *self.pending_volumes.get(&key).unwrap_or(&sink.percent());
+                ui.horizontal(|ui| {
+                    let label = if sink.description.is_empty() {
+                        sink.name.clone()
+                    } else {
+                        format!("{} ({})", sink.description, sink.name)
+                    };
+                    let slider = ui.add(egui::Slider::new(&mut percent, 0..=100).text(label));
+                    if slider.changed() {
+                        self.pending_volumes.insert(key.clone(), percent);
+                    }
+                    if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                        commands.push(WorkerCommand::RemoteVolume {
+                            device_id: device.device_id.clone(),
+                            sink: sink.name.clone(),
+                            percent: Some(percent),
+                            muted: None,
+                        });
+                    }
+                    let mut muted = sink.muted;
+                    if ui.checkbox(&mut muted, "Mute").changed() {
+                        commands.push(WorkerCommand::RemoteVolume {
+                            device_id: device.device_id.clone(),
+                            sink: sink.name.clone(),
+                            percent: None,
+                            muted: Some(muted),
+                        });
+                    }
+                    if sink.enabled {
+                        ui.label("default");
+                    }
+                });
+            }
+        }
+        for command in commands {
+            self.send(command);
+        }
     }
 
     fn transfers(&mut self, ui: &mut egui::Ui) {
@@ -569,6 +648,7 @@ mod tests {
                 bytes: 1024,
                 total: Some(4096),
             }],
+            remote_sinks: Vec::new(),
             truncated: false,
         }
     }
@@ -710,6 +790,70 @@ mod tests {
             .expect("the worker sends the ring")
             .expect("the script observes the request");
         assert_eq!(seen, device_id());
+
+        drop(worker);
+        server.shutdown().await;
+        script.await.expect("the script joins");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_worker_sends_a_remote_volume() {
+        use crate::control::{ControlResponse, ControlServer, DaemonCommand};
+        use tokio::sync::{mpsc, oneshot};
+
+        let _env = ENV_LOCK.lock().await;
+        let runtime = tempfile::tempdir().expect("a temp runtime dir");
+        std::env::set_var("XDG_RUNTIME_DIR", runtime.path());
+        let data_dir = tempfile::tempdir().expect("a temp data dir");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = ControlServer::start(data_dir.path(), commands)
+            .await
+            .expect("start the control server");
+        let (observed, observed_rx) = oneshot::channel();
+        let script = tokio::spawn(async move {
+            while let Some(command) = command_rx.recv().await {
+                match command {
+                    DaemonCommand::Status { reply } => {
+                        let _ = reply.send(ControlResponse::Status {
+                            status: Box::new(sample_status()),
+                        });
+                    }
+                    DaemonCommand::RemoteVolume {
+                        device_id,
+                        sink,
+                        percent,
+                        muted,
+                        reply,
+                    } => {
+                        let _ = observed.send((device_id, sink, percent, muted));
+                        let _ = reply.send(ControlResponse::Ok { bytes: 0 });
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let (worker, _states) =
+            spawn_worker(PathBuf::from("handfast"), data_dir.path().to_path_buf());
+        worker
+            .send(WorkerCommand::RemoteVolume {
+                device_id: device_id(),
+                sink: "speakers".to_string(),
+                percent: Some(40),
+                muted: None,
+            })
+            .expect("the worker is running");
+
+        let seen = tokio::time::timeout(Duration::from_secs(5), observed_rx)
+            .await
+            .expect("the worker sends the volume")
+            .expect("the script observes the request");
+        assert_eq!(seen.0, device_id());
+        assert_eq!(seen.1, "speakers");
+        assert_eq!(seen.2, Some(40));
+        assert_eq!(seen.3, None);
 
         drop(worker);
         server.shutdown().await;
