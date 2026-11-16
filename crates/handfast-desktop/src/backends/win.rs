@@ -947,6 +947,8 @@ struct PenSession {
     height: i32,
     /// The button currently held down by a touching tool, if any.
     pressed: Option<Button>,
+    /// Whether the one-time pressure warning was already printed.
+    pressure_warned: bool,
 }
 
 impl WinInput {
@@ -1238,6 +1240,7 @@ impl Input for WinInput {
             width,
             height,
             pressed: None,
+            pressure_warned: false,
         });
         Ok(())
     }
@@ -1252,11 +1255,13 @@ impl Input for WinInput {
             return Err(DesktopError::Unsupported("no pen session is active"));
         };
         let desired = pen_button(&event);
+        let mut pressure_warned = session.pressure_warned;
         self.with_enigo(|enigo| {
-            if event.pressure > 0.0 {
+            if event.pressure > 0.0 && !pressure_warned {
                 eprintln!(
                     "handfast-desktop: pen pressure is not available on Windows; ignoring it"
                 );
+                pressure_warned = true;
             }
             let display = enigo.main_display()?;
             let (x, y) = absolute_position(&event, (session.width, session.height), display);
@@ -1276,6 +1281,7 @@ impl Input for WinInput {
             width: session.width,
             height: session.height,
             pressed: desired,
+            pressure_warned,
         });
         Ok(())
     }
