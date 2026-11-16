@@ -354,3 +354,11 @@ Parity wave 15, 2026-11-16, same branch:
 - Evidence: runtime 12 pass, plugins 215 pass (5 SMS tests), daemon lib 152 pass (SMS model, dedupe, conversations, thread, offline device), bin 4 pass, clippy/fmt/docs clean. The nine `sms_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
 - Test harness: the session tests' link channel was raised from 8 to 32 because the added on-connect packets filled it and blocked the incoming-share tests. Production uses the daemon's 256-slot link queue.
 - Gaps: attachments and MMS are not implemented; the cache is in memory and re-requested on connect; no GUI surface.
+
+
+Parity wave 16, 2026-11-16, same branch:
+
+- The telephony mute action is implemented. `handfast telephony <device-id> --mute` sends `kdeconnect.telephony.request_mute` and the Android app mutes its ringer (verified in `TelephonyPlugin.kt`).
+- The roster now advertises the mute packet as outgoing. Control: `TelephonyMute { device_id }`; the daemon requires a connected session and replies with the send result.
+- Evidence: plugins 216 pass (telephony mute builder), daemon lib 153 pass (offline device), bin 4 pass, clippy/fmt/docs clean. The four `telephony_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: no GUI mute button; the CLI is the only surface.

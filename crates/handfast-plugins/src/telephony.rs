@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use handfast_desktop::Notification;
-use handfast_proto::{types, Packet};
+use handfast_proto::{types, Packet, ProtoError};
 use handfast_runtime::{
     LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
     PluginOutput,
@@ -12,6 +12,15 @@ use serde_json::Value;
 use crate::roster;
 
 const MAX_FIELD_BYTES: usize = 4 * 1024;
+
+/// Asks the phone to mute its ringer.
+///
+/// # Errors
+///
+/// Fails when the packet cannot be built.
+pub fn mute_request() -> Result<Packet, ProtoError> {
+    Packet::empty(types::TELEPHONY_REQUEST_MUTE)
+}
 
 fn field(packet: &Packet, name: &str) -> Result<Option<String>, ()> {
     match packet.body.get(name) {
@@ -301,6 +310,13 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn a_mute_request_matches_the_protocol() {
+        let packet = mute_request().unwrap();
+        assert_eq!(packet.ptype, types::TELEPHONY_REQUEST_MUTE);
+        assert!(packet.body.is_empty());
     }
 
     #[test]

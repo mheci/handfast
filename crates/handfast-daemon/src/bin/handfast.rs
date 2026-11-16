@@ -56,6 +56,8 @@ enum Command {
     Contacts(ContactsArgs),
     /// List, request or send SMS messages on a connected device.
     Sms(SmsArgs),
+    /// Ask a connected device to mute its ringer.
+    Telephony(TelephonyArgs),
     /// List or edit the local runcommand configuration.
     #[command(name = "command")]
     Commands(CommandArgs),
@@ -324,6 +326,17 @@ struct SmsArgs {
     body: Option<String>,
 }
 
+#[derive(Debug, Parser)]
+struct TelephonyArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Mute the phone's ringer.
+    #[arg(long)]
+    mute: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum CommandAction {
     /// List the configured commands.
@@ -473,6 +486,10 @@ fn main() -> ExitCode {
         Command::Sms(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_sms(args, data_dir)
+        }
+        Command::Telephony(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_telephony(args, data_dir)
         }
         Command::Commands(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
@@ -1203,6 +1220,45 @@ async fn send_sms(args: SmsArgs, data_dir: PathBuf) -> Result<String, ControlErr
             Ok(lines.join("\n"))
         }
         ControlResponse::Ok { .. } => Ok(success),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_telephony(args: TelephonyArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_telephony(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_telephony(args: TelephonyArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    if !args.mute {
+        return Err(ControlError::Remote("telephony needs --mute".to_string()));
+    }
+    let request = ControlRequest::TelephonyMute {
+        device_id: args.device_id.clone(),
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("muted the ringer on {}", args.device_id)),
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
         response => Err(ControlError::Remote(format!(
             "unexpected control response: {response:?}"

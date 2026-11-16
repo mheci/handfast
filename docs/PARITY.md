@@ -76,8 +76,9 @@ have.
   use `kdeconnect.clipboard.file` and are a v2 extension target, not a v1
   requirement.
 - **Telephony**: the desktop shows incoming, missed and active call
-  notifications and closes them on cancel. The phone-side mute action is not
-  implemented yet.
+  notifications and closes them on cancel. `handfast telephony <device-id>
+  --mute` sends `kdeconnect.telephony.request_mute`, which the Android app
+  handles by muting its ringer.
 - **Remote system volume**: the desktop keeps the audio sinks a peer reports and
   sends volume and mute requests. The official Android app's SystemVolume plugin
   is a controller, not a sink provider, so this plugin is exercised between two

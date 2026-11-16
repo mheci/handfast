@@ -1511,6 +1511,33 @@ impl Daemon {
                     let _ = reply.send(response);
                 });
             }
+            DaemonCommand::TelephonyMute { device_id, reply } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                let packet = match handfast_plugins::telephony::mute_request() {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        let _ = reply.send(ControlResponse::Err {
+                            message: error.to_string(),
+                        });
+                        return;
+                    }
+                };
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let response = match handle.send_packet(packet).await {
+                        Ok(()) => ControlResponse::Ok { bytes: 0 },
+                        Err(error) => ControlResponse::Err {
+                            message: error.to_string(),
+                        },
+                    };
+                    let _ = reply.send(response);
+                });
+            }
             DaemonCommand::CommandConfig { action, reply } => {
                 let Some(commands) = self.desktop.commands.as_ref() else {
                     let _ = reply.send(ControlResponse::Err {
@@ -2917,6 +2944,31 @@ mod tests {
             .handle_command(DaemonCommand::Sms {
                 device_id: peer,
                 action: SmsAction::Conversations,
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("is not connected")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn telephony_mute_to_an_unknown_device_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::TelephonyMute {
+                device_id: peer,
                 reply,
             })
             .await;

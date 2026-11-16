@@ -110,6 +110,11 @@ pub enum ControlRequest {
         /// The SMS operation.
         action: SmsAction,
     },
+    /// Ask a connected device to mute its ringer.
+    TelephonyMute {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+    },
     /// List or edit the local runcommand configuration.
     CommandConfig {
         /// The action to apply.
@@ -552,6 +557,10 @@ pub enum DaemonCommand {
         action: SmsAction,
         reply: oneshot::Sender<ControlResponse>,
     },
+    TelephonyMute {
+        device_id: DeviceId,
+        reply: oneshot::Sender<ControlResponse>,
+    },
     /// Apply one local command configuration action.
     CommandConfig {
         action: CommandConfigAction,
@@ -959,6 +968,14 @@ async fn dispatch(
                 action,
                 reply,
             }
+        }
+        ControlRequest::TelephonyMute { device_id } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            DaemonCommand::TelephonyMute { device_id, reply }
         }
         ControlRequest::CommandConfig { action } => {
             match &action {
@@ -1573,6 +1590,15 @@ mod tests {
                     outgoing: false,
                     read: true,
                 }],
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::TelephonyMute {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+            })
+            .await,
+            ControlRequest::TelephonyMute {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
             }
         );
         assert_eq!(
