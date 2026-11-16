@@ -54,7 +54,7 @@ async fn announced_devices_are_persisted() {
 
     stop(daemon);
 
-    let store = Store::open(directory.path().join("state.db")).unwrap();
+    let store = open_store(&directory.path().join("state.db"));
     let record = store
         .device(peer.device_id.as_str())
         .unwrap()
@@ -93,7 +93,7 @@ async fn desktop_announcements_are_persisted() {
 
     stop(daemon);
 
-    let store = Store::open(directory.path().join("state.db")).unwrap();
+    let store = open_store(&directory.path().join("state.db"));
     let record = store
         .device(DESKTOP_ID)
         .unwrap()
@@ -147,7 +147,7 @@ async fn self_announcements_are_ignored() {
 
     stop(daemon);
 
-    let store = Store::open(directory.path().join("state.db")).unwrap();
+    let store = open_store(&directory.path().join("state.db"));
     let record = store
         .device(control_id)
         .unwrap()
@@ -221,6 +221,19 @@ async fn wait_for_state_file(directory: &Path, daemon: &mut Child) {
 fn stop(mut daemon: Child) {
     daemon.kill().unwrap();
     daemon.wait().unwrap();
+}
+
+fn open_store(path: &Path) -> Store {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match Store::open(path) {
+            Ok(store) => return store,
+            Err(error) => {
+                assert!(Instant::now() < deadline, "open the store: {error}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
 }
 
 fn free_tcp_port() -> u16 {
