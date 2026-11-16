@@ -1,4 +1,4 @@
-//! Adapter traits implemented by Linux desktop backends.
+//! Adapter traits implemented by desktop backends.
 
 use async_trait::async_trait;
 

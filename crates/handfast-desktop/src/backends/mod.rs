@@ -5,6 +5,7 @@
 //! executables by absolute path or wrap a safe crate.
 
 pub mod clipboard;
+#[cfg(not(windows))]
 pub mod input;
 pub mod lock;
 pub mod mpris;
@@ -19,7 +20,9 @@ pub mod win;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
+#[cfg(not(windows))]
+use crate::traits::Input;
+use crate::traits::{Clipboard, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
 
 /// Whether `program` resolves to a regular file on `PATH`.
 ///
@@ -106,7 +109,8 @@ pub fn power() -> Arc<dyn Power> {
     Arc::new(power::SysfsPower::new())
 }
 
-/// Build the host input backend.
+/// Build the Wayland input backend.
+#[cfg(not(windows))]
 #[must_use]
 pub fn input() -> Arc<dyn Input> {
     Arc::new(input::WaylandInput::new())
