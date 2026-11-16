@@ -37,7 +37,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 21 | `runcommand` | bidirectional | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | yes | yes | no |
 | 22 | `screensaver-inhibit` | connection state | none (uses link state) | `systemd-inhibit` | P2 | yes | yes | no |
 | 23 | `sendnotifications` | desktop -> phone | `kdeconnect.notification`, `.notification.request` | freedesktop notifications DBus | P2 | no | no | no |
-| 24 | `sftp` | phone -> desktop | `kdeconnect.sftp`, `.sftp.request` | embedded Rust SFTP server | P3 | no | no | no |
+| 24 | `sftp` | phone -> desktop | `kdeconnect.sftp`, `.sftp.request` | `russh` SFTP client | P3 | yes | yes | no |
 | 25 | `share` | bidirectional | `kdeconnect.share.request`, `.share.request.update` | TLS payload channel, `LocalFiles`, `xdg-open` for URLs | P1 | yes | yes | no |
 | 26 | `shareinputdevices` | desktop -> remote | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input capture + forwarding | P4 | no | no | no |
 | 27 | `shareinputdevicesremote` | remote -> desktop | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input injection | P4 | no | no | no |
@@ -119,6 +119,11 @@ Gaps, named rather than hidden:
   clicks and keys to a phone over `kdeconnect.mousepad.request`. The phone
   injects the input; nothing is injected locally. Special key codes are 1-32,
   matching the codes the desktop `mousepad` plugin accepts.
+- **SFTP**: the phone runs the SFTP server. `handfast sftp <device-id> --start`
+  sends `kdeconnect.sftp.request`, and the phone replies with a one-session
+  password plus the port, user, root and its reported IP. `--list`,
+  `--download` and `--upload` connect with the `russh` client and copy through
+  the phone's server. The phone's server enforces its own storage roots.
 - **Player volume read**: SMTC exposes `TryChangeVolumeAsync` but no per-session
   volume getter, so `PlaybackState.volume` is `None` on Windows.
 - **Clipboard push**: the session polls every 2 s because the clipboard trait has

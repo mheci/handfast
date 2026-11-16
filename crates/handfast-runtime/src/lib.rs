@@ -17,7 +17,7 @@ pub use device::Device;
 pub use error::{PluginError, RuntimeError};
 pub use event::{
     BatteryState, Contact, Event, LogLevel, PluginEvent, RemoteCommand, RemoteMediaAction,
-    RemotePlayer, RemoteSink, SmsMessage,
+    RemotePlayer, RemoteSink, SftpEntry, SftpInfo, SmsMessage,
 };
 pub use host::{DeviceHost, Dispatch};
 pub use plugin::{

@@ -26,6 +26,7 @@ pub mod remotesystemvolume;
 pub mod roster;
 pub mod runcommand;
 pub mod screensaver_inhibit;
+pub mod sftp;
 pub mod share;
 pub mod sms;
 pub mod systemvolume;
@@ -59,6 +60,9 @@ pub use remotesystemvolume::{
 };
 pub use runcommand::{RunCommandFactory, RunCommandPlugin};
 pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
+pub use sftp::{
+    start_request as sftp_start_request, SftpClient, SftpError, SftpFactory, SftpPlugin,
+};
 pub use share::{ShareFactory, SharePlugin};
 pub use sms::{SmsFactory, SmsPlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
@@ -88,6 +92,7 @@ pub fn registry() -> Registry {
         Box::new(remotecontrol::RemoteControlFactory),
         Box::new(remotecontrol::RemoteKeyboardFactory),
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
+        Box::new(sftp::SftpFactory),
         Box::new(lockdevice::LockDeviceFactory),
         Box::new(presenter::PresenterFactory),
         Box::new(mousepad::MousepadFactory),

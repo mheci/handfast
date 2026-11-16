@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use handfast_plugins::remotecontrol::{RemoteClick, RemoteInputModifiers};
 use handfast_proto::DeviceId;
-use handfast_runtime::{RemoteCommand, RemoteMediaAction, RemotePlayer, RemoteSink};
+use handfast_runtime::{RemoteCommand, RemoteMediaAction, RemotePlayer, RemoteSink, SftpEntry};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -115,6 +115,12 @@ pub enum ControlRequest {
         /// Paired device ID. The daemon validates it.
         device_id: String,
     },
+    /// Start or browse a connected device's SFTP server.
+    Sftp {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        action: SftpAction,
+    },
     /// List or edit the local runcommand configuration.
     CommandConfig {
         /// The action to apply.
@@ -159,6 +165,11 @@ pub enum ControlResponse {
     SmsThread {
         /// Messages, oldest first.
         messages: Vec<SmsMessageSummary>,
+    },
+    /// One directory on a phone's SFTP server.
+    SftpEntries {
+        /// Entries, directories first.
+        entries: Vec<SftpEntry>,
     },
     /// The daemon status snapshot.
     Status {
@@ -402,6 +413,32 @@ pub struct SmsMessageSummary {
     pub read: bool,
 }
 
+/// One SFTP operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SftpAction {
+    /// Ask the phone to start its SFTP server.
+    Start,
+    /// List one remote directory.
+    List {
+        /// Remote path.
+        path: String,
+    },
+    /// Copy one remote file to a local path.
+    Download {
+        /// Remote path.
+        remote: String,
+        /// Local destination.
+        local: PathBuf,
+    },
+    /// Copy one local file to a remote path.
+    Upload {
+        /// Local source.
+        local: PathBuf,
+        /// Remote destination.
+        remote: String,
+    },
+}
+
 /// Audio sinks reported by one peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteDeviceSinks {
@@ -559,6 +596,11 @@ pub enum DaemonCommand {
     },
     TelephonyMute {
         device_id: DeviceId,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    Sftp {
+        device_id: DeviceId,
+        action: SftpAction,
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Apply one local command configuration action.
@@ -820,6 +862,10 @@ fn validate_input_action(action: &RemoteInputAction) -> Result<(), String> {
     Ok(())
 }
 
+fn valid_sftp_path(path: &str) -> bool {
+    !path.is_empty() && path.len() <= 4096 && !path.chars().any(char::is_control)
+}
+
 async fn dispatch(
     request: ControlRequest,
     commands: mpsc::Sender<DaemonCommand>,
@@ -976,6 +1022,52 @@ async fn dispatch(
                 };
             };
             DaemonCommand::TelephonyMute { device_id, reply }
+        }
+        ControlRequest::Sftp { device_id, action } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            match &action {
+                SftpAction::Start => {}
+                SftpAction::List { path } => {
+                    if !valid_sftp_path(path) {
+                        return ControlResponse::Err {
+                            message: "the SFTP path is not valid".to_string(),
+                        };
+                    }
+                }
+                SftpAction::Download { remote, local } => {
+                    if !valid_sftp_path(remote) {
+                        return ControlResponse::Err {
+                            message: "the SFTP path is not valid".to_string(),
+                        };
+                    }
+                    if local.as_os_str().is_empty() {
+                        return ControlResponse::Err {
+                            message: "the local path is empty".to_string(),
+                        };
+                    }
+                }
+                SftpAction::Upload { local, remote } => {
+                    if !valid_sftp_path(remote) {
+                        return ControlResponse::Err {
+                            message: "the SFTP path is not valid".to_string(),
+                        };
+                    }
+                    if local.as_os_str().is_empty() {
+                        return ControlResponse::Err {
+                            message: "the local path is empty".to_string(),
+                        };
+                    }
+                }
+            }
+            DaemonCommand::Sftp {
+                device_id,
+                action,
+                reply,
+            }
         }
         ControlRequest::CommandConfig { action } => {
             match &action {
@@ -1599,6 +1691,40 @@ mod tests {
             .await,
             ControlRequest::TelephonyMute {
                 device_id: "0123456789abcdef0123456789abcdef".to_string(),
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::Sftp {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: SftpAction::Download {
+                    remote: "/storage/file".to_string(),
+                    local: PathBuf::from("file"),
+                },
+            })
+            .await,
+            ControlRequest::Sftp {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: SftpAction::Download {
+                    remote: "/storage/file".to_string(),
+                    local: PathBuf::from("file"),
+                },
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::SftpEntries {
+                entries: vec![SftpEntry {
+                    name: "file".to_string(),
+                    directory: false,
+                    size: 12,
+                }],
+            })
+            .await,
+            ControlResponse::SftpEntries {
+                entries: vec![SftpEntry {
+                    name: "file".to_string(),
+                    directory: false,
+                    size: 12,
+                }],
             }
         );
         assert_eq!(

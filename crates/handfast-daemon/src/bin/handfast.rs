@@ -5,7 +5,8 @@ use std::sync::Mutex;
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 use handfast_daemon::control::{
     send_request, CommandConfigAction, ControlError, ControlRequest, ControlResponse, DaemonStatus,
-    PairingSummary, RemoteCommandRequest, RemoteInputAction, RemoteMediaCommand, SmsAction,
+    PairingSummary, RemoteCommandRequest, RemoteInputAction, RemoteMediaCommand, SftpAction,
+    SmsAction,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::update::{Authenticode, GitHub, Updater};
@@ -58,6 +59,8 @@ enum Command {
     Sms(SmsArgs),
     /// Ask a connected device to mute its ringer.
     Telephony(TelephonyArgs),
+    /// Start or browse a connected device's SFTP server.
+    Sftp(SftpArgs),
     /// List or edit the local runcommand configuration.
     #[command(name = "command")]
     Commands(CommandArgs),
@@ -337,6 +340,29 @@ struct TelephonyArgs {
     mute: bool,
 }
 
+#[derive(Debug, Parser)]
+struct SftpArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Ask the phone to start its SFTP server.
+    #[arg(long)]
+    start: bool,
+
+    /// List one remote directory.
+    #[arg(long, value_name = "PATH")]
+    list: Option<String>,
+
+    /// Copy a remote file to a local path.
+    #[arg(long, num_args = 2, value_names = ["REMOTE", "LOCAL"])]
+    download: Option<Vec<String>>,
+
+    /// Copy a local file to a remote path.
+    #[arg(long, num_args = 2, value_names = ["LOCAL", "REMOTE"])]
+    upload: Option<Vec<String>>,
+}
+
 #[derive(Debug, Subcommand)]
 enum CommandAction {
     /// List the configured commands.
@@ -491,6 +517,10 @@ fn main() -> ExitCode {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_telephony(args, data_dir)
         }
+        Command::Sftp(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_sftp(args, data_dir)
+        }
         Command::Commands(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_command_config(args, data_dir)
@@ -605,7 +635,8 @@ async fn send_share(args: ShareArgs, data_dir: PathBuf) -> Result<(), ControlErr
         | ControlResponse::Commands { .. }
         | ControlResponse::Contacts { .. }
         | ControlResponse::SmsConversations { .. }
-        | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
+        | ControlResponse::SmsThread { .. }
+        | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -1266,6 +1297,97 @@ async fn send_telephony(args: TelephonyArgs, data_dir: PathBuf) -> Result<String
     }
 }
 
+fn run_sftp(args: SftpArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_sftp(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_sftp(args: SftpArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let operations = [
+        args.start,
+        args.list.is_some(),
+        args.download.is_some(),
+        args.upload.is_some(),
+    ];
+    if operations.iter().filter(|selected| **selected).count() != 1 {
+        return Err(ControlError::Remote("sftp needs one operation".to_string()));
+    }
+    let (action, message, reports_bytes) = if args.start {
+        (
+            SftpAction::Start,
+            format!(
+                "requested SFTP from {}; retry --list after the phone responds",
+                args.device_id
+            ),
+            false,
+        )
+    } else if let Some(path) = args.list {
+        (SftpAction::List { path }, String::new(), false)
+    } else if let Some(download) = args.download {
+        let remote = download[0].clone();
+        let local = download[1].clone();
+        (
+            SftpAction::Download {
+                remote: remote.clone(),
+                local: PathBuf::from(&local),
+            },
+            format!("downloaded {remote} to {local}"),
+            true,
+        )
+    } else if let Some(upload) = args.upload {
+        let local = upload[0].clone();
+        let remote = upload[1].clone();
+        (
+            SftpAction::Upload {
+                local: PathBuf::from(&local),
+                remote: remote.clone(),
+            },
+            format!("uploaded {local} to {remote}"),
+            true,
+        )
+    } else {
+        return Err(ControlError::Remote("sftp needs one operation".to_string()));
+    };
+    let request = ControlRequest::Sftp {
+        device_id: args.device_id.clone(),
+        action,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::SftpEntries { entries } => {
+            let mut lines = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let kind = if entry.directory { "dir" } else { "file" };
+                lines.push(format!("{}\t{kind}\t{}", entry.name, entry.size));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::Ok { bytes } if reports_bytes => Ok(format!("{message} ({bytes} bytes)")),
+        ControlResponse::Ok { .. } => Ok(message),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
 async fn list_cached_commands(
     device_id: String,
     data_dir: PathBuf,
@@ -1410,7 +1532,8 @@ fn decision_message(
         | ControlResponse::Commands { .. }
         | ControlResponse::Contacts { .. }
         | ControlResponse::SmsConversations { .. }
-        | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
+        | ControlResponse::SmsThread { .. }
+        | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -1450,7 +1573,8 @@ async fn request_status(data_dir: &Path) -> Result<DaemonStatus, ControlError> {
         | ControlResponse::Commands { .. }
         | ControlResponse::Contacts { .. }
         | ControlResponse::SmsConversations { .. }
-        | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
+        | ControlResponse::SmsThread { .. }
+        | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }

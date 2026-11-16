@@ -246,10 +246,10 @@ pub const SENDNOTIFICATIONS: PluginMeta = PluginMeta {
 pub const SFTP: PluginMeta = PluginMeta {
     name: "sftp",
     title: "Remote filesystem browser",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::SFTP],
     outgoing: &[types::SFTP_REQUEST],
-    desktop: DesktopRequirement::Files,
+    desktop: DesktopRequirement::None,
 };
 
 /// File, URL and text sharing.

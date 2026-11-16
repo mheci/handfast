@@ -77,6 +77,17 @@ fn log_plugin_event(device_id: &DeviceId, event: &PluginEvent) {
                 "plugin event"
             );
         }
+        PluginEvent::Sftp { info } => {
+            tracing::info!(
+                %device_id,
+                event = "Sftp",
+                port = info.port,
+                "plugin event"
+            );
+        }
+        PluginEvent::SftpStopped => {
+            tracing::info!(%device_id, event = "SftpStopped", "plugin event");
+        }
         PluginEvent::Clipboard { text, .. } => {
             tracing::info!(
                 %device_id,

@@ -25,7 +25,7 @@ use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
 use handfast_runtime::{
-    Contact, PluginEvent, Registry, RemoteCommand, RemotePlayer, RemoteSink, SmsMessage,
+    Contact, PluginEvent, Registry, RemoteCommand, RemotePlayer, RemoteSink, SftpInfo, SmsMessage,
 };
 use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -36,15 +36,15 @@ use crate::control::{
     CommandConfigAction, CommandSummary, ContactSummary, ControlResponse, ControlServer,
     DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary, PairedDevice, PairingSummary,
     RemoteCommandRequest, RemoteDeviceCommands, RemoteDevicePlayers, RemoteDeviceSinks,
-    RemoteInputAction, RemoteMediaCommand, SmsAction, SmsConversationSummary, SmsMessageSummary,
-    TransferSummary, MAX_STATUS_DEVICES,
+    RemoteInputAction, RemoteMediaCommand, SftpAction, SmsAction, SmsConversationSummary,
+    SmsMessageSummary, TransferSummary, MAX_STATUS_DEVICES,
 };
 use crate::default_data_dir;
 use crate::identity;
 use crate::limits::{ShareLimits, STALE_TEMP_AGE};
 use crate::pairing::{self, PairingDecision};
 use crate::redact;
-use crate::session::{DaemonEvent, DeviceSession, SessionLimits, TransferSetup};
+use crate::session::{DaemonEvent, DeviceSession, SessionLimits, SessionSetup, TransferSetup};
 
 /// How often to announce this device over UDP discovery.
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
@@ -345,6 +345,7 @@ pub async fn run(
         remote_commands: HashMap::new(),
         contacts: HashMap::new(),
         sms_messages: HashMap::new(),
+        sftp: HashMap::new(),
         shutdown: Some(shutdown_tx),
     };
 
@@ -437,6 +438,7 @@ struct Daemon {
     remote_commands: HashMap<DeviceId, (Vec<RemoteCommand>, bool)>,
     contacts: HashMap<DeviceId, Vec<Contact>>,
     sms_messages: HashMap<DeviceId, Vec<SmsMessage>>,
+    sftp: HashMap<DeviceId, SftpInfo>,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -462,6 +464,7 @@ impl Daemon {
             delivery_timeout: self.limits.share_delivery_timeout,
             max_queued_receives: self.limits.max_queued_receives,
         };
+        let certificate_der = certificate.der().to_vec();
         if self.desktop.files.is_some() {
             DeviceSession::start_with_transfers(
                 peer,
@@ -483,7 +486,11 @@ impl Daemon {
                 Arc::clone(&self.registry),
                 self.desktop.clone(),
                 self.events.clone(),
-                session_limits,
+                SessionSetup {
+                    remote_addr,
+                    limits: session_limits,
+                    certificate: certificate_der,
+                },
             )
         }
     }
@@ -594,6 +601,7 @@ impl Daemon {
                 self.remote_commands.remove(&device_id);
                 self.contacts.remove(&device_id);
                 self.sms_messages.remove(&device_id);
+                self.sftp.remove(&device_id);
                 tracing::info!(%device_id, %reason, "device link closed");
             }
         }
@@ -712,6 +720,7 @@ impl Daemon {
                 self.record_remote_commands(&device_id, &events);
                 self.record_contacts(&device_id, &events);
                 self.record_sms(&device_id, &events);
+                self.record_sftp(&device_id, &events);
                 redact::log_plugin_events(&device_id, &events);
             }
             DaemonEvent::PairingAccepted { device_id, token } => {
@@ -965,6 +974,20 @@ impl Daemon {
             thread.drain(..excess);
         }
         thread
+    }
+
+    fn record_sftp(&mut self, device_id: &DeviceId, events: &[PluginEvent]) {
+        for event in events {
+            match event {
+                PluginEvent::Sftp { info } => {
+                    self.sftp.insert(device_id.clone(), info.clone());
+                }
+                PluginEvent::SftpStopped => {
+                    self.sftp.remove(device_id);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn known_player(&self, device_id: &DeviceId, player: &str) -> Result<(), String> {
@@ -1537,6 +1560,130 @@ impl Daemon {
                     };
                     let _ = reply.send(response);
                 });
+            }
+            DaemonCommand::Sftp {
+                device_id,
+                action,
+                reply,
+            } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                let link_ip = session.remote_addr().ip();
+                let certificate = session.certificate().to_vec();
+                match action {
+                    SftpAction::Start => {
+                        let packet = match handfast_plugins::sftp::start_request() {
+                            Ok(packet) => packet,
+                            Err(error) => {
+                                let _ = reply.send(ControlResponse::Err {
+                                    message: error.to_string(),
+                                });
+                                return;
+                            }
+                        };
+                        let handle = session.handle();
+                        tokio::spawn(async move {
+                            let response = match handle.send_packet(packet).await {
+                                Ok(()) => ControlResponse::Ok { bytes: 0 },
+                                Err(error) => ControlResponse::Err {
+                                    message: error.to_string(),
+                                },
+                            };
+                            let _ = reply.send(response);
+                        });
+                    }
+                    SftpAction::List { path } => {
+                        let Some(info) = self.sftp.get(&device_id).cloned() else {
+                            let _ = reply.send(ControlResponse::Err {
+                                message: "the phone has not started its SFTP server".to_string(),
+                            });
+                            return;
+                        };
+                        let host = info.ip.unwrap_or(link_ip);
+                        tokio::spawn(async move {
+                            let response = match handfast_plugins::sftp::SftpClient::connect(
+                                host,
+                                &info,
+                                &certificate,
+                            )
+                            .await
+                            {
+                                Ok(mut client) => match client.list(&path).await {
+                                    Ok(entries) => ControlResponse::SftpEntries { entries },
+                                    Err(error) => ControlResponse::Err {
+                                        message: error.to_string(),
+                                    },
+                                },
+                                Err(error) => ControlResponse::Err {
+                                    message: error.to_string(),
+                                },
+                            };
+                            let _ = reply.send(response);
+                        });
+                    }
+                    SftpAction::Download { remote, local } => {
+                        let Some(info) = self.sftp.get(&device_id).cloned() else {
+                            let _ = reply.send(ControlResponse::Err {
+                                message: "the phone has not started its SFTP server".to_string(),
+                            });
+                            return;
+                        };
+                        let host = info.ip.unwrap_or(link_ip);
+                        tokio::spawn(async move {
+                            let response = match handfast_plugins::sftp::SftpClient::connect(
+                                host,
+                                &info,
+                                &certificate,
+                            )
+                            .await
+                            {
+                                Ok(mut client) => match client.download(&remote, &local).await {
+                                    Ok(bytes) => ControlResponse::Ok { bytes },
+                                    Err(error) => ControlResponse::Err {
+                                        message: error.to_string(),
+                                    },
+                                },
+                                Err(error) => ControlResponse::Err {
+                                    message: error.to_string(),
+                                },
+                            };
+                            let _ = reply.send(response);
+                        });
+                    }
+                    SftpAction::Upload { local, remote } => {
+                        let Some(info) = self.sftp.get(&device_id).cloned() else {
+                            let _ = reply.send(ControlResponse::Err {
+                                message: "the phone has not started its SFTP server".to_string(),
+                            });
+                            return;
+                        };
+                        let host = info.ip.unwrap_or(link_ip);
+                        tokio::spawn(async move {
+                            let response = match handfast_plugins::sftp::SftpClient::connect(
+                                host,
+                                &info,
+                                &certificate,
+                            )
+                            .await
+                            {
+                                Ok(mut client) => match client.upload(&local, &remote).await {
+                                    Ok(bytes) => ControlResponse::Ok { bytes },
+                                    Err(error) => ControlResponse::Err {
+                                        message: error.to_string(),
+                                    },
+                                },
+                                Err(error) => ControlResponse::Err {
+                                    message: error.to_string(),
+                                },
+                            };
+                            let _ = reply.send(response);
+                        });
+                    }
+                }
             }
             DaemonCommand::CommandConfig { action, reply } => {
                 let Some(commands) = self.desktop.commands.as_ref() else {
@@ -2359,6 +2506,7 @@ mod tests {
             remote_commands: HashMap::new(),
             contacts: HashMap::new(),
             sms_messages: HashMap::new(),
+            sftp: HashMap::new(),
             shutdown: Some(shutdown),
         };
 
@@ -2576,6 +2724,7 @@ mod tests {
             remote_commands: HashMap::new(),
             contacts: HashMap::new(),
             sms_messages: HashMap::new(),
+            sftp: HashMap::new(),
             shutdown: Some(shutdown),
         };
         (daemon, links, manager_task)
@@ -2969,6 +3118,59 @@ mod tests {
         daemon
             .handle_command(DaemonCommand::TelephonyMute {
                 device_id: peer,
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("is not connected")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn sftp_event_is_cached_and_cleared() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let info = SftpInfo {
+            port: 1739,
+            user: "kdeconnect".to_string(),
+            password: "secret".to_string(),
+            path: "/storage/emulated/0".to_string(),
+            ip: None,
+        };
+
+        daemon.record_sftp(&peer, &[PluginEvent::Sftp { info: info.clone() }]);
+        assert_eq!(daemon.sftp.get(&peer), Some(&info));
+
+        daemon.record_sftp(&peer, &[PluginEvent::SftpStopped]);
+        assert!(daemon.sftp.get(&peer).is_none());
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn sftp_to_an_unknown_device_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::Sftp {
+                device_id: peer,
+                action: SftpAction::List {
+                    path: "/".to_string(),
+                },
                 reply,
             })
             .await;

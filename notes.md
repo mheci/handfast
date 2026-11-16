@@ -2,7 +2,7 @@
 
 Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`.
 
-Current state, 2026-11-16: 24 of 31 roster plugins are implemented. The seven
+Current state, 2026-11-16: 25 of 31 roster plugins are implemented. The six
 planned plugins and their blockers are named in `docs/PARITY.md`. Branch
 `feat/parity`, PR #272. The manual P1 Android/desktop gate, GUI window check,
 signed 0.3.0 update and package installs still need the user.
@@ -367,3 +367,22 @@ Parity wave 16, 2026-11-16, same branch:
 - The roster now advertises the mute packet as outgoing. Control: `TelephonyMute { device_id }`; the daemon requires a connected session and replies with the send result.
 - Evidence: plugins 216 pass (telephony mute builder), daemon lib 153 pass (offline device), bin 4 pass, clippy/fmt/docs clean. The four `telephony_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
 - Gaps: no GUI mute button; the CLI is the only surface.
+
+
+Parity wave 17, 2026-11-16, same branch:
+
+- `sftp` is implemented in the protocol's real direction: the phone runs the SFTP server, the desktop is the client. Verified against kdeconnect-android `SftpPlugin.kt` and kdeconnect-kde `sftpplugin.cpp`: the desktop sends `kdeconnect.sftp.request {startBrowsing: true}` and the phone replies with `kdeconnect.sftp` containing the port, user, one-session password, path, optional ip, multiPaths and pathNames.
+- `handfast sftp <device-id> --start` sends the request. `--list PATH`, `--download REMOTE LOCAL` and `--upload LOCAL REMOTE` connect with `russh`/`russh-sftp` using the reported ip (falling back to the control link address) and copy through the phone's server. The phone enforces its own storage roots; the desktop accesses the paths the phone exposes.
+- The reply parser accepts a numeric or string port, caps user/password/path lengths, and ignores an invalid ip. The daemon caches the details per device, clears them on disconnect or on a `serverRunning: false` packet, and requires a connected session for every operation. Downloads and uploads are capped at 512 MiB and stream in 64 KiB chunks.
+- New dependencies: `russh` 0.65 with the `ring` and `rsa` features (no aws-lc), `russh-sftp` 3.0, `rand` 0.10 as a dev-dependency, and `thiserror` (already a workspace dep). The phone reuses its TLS key as the SSH host key (`RsaHelper`), so the client pins the SSH public key to the peer certificate's RSA modulus/exponent. The test fixture uses an ECDSA key and certificate and also proves that a certificate for another key is refused. No unsafe code.
+- Evidence: plugins 226 pass (10 sftp tests, including a real `russh` SFTP client against a real SFTP server fixture listing, downloading and uploading), daemon lib 155 pass (cache and offline device), control round-trip, bins 4 pass, clippy/fmt/docs clean. The seven `sftp_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: no GUI file browser; the phone must enable its SFTP plugin and grant storage permissions; `multiPaths` is parsed only as the single `path`; no resume or partial-transfer support.
+
+
+Feasibility, 2026-11-16, remaining plugins:
+
+- `sendnotifications`: Linux can observe freedesktop notifications with a `gdbus monitor` parser, fully testable with canned lines. Windows WinRT `UserNotificationListener` needs a consent prompt and package identity; unpackaged Win32 processes get empty lists or fail `NotificationChanged`. Recommendation: Linux-only unless the user allows the prompt and packaging work.
+- `digitizer`: Wayland can inject absolute position and pressure through the safe `evdev` uinput API; Windows has safe absolute pointer via `enigo` but no pressure without unsafe or a driver. Recommendation: implement the contract and both pointer paths, name the Windows pressure gap.
+- `shareinputdevicesremote`: mostly `mousepad` plus absolute entry positioning; implementable now. `shareinputdevices` capture is Wayland/libei only (`reis`), and Windows capture needs a hook backend. Leave capture planned.
+- `virtualmonitor`: KDE shells out to `krdpserver` and opens `rdp://`. Linux server partial is possible; Windows needs an IddCx driver. Android has no counterpart. Leave planned.
+- `mmtelephony`: safe ModemManager DBus with `zbus` is feasible but needs modem hardware and upstream mute is a stub. Leave planned.

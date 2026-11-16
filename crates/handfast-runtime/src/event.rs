@@ -113,6 +113,32 @@ pub struct SmsMessage {
     pub read: bool,
 }
 
+/// One SFTP server a phone reported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SftpInfo {
+    /// TCP port the phone's SFTP server listens on.
+    pub port: u16,
+    /// User name the phone expects.
+    pub user: String,
+    /// One-session password the phone generated.
+    pub password: String,
+    /// Root path the phone exposes.
+    pub path: String,
+    /// Address the phone reported, when it sent one.
+    pub ip: Option<std::net::IpAddr>,
+}
+
+/// One directory entry on a phone's SFTP server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SftpEntry {
+    /// File or directory name.
+    pub name: String,
+    /// Whether the entry is a directory.
+    pub directory: bool,
+    /// Size in bytes.
+    pub size: u64,
+}
+
 /// One transport action sent to a peer player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemoteMediaAction {
@@ -204,6 +230,13 @@ pub enum PluginEvent {
         /// Messages in date order.
         messages: Vec<SmsMessage>,
     },
+    /// A peer started an SFTP server.
+    Sftp {
+        /// Connection details the peer reported.
+        info: SftpInfo,
+    },
+    /// A peer reports its SFTP server is not running.
+    SftpStopped,
     /// Clipboard text arrived.
     Clipboard {
         /// Text content.

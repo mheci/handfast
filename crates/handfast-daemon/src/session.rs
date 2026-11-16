@@ -78,6 +78,12 @@ pub struct SessionLimits {
     pub max_queued_receives: usize,
 }
 
+pub struct SessionSetup {
+    pub remote_addr: SocketAddr,
+    pub limits: SessionLimits,
+    pub certificate: Vec<u8>,
+}
+
 impl Default for SessionLimits {
     fn default() -> Self {
         Self {
@@ -103,6 +109,15 @@ pub struct TransferSetup {
 pub struct DeviceSession {
     task: JoinHandle<()>,
     handle: SessionHandle,
+    remote_addr: SocketAddr,
+    certificate: Vec<u8>,
+}
+
+struct SessionConfig {
+    remote_addr: SocketAddr,
+    limits: SessionLimits,
+    certificate: Vec<u8>,
+    deps: Option<TransferDeps>,
 }
 
 impl DeviceSession {
@@ -113,9 +128,21 @@ impl DeviceSession {
         registry: Arc<Registry>,
         desktop: Desktop,
         events: mpsc::Sender<DaemonEvent>,
-        limits: SessionLimits,
+        setup: SessionSetup,
     ) -> Self {
-        Self::start_inner(peer, link, registry, desktop, events, limits, None)
+        Self::start_inner(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            SessionConfig {
+                remote_addr: setup.remote_addr,
+                limits: setup.limits,
+                certificate: setup.certificate,
+                deps: None,
+            },
+        )
     }
 
     /// Start a session with the share transfer runner.
@@ -131,6 +158,7 @@ impl DeviceSession {
         events: mpsc::Sender<DaemonEvent>,
         setup: TransferSetup,
     ) -> Self {
+        let certificate = setup.certificate.der().to_vec();
         let deps = desktop.files.clone().map(|files| TransferDeps {
             peer: PayloadPeer {
                 device_id: peer.device_id.clone(),
@@ -143,7 +171,19 @@ impl DeviceSession {
             #[cfg(test)]
             connects: Arc::new(AtomicUsize::new(0)),
         });
-        Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps)
+        Self::start_inner(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            SessionConfig {
+                remote_addr: setup.remote_addr,
+                limits: setup.limits,
+                certificate,
+                deps,
+            },
+        )
     }
 
     /// Start a session and return the connect-completion probe. Test only.
@@ -157,6 +197,7 @@ impl DeviceSession {
         setup: TransferSetup,
     ) -> (Self, Arc<AtomicUsize>) {
         let connects = Arc::new(AtomicUsize::new(0));
+        let certificate = setup.certificate.der().to_vec();
         let deps = desktop.files.clone().map(|files| TransferDeps {
             peer: PayloadPeer {
                 device_id: peer.device_id.clone(),
@@ -169,7 +210,19 @@ impl DeviceSession {
             connects: Arc::clone(&connects),
         });
         (
-            Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps),
+            Self::start_inner(
+                peer,
+                link,
+                registry,
+                desktop,
+                events,
+                SessionConfig {
+                    remote_addr: setup.remote_addr,
+                    limits: setup.limits,
+                    certificate,
+                    deps,
+                },
+            ),
             connects,
         )
     }
@@ -180,15 +233,14 @@ impl DeviceSession {
         registry: Arc<Registry>,
         desktop: Desktop,
         events: mpsc::Sender<DaemonEvent>,
-        limits: SessionLimits,
-        deps: Option<TransferDeps>,
+        config: SessionConfig,
     ) -> Self {
         let (tx, rx) = mpsc::channel(SESSION_QUEUE);
         let (stop_tx, stop_rx) = watch::channel(None);
         let handle = SessionHandle {
             tx,
             stop_tx,
-            delivery_timeout: limits.delivery_timeout,
+            delivery_timeout: config.limits.delivery_timeout,
             drops: Arc::new(AtomicU64::new(0)),
         };
         let task = tokio::spawn(run(
@@ -201,9 +253,26 @@ impl DeviceSession {
                 input: rx,
                 stop: stop_rx,
             },
-            deps,
+            config.deps,
         ));
-        Self { task, handle }
+        Self {
+            task,
+            handle,
+            remote_addr: config.remote_addr,
+            certificate: config.certificate,
+        }
+    }
+
+    /// The peer address the control link authenticated.
+    #[must_use]
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.remote_addr
+    }
+
+    /// The peer's DER certificate.
+    #[must_use]
+    pub fn certificate(&self) -> &[u8] {
+        &self.certificate
     }
 
     /// Deliver one packet to the session.
@@ -1595,7 +1664,11 @@ mod tests {
             Arc::new(registry()),
             Desktop::default(),
             events_tx,
-            SessionLimits::default(),
+            SessionSetup {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
+                limits: SessionLimits::default(),
+                certificate: Vec::new(),
+            },
         );
 
         session
@@ -1637,7 +1710,11 @@ mod tests {
             registry,
             Desktop::default(),
             events_tx,
-            SessionLimits::default(),
+            SessionSetup {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
+                limits: SessionLimits::default(),
+                certificate: Vec::new(),
+            },
         );
 
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1704,7 +1781,11 @@ mod tests {
             registry,
             Desktop::default(),
             events,
-            SessionLimits::default(),
+            SessionSetup {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
+                limits: SessionLimits::default(),
+                certificate: Vec::new(),
+            },
         );
 
         session
@@ -2491,7 +2572,11 @@ mod tests {
             Arc::new(registry()),
             Desktop::default(),
             events,
-            SessionLimits::default(),
+            SessionSetup {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
+                limits: SessionLimits::default(),
+                certificate: Vec::new(),
+            },
         );
 
         let error = session
