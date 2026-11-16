@@ -40,7 +40,7 @@ pub const CONNECTIVITY_REPORT: PluginMeta = PluginMeta {
 pub const CONTACTS: PluginMeta = PluginMeta {
     name: "contacts",
     title: "Sync contacts",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[
         types::CONTACTS_RESPONSE_UIDS_TIMESTAMPS,
         types::CONTACTS_RESPONSE_VCARDS,
@@ -49,7 +49,7 @@ pub const CONTACTS: PluginMeta = PluginMeta {
         types::CONTACTS_REQUEST_ALL_UIDS_TIMESTAMPS,
         types::CONTACTS_REQUEST_VCARDS_BY_UID,
     ],
-    desktop: DesktopRequirement::Contacts,
+    desktop: DesktopRequirement::None,
 };
 
 /// Pressure-sensitive drawing tablet.

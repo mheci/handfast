@@ -52,6 +52,8 @@ enum Command {
     /// Send mouse or keyboard input to a connected device.
     #[command(name = "remote-input")]
     RemoteInput(RemoteInputArgs),
+    /// List or refresh the contacts a connected device reports.
+    Contacts(ContactsArgs),
     /// List or edit the local runcommand configuration.
     #[command(name = "command")]
     Commands(CommandArgs),
@@ -282,6 +284,17 @@ struct RemoteInputArgs {
     sup: bool,
 }
 
+#[derive(Debug, Parser)]
+struct ContactsArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Ask the peer for a fresh sync instead of listing the cache.
+    #[arg(long)]
+    refresh: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum CommandAction {
     /// List the configured commands.
@@ -424,6 +437,10 @@ fn main() -> ExitCode {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_remote_input(args, data_dir)
         }
+        Command::Contacts(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_contacts(args, data_dir)
+        }
         Command::Commands(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_command_config(args, data_dir)
@@ -535,7 +552,8 @@ async fn send_share(args: ShareArgs, data_dir: PathBuf) -> Result<(), ControlErr
         ControlResponse::Status { .. }
         | ControlResponse::ShuttingDown
         | ControlResponse::Decided
-        | ControlResponse::Commands { .. } => Err(ControlError::Remote(
+        | ControlResponse::Commands { .. }
+        | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -1010,6 +1028,57 @@ async fn send_remote_input(
     }
 }
 
+fn run_contacts(args: ContactsArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_contacts(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_contacts(args: ContactsArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let request = ControlRequest::Contacts {
+        device_id: args.device_id.clone(),
+        refresh: args.refresh,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Contacts { contacts } => {
+            let mut lines = Vec::with_capacity(contacts.len());
+            for contact in contacts {
+                lines.push(format!(
+                    "{}\t{}\t{}",
+                    contact.name,
+                    contact.phones.join(","),
+                    contact.emails.join(",")
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::Ok { .. } if args.refresh => {
+            Ok(format!("requested contacts from {}", args.device_id))
+        }
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
 async fn list_cached_commands(
     device_id: String,
     data_dir: PathBuf,
@@ -1151,7 +1220,8 @@ fn decision_message(
         ControlResponse::Ok { .. }
         | ControlResponse::Status { .. }
         | ControlResponse::ShuttingDown
-        | ControlResponse::Commands { .. } => Err(ControlError::Remote(
+        | ControlResponse::Commands { .. }
+        | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -1188,7 +1258,8 @@ async fn request_status(data_dir: &Path) -> Result<DaemonStatus, ControlError> {
         ControlResponse::Ok { .. }
         | ControlResponse::ShuttingDown
         | ControlResponse::Decided
-        | ControlResponse::Commands { .. } => Err(ControlError::Remote(
+        | ControlResponse::Commands { .. }
+        | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }

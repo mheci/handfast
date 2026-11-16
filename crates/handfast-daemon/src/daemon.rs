@@ -24,15 +24,15 @@ use handfast_plugins::registry;
 use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
-use handfast_runtime::{PluginEvent, Registry, RemoteCommand, RemotePlayer, RemoteSink};
+use handfast_runtime::{Contact, PluginEvent, Registry, RemoteCommand, RemotePlayer, RemoteSink};
 use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::commands::StoreCommands;
 use crate::control::{
-    CommandConfigAction, CommandSummary, ControlResponse, ControlServer, DaemonCommand,
-    DaemonStatus, DeviceSummary, IdentitySummary, PairedDevice, PairingSummary,
+    CommandConfigAction, CommandSummary, ContactSummary, ControlResponse, ControlServer,
+    DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary, PairedDevice, PairingSummary,
     RemoteCommandRequest, RemoteDeviceCommands, RemoteDevicePlayers, RemoteDeviceSinks,
     RemoteInputAction, RemoteMediaCommand, TransferSummary, MAX_STATUS_DEVICES,
 };
@@ -336,6 +336,7 @@ pub async fn run(
         remote_sinks: HashMap::new(),
         remote_players: HashMap::new(),
         remote_commands: HashMap::new(),
+        contacts: HashMap::new(),
         shutdown: Some(shutdown_tx),
     };
 
@@ -426,6 +427,7 @@ struct Daemon {
     remote_sinks: HashMap<DeviceId, Vec<RemoteSink>>,
     remote_players: HashMap<DeviceId, Vec<RemotePlayer>>,
     remote_commands: HashMap<DeviceId, (Vec<RemoteCommand>, bool)>,
+    contacts: HashMap<DeviceId, Vec<Contact>>,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -581,6 +583,7 @@ impl Daemon {
                 self.remote_sinks.remove(&device_id);
                 self.remote_players.remove(&device_id);
                 self.remote_commands.remove(&device_id);
+                self.contacts.remove(&device_id);
                 tracing::info!(%device_id, %reason, "device link closed");
             }
         }
@@ -697,6 +700,7 @@ impl Daemon {
                 self.record_remote_sinks(&device_id, &events);
                 self.record_remote_players(&device_id, &events);
                 self.record_remote_commands(&device_id, &events);
+                self.record_contacts(&device_id, &events);
                 redact::log_plugin_events(&device_id, &events);
             }
             DaemonEvent::PairingAccepted { device_id, token } => {
@@ -838,6 +842,35 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    fn record_contacts(&mut self, device_id: &DeviceId, events: &[PluginEvent]) {
+        for event in events {
+            if let PluginEvent::Contacts { contacts } = event {
+                if contacts.is_empty() {
+                    self.contacts.remove(device_id);
+                } else {
+                    self.contacts.insert(device_id.clone(), contacts.clone());
+                }
+            }
+        }
+    }
+
+    fn contact_summaries(&self, device_id: &DeviceId) -> Vec<ContactSummary> {
+        self.contacts
+            .get(device_id)
+            .map(|contacts| {
+                contacts
+                    .iter()
+                    .map(|contact| ContactSummary {
+                        uid: contact.uid.clone(),
+                        name: contact.name.clone(),
+                        phones: contact.phones.clone(),
+                        emails: contact.emails.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn known_player(&self, device_id: &DeviceId, player: &str) -> Result<(), String> {
@@ -1297,6 +1330,42 @@ impl Daemon {
                     };
                     let _ = reply.send(response);
                 });
+            }
+            DaemonCommand::Contacts {
+                device_id,
+                refresh,
+                reply,
+            } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                if refresh {
+                    let packet = match handfast_plugins::contacts::request_all_timestamps() {
+                        Ok(packet) => packet,
+                        Err(error) => {
+                            let _ = reply.send(ControlResponse::Err {
+                                message: error.to_string(),
+                            });
+                            return;
+                        }
+                    };
+                    let handle = session.handle();
+                    tokio::spawn(async move {
+                        let response = match handle.send_packet(packet).await {
+                            Ok(()) => ControlResponse::Ok { bytes: 0 },
+                            Err(error) => ControlResponse::Err {
+                                message: error.to_string(),
+                            },
+                        };
+                        let _ = reply.send(response);
+                    });
+                    return;
+                }
+                let contacts = self.contact_summaries(&device_id);
+                let _ = reply.send(ControlResponse::Contacts { contacts });
             }
             DaemonCommand::CommandConfig { action, reply } => {
                 let Some(commands) = self.desktop.commands.as_ref() else {
@@ -2117,6 +2186,7 @@ mod tests {
             remote_sinks: HashMap::new(),
             remote_players: HashMap::new(),
             remote_commands: HashMap::new(),
+            contacts: HashMap::new(),
             shutdown: Some(shutdown),
         };
 
@@ -2332,6 +2402,7 @@ mod tests {
             remote_sinks: HashMap::new(),
             remote_players: HashMap::new(),
             remote_commands: HashMap::new(),
+            contacts: HashMap::new(),
             shutdown: Some(shutdown),
         };
         (daemon, links, manager_task)
@@ -2525,6 +2596,78 @@ mod tests {
             .handle_command(DaemonCommand::RemoteInput {
                 device_id: peer,
                 action: RemoteInputAction::Move { dx: 1, dy: -1 },
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("is not connected")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn contacts_reach_the_model_and_clear() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let contacts = vec![
+            Contact {
+                uid: "1".to_string(),
+                name: "Alice".to_string(),
+                phones: vec!["+1".to_string()],
+                emails: Vec::new(),
+            },
+            Contact {
+                uid: "2".to_string(),
+                name: "Zoe".to_string(),
+                phones: Vec::new(),
+                emails: vec!["zoe@example.com".to_string()],
+            },
+        ];
+
+        daemon.record_contacts(
+            &peer,
+            &[PluginEvent::Contacts {
+                contacts: contacts.clone(),
+            }],
+        );
+
+        let summaries = daemon.contact_summaries(&peer);
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].name, "Alice");
+        assert_eq!(summaries[1].emails, vec!["zoe@example.com"]);
+
+        daemon.record_contacts(
+            &peer,
+            &[PluginEvent::Contacts {
+                contacts: Vec::new(),
+            }],
+        );
+        assert!(daemon.contact_summaries(&peer).is_empty());
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn contacts_to_an_unknown_device_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::Contacts {
+                device_id: peer,
+                refresh: false,
                 reply,
             })
             .await;

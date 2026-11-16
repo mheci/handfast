@@ -83,6 +83,19 @@ pub struct RemoteCommand {
     pub command: String,
 }
 
+/// One contact reported by a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Contact {
+    /// Stable contact identifier from the peer.
+    pub uid: String,
+    /// Display name.
+    pub name: String,
+    /// Phone numbers.
+    pub phones: Vec<String>,
+    /// Email addresses.
+    pub emails: Vec<String>,
+}
+
 /// One transport action sent to a peer player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemoteMediaAction {
@@ -163,6 +176,11 @@ pub enum PluginEvent {
         commands: Vec<RemoteCommand>,
         /// Whether the peer lets the desktop add commands.
         can_add: bool,
+    },
+    /// A peer reported its contacts.
+    Contacts {
+        /// Contacts in name order.
+        contacts: Vec<Contact>,
     },
     /// Clipboard text arrived.
     Clipboard {

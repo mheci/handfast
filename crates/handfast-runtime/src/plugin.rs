@@ -45,8 +45,6 @@ pub enum DesktopRequirement {
     Files,
     /// Telephony or SMS.
     Telephony,
-    /// Contacts storage.
-    Contacts,
     /// Virtual display output.
     Display,
 }
@@ -228,8 +226,6 @@ pub(crate) fn desktop_available(desktop: &Desktop, requirement: DesktopRequireme
         DesktopRequirement::Shell => desktop.shell.is_some(),
         DesktopRequirement::Commands => desktop.commands.is_some(),
         DesktopRequirement::Files => desktop.files.is_some(),
-        DesktopRequirement::Telephony
-        | DesktopRequirement::Contacts
-        | DesktopRequirement::Display => false,
+        DesktopRequirement::Telephony | DesktopRequirement::Display => false,
     }
 }

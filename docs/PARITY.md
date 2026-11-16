@@ -17,7 +17,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 1 | `battery` | bidirectional | `kdeconnect.battery`, `.battery.request` | sysfs; `Win32_Battery` on Windows | P0 | yes | yes | no |
 | 2 | `clipboard` | bidirectional | `kdeconnect.clipboard`, `.clipboard.connect` | `wl-clipboard` on Wayland, `xclip` on X11, `clipboard-win` on Windows | P2 | yes | yes | no |
 | 3 | `connectivity-report` | phone -> desktop | `kdeconnect.connectivity_report`, `.connectivity_report.request` | none | P2 | yes | n/a | no |
-| 4 | `contacts` | phone -> desktop | `kdeconnect.contacts.request_all_uids_timestamps`, `.request_vcards_by_uid`, `.response_uids_timestamps`, `.response_vcards` | vCard store | P2 | no | no | no |
+| 4 | `contacts` | phone -> desktop | `kdeconnect.contacts.request_all_uids_timestamps`, `.request_vcards_by_uid`, `.response_uids_timestamps`, `.response_vcards` | vCard model | P2 | yes | n/a | no |
 | 5 | `digitizer` | phone -> desktop | `kdeconnect.digitizer`, `.digitizer.session` | libei absolute pointer with pressure | P4 | no | no | no |
 | 6 | `findmyphone` | desktop -> phone | `kdeconnect.findmyphone.request` | none | P2 | yes | n/a | no |
 | 7 | `findthisdevice` | phone -> desktop | `kdeconnect.findmyphone.request`, `.private.findthisdevice` | `notify-send` | P2 | yes | yes | no |
@@ -64,7 +64,9 @@ have.
   peer; the desktop never runs them locally. Command output
   (`.runcommand.output`) is not fetched yet.
 - **SMS and contacts**: the phone owns the data. The desktop stores, displays and
-  sends requests.
+  sends requests. The contacts plugin keeps the parsed vCard list in memory for
+  each connected device and clears it on disconnect; `handfast contacts` lists
+  it and `--refresh` asks the phone for a fresh sync.
 - **Virtual monitor**: desktop-only; the official Android client has no virtual
   display support.
 - **Clipboard images**: the wire protocol carries text. File clipboard entries

@@ -96,6 +96,13 @@ pub enum ControlRequest {
         /// The input to send.
         action: RemoteInputAction,
     },
+    /// Read or refresh the contacts a connected device reports.
+    Contacts {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// Ask the peer for a fresh sync instead of listing the cache.
+        refresh: bool,
+    },
     /// List or edit the local runcommand configuration.
     CommandConfig {
         /// The action to apply.
@@ -125,6 +132,11 @@ pub enum ControlResponse {
     Commands {
         /// Commands in key order.
         commands: Vec<CommandSummary>,
+    },
+    /// The contacts cached for one device.
+    Contacts {
+        /// Contacts in name order.
+        contacts: Vec<ContactSummary>,
     },
     /// The daemon status snapshot.
     Status {
@@ -299,6 +311,19 @@ pub struct CommandSummary {
     pub command: String,
 }
 
+/// One contact in a control reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactSummary {
+    /// Stable contact identifier from the peer.
+    pub uid: String,
+    /// Display name.
+    pub name: String,
+    /// Phone numbers.
+    pub phones: Vec<String>,
+    /// Email addresses.
+    pub emails: Vec<String>,
+}
+
 /// Audio sinks reported by one peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteDeviceSinks {
@@ -440,6 +465,12 @@ pub enum DaemonCommand {
     RemoteInput {
         device_id: DeviceId,
         action: RemoteInputAction,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// List or refresh one device's contacts and reply.
+    Contacts {
+        device_id: DeviceId,
+        refresh: bool,
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Apply one local command configuration action.
@@ -801,6 +832,18 @@ async fn dispatch(
             DaemonCommand::RemoteInput {
                 device_id,
                 action,
+                reply,
+            }
+        }
+        ControlRequest::Contacts { device_id, refresh } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            DaemonCommand::Contacts {
+                device_id,
+                refresh,
                 reply,
             }
         }
@@ -1328,6 +1371,36 @@ mod tests {
                         sup: false,
                     },
                 },
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::Contacts {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                refresh: true,
+            })
+            .await,
+            ControlRequest::Contacts {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                refresh: true,
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::Contacts {
+                contacts: vec![ContactSummary {
+                    uid: "uid-1".to_string(),
+                    name: "Jane Doe".to_string(),
+                    phones: vec!["+123".to_string()],
+                    emails: vec!["jane@example.com".to_string()],
+                }],
+            })
+            .await,
+            ControlResponse::Contacts {
+                contacts: vec![ContactSummary {
+                    uid: "uid-1".to_string(),
+                    name: "Jane Doe".to_string(),
+                    phones: vec!["+123".to_string()],
+                    emails: vec!["jane@example.com".to_string()],
+                }],
             }
         );
         assert_eq!(

@@ -61,6 +61,14 @@ fn log_plugin_event(device_id: &DeviceId, event: &PluginEvent) {
                 "plugin event"
             );
         }
+        PluginEvent::Contacts { contacts } => {
+            tracing::info!(
+                %device_id,
+                event = "Contacts",
+                contacts = contacts.len(),
+                "plugin event"
+            );
+        }
         PluginEvent::Clipboard { text, .. } => {
             tracing::info!(
                 %device_id,

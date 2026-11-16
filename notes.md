@@ -335,3 +335,12 @@ Parity wave 13, 2026-11-16, same branch:
 - Validation: deltas are limited to +/-10000, key text to 64 bytes with no control characters, special codes to 1-32, and exactly one operation per request. Modifiers require `--key` or `--special`.
 - Evidence: plugins 201 pass (6 remotecontrol tests), daemon lib 148 pass (RemoteInput round-trip and offline device), bin 4 pass, clippy/fmt/docs clean. The seven `remoteinput_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
 - Gaps: no GUI surface; the phone must enable its remote control and remote keyboard plugins; special key codes are numeric only.
+
+
+Parity wave 14, 2026-11-16, same branch:
+
+- `contacts` is implemented and registered. The plugin asks the phone for every UID and timestamp on connect, requests the vCards by UID, parses them, and emits `PluginEvent::Contacts` in name order. The daemon keeps the list per device and clears it on disconnect.
+- vCard parsing: folded lines are joined, `FN` wins over `N`, `TEL` and `EMAIL` are collected, vCard escapes are decoded. Caps: 1024 contacts, 16 KiB per vCard, 256-byte UID and name, 16 fields of 128 bytes each. Malformed entries are skipped with one warning.
+- Control: `Contacts { device_id, refresh }` and `ControlResponse::Contacts`. `handfast contacts <device-id>` prints name, phones and emails; `--refresh` asks the phone for a fresh sync.
+- Evidence: runtime 12 pass, plugins 210 pass (9 contacts tests), daemon lib 150 pass (model and offline device), bin 4 pass, clippy/fmt/docs clean. The five `contacts_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: the cache is in memory and is re-requested on every connect; no GUI surface; vCard photos, addresses and groups are not stored.
