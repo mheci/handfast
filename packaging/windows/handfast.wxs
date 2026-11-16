@@ -21,20 +21,22 @@
     <Icon Id="HandfastIcon" Source="$(var.IconPath)" />
     <Property Id="ARPPRODUCTICON" Value="HandfastIcon" />
 
-    <!-- The installer adds one firewall rule per user and product. A deferred
-         LocalSystem action cannot resolve [LocalAppDataFolder], so the
-         immediate action captures the literal installed path and the rule
-         name into the action data. UserSID and ProductCode keep the rule
-         unique across users and product releases. -->
+    <!-- The installer adds one firewall rule per user. A deferred LocalSystem
+         action cannot resolve [LocalAppDataFolder], so the immediate action
+         captures the literal installed path and the rule name into the action
+         data. The name is the one `handfast service install` computes from the
+         same UserSID property, so an elevated manual install or uninstall
+         reuses this rule instead of adding a second one, and the name survives
+         upgrades. -->
     <Property Id="ARPCOMMENTS"
               Value="Handfast needs a firewall rule for UDP 1716 and TCP 1716-1764. The installer adds it. If it is missing, run 'handfast service install' from an administrator prompt." />
 
     <CustomAction Id="SetAddFirewallData" Property="AddFirewallRule"
-                  Value="&quot;[SystemFolder]netsh.exe&quot; advfirewall firewall add rule name=&quot;Handfast-[UserSID]-[ProductCode]&quot; dir=in action=allow program=&quot;[INSTALLFOLDER]handfast.exe&quot; enable=yes" />
+                  Value="&quot;[SystemFolder]netsh.exe&quot; advfirewall firewall add rule name=&quot;Handfast-[UserSID]&quot; dir=in action=allow program=&quot;[INSTALLFOLDER]handfast.exe&quot; enable=yes" />
     <CustomAction Id="AddFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="ignore" />
     <CustomAction Id="SetRemoveFirewallData" Property="RemoveFirewallRule"
-                  Value="&quot;[SystemFolder]netsh.exe&quot; advfirewall firewall delete rule name=&quot;Handfast-[UserSID]-[ProductCode]&quot;" />
+                  Value="&quot;[SystemFolder]netsh.exe&quot; advfirewall firewall delete rule name=&quot;Handfast-[UserSID]&quot;" />
     <CustomAction Id="RemoveFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="ignore" />
 

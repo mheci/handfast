@@ -28,8 +28,12 @@ Open the MSI. It installs per user to `%LOCALAPPDATA%\Handfast`, adds a Start
 Menu shortcut named `Handfast` that runs `handfast gui`, and writes state to
 `%LOCALAPPDATA%\handfast`. The 0.3.0 MSI is signed when the Windows signing
 secrets are configured. The MSI registers the logon task with
-`handfast service install` and removes it on uninstall. The MSI adds an inbound firewall rule for the installed executable, which
-covers UDP 1716 and TCP 1716-1764, during install. If the rule is
+`handfast service install` and removes it on uninstall. The MSI adds an inbound
+firewall rule named `Handfast-<your user SID>` for the installed executable,
+which covers UDP 1716 and TCP 1716-1764, during install. That is the same name
+`handfast service install` and `handfast service uninstall` compute from the
+current user, so running them from an administrator prompt replaces the
+installer's rule instead of adding a second one. If the rule is
 missing, run `handfast service install` from an administrator prompt; it adds
 the rule when elevated and prints the exact command otherwise.
 

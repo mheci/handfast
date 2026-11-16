@@ -138,11 +138,14 @@ before removal. Both actions log a failure and do not fail the install, so check
 elevated and prints the exact command otherwise.
 
 ```text
-netsh advfirewall firewall add rule name="Handfast-<hash>" dir=in action=allow program="C:\Users\<you>\AppData\Local\Handfast\handfast.exe" enable=yes
+netsh advfirewall firewall add rule name="Handfast-<your user SID>" dir=in action=allow program="C:\Users\<you>\AppData\Local\Handfast\handfast.exe" enable=yes
 ```
 
 A logon task cannot answer the Windows firewall prompt. The installer adds the
-rule so the daemon can discover peers on first start.
+rule so the daemon can discover peers on first start. The rule name is
+`Handfast-<your user SID>`, the same name `handfast service install` and
+`handfast service uninstall` compute from the current user, so an elevated
+manual install reuses the installer's rule and uninstall removes it.
 
 ## Upgrading from 0.2.0
 
@@ -163,7 +166,8 @@ The workflow cannot prove these, so run them on the release candidate:
 
 - Install the MSI on Windows 11, open the Start Menu shortcut, confirm the
   window opens and `handfast service status` shows the installed task. Run
-  `handfast service install` once to confirm the firewall rule exists, then
+  `handfast service install` from an administrator prompt to confirm it reuses
+  the installer's rule instead of adding a second one, then
   uninstall and confirm the task and rule are gone. Upgrade 0.3.0 to
   the next build with the daemon running to exercise `CloseApplication`.
 - `dpkg-deb -I` and `dpkg-deb -c` on both debs. Confirm `handfast`, the unit and
