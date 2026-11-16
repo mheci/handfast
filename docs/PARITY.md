@@ -41,7 +41,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 25 | `share` | bidirectional | `kdeconnect.share.request`, `.share.request.update` | TLS payload channel, `LocalFiles`, `xdg-open` for URLs | P1 | yes | yes | no |
 | 26 | `shareinputdevices` | desktop -> remote | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input capture + forwarding | P4 | no | no | no |
 | 27 | `shareinputdevicesremote` | remote -> desktop | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input injection | P4 | no | no | no |
-| 28 | `sms` | bidirectional | `kdeconnect.sms.messages`, `.sms.request`, `.sms.request_conversation`, `.sms.request_conversations`, `.sms.request_attachment`, `.sms.attachment_file` | phone-owned data, desktop UI | P2 | no | no | no |
+| 28 | `sms` | bidirectional | `kdeconnect.sms.messages`, `.sms.request`, `.sms.request_conversation`, `.sms.request_conversations`, `.sms.request_attachment`, `.sms.attachment_file` | phone-owned message cache | P2 | yes | n/a | no |
 | 29 | `systemvolume` | bidirectional | `kdeconnect.systemvolume`, `.systemvolume.request` | `wpctl` | P2 | yes | yes | no |
 | 30 | `telephony` | phone -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | `notify-send`; toast on Windows | P2 | yes | yes | no |
 | 31 | `virtualmonitor` | phone -> desktop | `kdeconnect.virtualmonitor`, `.virtualmonitor.request` | Wayland virtual-output protocol | P4 | no | no | no |
@@ -66,7 +66,10 @@ have.
 - **SMS and contacts**: the phone owns the data. The desktop stores, displays and
   sends requests. The contacts plugin keeps the parsed vCard list in memory for
   each connected device and clears it on disconnect; `handfast contacts` lists
-  it and `--refresh` asks the phone for a fresh sync.
+  it and `--refresh` asks the phone for a fresh sync. The SMS plugin caches
+  messages per device, derives conversations from the latest message in each
+  thread, and sends plain-text messages with `handfast sms`; attachments and
+  MMS are not implemented.
 - **Virtual monitor**: desktop-only; the official Android client has no virtual
   display support.
 - **Clipboard images**: the wire protocol carries text. File clipboard entries

@@ -96,6 +96,23 @@ pub struct Contact {
     pub emails: Vec<String>,
 }
 
+/// One SMS message reported by a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsMessage {
+    /// Conversation thread identifier.
+    pub thread_id: i64,
+    /// Phone number.
+    pub address: String,
+    /// Message body.
+    pub body: String,
+    /// Message timestamp in milliseconds.
+    pub date: i64,
+    /// Android message type: 1 inbox, 2 sent.
+    pub kind: i32,
+    /// Whether the message is read.
+    pub read: bool,
+}
+
 /// One transport action sent to a peer player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemoteMediaAction {
@@ -181,6 +198,11 @@ pub enum PluginEvent {
     Contacts {
         /// Contacts in name order.
         contacts: Vec<Contact>,
+    },
+    /// A peer reported SMS messages.
+    SmsMessages {
+        /// Messages in date order.
+        messages: Vec<SmsMessage>,
     },
     /// Clipboard text arrived.
     Clipboard {

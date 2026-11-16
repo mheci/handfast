@@ -69,6 +69,14 @@ fn log_plugin_event(device_id: &DeviceId, event: &PluginEvent) {
                 "plugin event"
             );
         }
+        PluginEvent::SmsMessages { messages } => {
+            tracing::info!(
+                %device_id,
+                event = "SmsMessages",
+                messages = messages.len(),
+                "plugin event"
+            );
+        }
         PluginEvent::Clipboard { text, .. } => {
             tracing::info!(
                 %device_id,

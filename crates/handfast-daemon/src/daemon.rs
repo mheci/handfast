@@ -6,7 +6,7 @@
 //! the unpaired gate; the daemon never creates a `DeviceHost` for an unpaired
 //! peer.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -24,7 +24,9 @@ use handfast_plugins::registry;
 use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
-use handfast_runtime::{Contact, PluginEvent, Registry, RemoteCommand, RemotePlayer, RemoteSink};
+use handfast_runtime::{
+    Contact, PluginEvent, Registry, RemoteCommand, RemotePlayer, RemoteSink, SmsMessage,
+};
 use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -34,7 +36,8 @@ use crate::control::{
     CommandConfigAction, CommandSummary, ContactSummary, ControlResponse, ControlServer,
     DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary, PairedDevice, PairingSummary,
     RemoteCommandRequest, RemoteDeviceCommands, RemoteDevicePlayers, RemoteDeviceSinks,
-    RemoteInputAction, RemoteMediaCommand, TransferSummary, MAX_STATUS_DEVICES,
+    RemoteInputAction, RemoteMediaCommand, SmsAction, SmsConversationSummary, SmsMessageSummary,
+    TransferSummary, MAX_STATUS_DEVICES,
 };
 use crate::default_data_dir;
 use crate::identity;
@@ -55,6 +58,10 @@ pub(crate) const MAX_STATUS_REMOTE_DEVICES: usize = 4;
 pub(crate) const MAX_STATUS_REMOTE_ENTRIES: usize = 3;
 pub(crate) const MAX_STATUS_REMOTE_COMMANDS: usize = 4;
 pub(crate) const MAX_STATUS_TEXT_CHARS: usize = 64;
+
+const MAX_SMS_MESSAGES: usize = 512;
+const MAX_SMS_CONVERSATIONS: usize = 64;
+const MAX_SMS_THREAD: usize = 128;
 
 /// The link event channel. Connection and pairing events use `send().await`, so
 /// the daemon must drain this queue without stalling on a prompt or a session.
@@ -337,6 +344,7 @@ pub async fn run(
         remote_players: HashMap::new(),
         remote_commands: HashMap::new(),
         contacts: HashMap::new(),
+        sms_messages: HashMap::new(),
         shutdown: Some(shutdown_tx),
     };
 
@@ -428,6 +436,7 @@ struct Daemon {
     remote_players: HashMap<DeviceId, Vec<RemotePlayer>>,
     remote_commands: HashMap<DeviceId, (Vec<RemoteCommand>, bool)>,
     contacts: HashMap<DeviceId, Vec<Contact>>,
+    sms_messages: HashMap<DeviceId, Vec<SmsMessage>>,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -584,6 +593,7 @@ impl Daemon {
                 self.remote_players.remove(&device_id);
                 self.remote_commands.remove(&device_id);
                 self.contacts.remove(&device_id);
+                self.sms_messages.remove(&device_id);
                 tracing::info!(%device_id, %reason, "device link closed");
             }
         }
@@ -701,6 +711,7 @@ impl Daemon {
                 self.record_remote_players(&device_id, &events);
                 self.record_remote_commands(&device_id, &events);
                 self.record_contacts(&device_id, &events);
+                self.record_sms(&device_id, &events);
                 redact::log_plugin_events(&device_id, &events);
             }
             DaemonEvent::PairingAccepted { device_id, token } => {
@@ -871,6 +882,89 @@ impl Daemon {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn record_sms(&mut self, device_id: &DeviceId, events: &[PluginEvent]) {
+        for event in events {
+            let PluginEvent::SmsMessages { messages } = event else {
+                continue;
+            };
+            if messages.is_empty() {
+                continue;
+            }
+            let cache = self.sms_messages.entry(device_id.clone()).or_default();
+            for message in messages {
+                let duplicate = cache.iter().any(|existing| {
+                    existing.thread_id == message.thread_id
+                        && existing.date == message.date
+                        && existing.address == message.address
+                        && existing.body == message.body
+                });
+                if !duplicate {
+                    cache.push(message.clone());
+                }
+            }
+            cache.sort_by(|left, right| {
+                left.date
+                    .cmp(&right.date)
+                    .then_with(|| left.thread_id.cmp(&right.thread_id))
+            });
+            if cache.len() > MAX_SMS_MESSAGES {
+                let excess = cache.len() - MAX_SMS_MESSAGES;
+                cache.drain(..excess);
+            }
+        }
+    }
+
+    fn sms_conversations(&self, device_id: &DeviceId) -> Vec<SmsConversationSummary> {
+        let Some(messages) = self.sms_messages.get(device_id) else {
+            return Vec::new();
+        };
+        let mut latest: BTreeMap<i64, &SmsMessage> = BTreeMap::new();
+        for message in messages {
+            let replace = latest
+                .get(&message.thread_id)
+                .is_none_or(|current| message.date >= current.date);
+            if replace {
+                latest.insert(message.thread_id, message);
+            }
+        }
+        let mut conversations: Vec<SmsConversationSummary> = latest
+            .into_values()
+            .map(|message| SmsConversationSummary {
+                thread_id: message.thread_id,
+                address: message.address.clone(),
+                body: message.body.clone(),
+                date: message.date,
+                unread: !message.read && message.kind != 2,
+            })
+            .collect();
+        conversations.sort_by_key(|conversation| std::cmp::Reverse(conversation.date));
+        conversations.truncate(MAX_SMS_CONVERSATIONS);
+        conversations
+    }
+
+    fn sms_thread(&self, device_id: &DeviceId, thread_id: i64) -> Vec<SmsMessageSummary> {
+        let Some(messages) = self.sms_messages.get(device_id) else {
+            return Vec::new();
+        };
+        let mut thread: Vec<SmsMessageSummary> = messages
+            .iter()
+            .filter(|message| message.thread_id == thread_id)
+            .map(|message| SmsMessageSummary {
+                address: message.address.clone(),
+                body: message.body.clone(),
+                date: message.date,
+                outgoing: message.kind == 2,
+                read: message.read,
+            })
+            .collect();
+        thread.sort_by_key(|message| message.date);
+        if thread.len() > MAX_SMS_THREAD {
+            let excess = thread.len() - MAX_SMS_THREAD;
+            thread.drain(..excess);
+        }
+        thread
     }
 
     fn known_player(&self, device_id: &DeviceId, player: &str) -> Result<(), String> {
@@ -1366,6 +1460,56 @@ impl Daemon {
                 }
                 let contacts = self.contact_summaries(&device_id);
                 let _ = reply.send(ControlResponse::Contacts { contacts });
+            }
+            DaemonCommand::Sms {
+                device_id,
+                action,
+                reply,
+            } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                let packet = match action {
+                    SmsAction::Conversations => {
+                        let conversations = self.sms_conversations(&device_id);
+                        let _ = reply.send(ControlResponse::SmsConversations { conversations });
+                        return;
+                    }
+                    SmsAction::Thread { thread_id } => {
+                        let messages = self.sms_thread(&device_id, thread_id);
+                        let _ = reply.send(ControlResponse::SmsThread { messages });
+                        return;
+                    }
+                    SmsAction::Refresh => handfast_plugins::sms::request_conversations(),
+                    SmsAction::RefreshThread { thread_id } => {
+                        handfast_plugins::sms::request_conversation(thread_id)
+                    }
+                    SmsAction::Send { address, body } => {
+                        handfast_plugins::sms::send_request(&address, &body)
+                    }
+                };
+                let packet = match packet {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        let _ = reply.send(ControlResponse::Err {
+                            message: error.to_string(),
+                        });
+                        return;
+                    }
+                };
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let response = match handle.send_packet(packet).await {
+                        Ok(()) => ControlResponse::Ok { bytes: 0 },
+                        Err(error) => ControlResponse::Err {
+                            message: error.to_string(),
+                        },
+                    };
+                    let _ = reply.send(response);
+                });
             }
             DaemonCommand::CommandConfig { action, reply } => {
                 let Some(commands) = self.desktop.commands.as_ref() else {
@@ -2187,6 +2331,7 @@ mod tests {
             remote_players: HashMap::new(),
             remote_commands: HashMap::new(),
             contacts: HashMap::new(),
+            sms_messages: HashMap::new(),
             shutdown: Some(shutdown),
         };
 
@@ -2403,6 +2548,7 @@ mod tests {
             remote_players: HashMap::new(),
             remote_commands: HashMap::new(),
             contacts: HashMap::new(),
+            sms_messages: HashMap::new(),
             shutdown: Some(shutdown),
         };
         (daemon, links, manager_task)
@@ -2668,6 +2814,109 @@ mod tests {
             .handle_command(DaemonCommand::Contacts {
                 device_id: peer,
                 refresh: false,
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("is not connected")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn sms_messages_reach_the_model_and_the_views() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let messages = vec![
+            SmsMessage {
+                thread_id: 1,
+                address: "+1".to_string(),
+                body: "older".to_string(),
+                date: 10,
+                kind: 1,
+                read: true,
+            },
+            SmsMessage {
+                thread_id: 1,
+                address: "+1".to_string(),
+                body: "newer".to_string(),
+                date: 20,
+                kind: 2,
+                read: true,
+            },
+            SmsMessage {
+                thread_id: 2,
+                address: "+2".to_string(),
+                body: "unread".to_string(),
+                date: 15,
+                kind: 1,
+                read: false,
+            },
+        ];
+
+        daemon.record_sms(
+            &peer,
+            &[PluginEvent::SmsMessages {
+                messages: messages.clone(),
+            }],
+        );
+
+        let conversations = daemon.sms_conversations(&peer);
+        assert_eq!(conversations.len(), 2);
+        assert_eq!(conversations[0].thread_id, 1);
+        assert_eq!(conversations[0].body, "newer");
+        assert!(
+            conversations
+                .iter()
+                .find(|conversation| conversation.thread_id == 2)
+                .expect("the second thread")
+                .unread
+        );
+
+        let thread = daemon.sms_thread(&peer, 1);
+        assert_eq!(thread.len(), 2);
+        assert!(!thread[0].outgoing);
+        assert!(thread[1].outgoing);
+
+        daemon.record_sms(
+            &peer,
+            &[PluginEvent::SmsMessages {
+                messages: messages.clone(),
+            }],
+        );
+        assert_eq!(
+            daemon.sms_thread(&peer, 1).len(),
+            2,
+            "duplicates are dropped"
+        );
+
+        daemon.sms_messages.remove(&peer);
+        assert!(daemon.sms_conversations(&peer).is_empty());
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn sms_to_an_unknown_device_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::Sms {
+                device_id: peer,
+                action: SmsAction::Conversations,
                 reply,
             })
             .await;

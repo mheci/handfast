@@ -286,7 +286,7 @@ pub const SHAREINPUTDEVICESREMOTE: PluginMeta = PluginMeta {
 pub const SMS: PluginMeta = PluginMeta {
     name: "sms",
     title: "SMS integration",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[
         types::SMS_MESSAGES,
         types::SMS_REQUEST_CONVERSATION,
@@ -300,7 +300,7 @@ pub const SMS: PluginMeta = PluginMeta {
         types::SMS_REQUEST_CONVERSATIONS,
         types::SMS_REQUEST_ATTACHMENT,
     ],
-    desktop: DesktopRequirement::Telephony,
+    desktop: DesktopRequirement::None,
 };
 
 /// Receive volume controls from the phone.

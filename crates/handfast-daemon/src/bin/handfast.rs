@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 use handfast_daemon::control::{
     send_request, CommandConfigAction, ControlError, ControlRequest, ControlResponse, DaemonStatus,
-    PairingSummary, RemoteCommandRequest, RemoteInputAction, RemoteMediaCommand,
+    PairingSummary, RemoteCommandRequest, RemoteInputAction, RemoteMediaCommand, SmsAction,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::update::{Authenticode, GitHub, Updater};
@@ -54,6 +54,8 @@ enum Command {
     RemoteInput(RemoteInputArgs),
     /// List or refresh the contacts a connected device reports.
     Contacts(ContactsArgs),
+    /// List, request or send SMS messages on a connected device.
+    Sms(SmsArgs),
     /// List or edit the local runcommand configuration.
     #[command(name = "command")]
     Commands(CommandArgs),
@@ -295,6 +297,33 @@ struct ContactsArgs {
     refresh: bool,
 }
 
+#[derive(Debug, Parser)]
+struct SmsArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Ask the peer for the conversation list.
+    #[arg(long)]
+    refresh: bool,
+
+    /// List the cached messages in this thread.
+    #[arg(long, value_name = "THREAD_ID")]
+    thread: Option<i64>,
+
+    /// Ask the peer for every message in --thread.
+    #[arg(long, requires = "thread")]
+    refresh_thread: bool,
+
+    /// Send one message to this address.
+    #[arg(long, value_name = "ADDRESS")]
+    send: Option<String>,
+
+    /// Message body for --send.
+    #[arg(long, value_name = "TEXT", requires = "send")]
+    body: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 enum CommandAction {
     /// List the configured commands.
@@ -441,6 +470,10 @@ fn main() -> ExitCode {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_contacts(args, data_dir)
         }
+        Command::Sms(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_sms(args, data_dir)
+        }
         Command::Commands(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_command_config(args, data_dir)
@@ -553,7 +586,9 @@ async fn send_share(args: ShareArgs, data_dir: PathBuf) -> Result<(), ControlErr
         | ControlResponse::ShuttingDown
         | ControlResponse::Decided
         | ControlResponse::Commands { .. }
-        | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
+        | ControlResponse::Contacts { .. }
+        | ControlResponse::SmsConversations { .. }
+        | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -1079,6 +1114,102 @@ async fn send_contacts(args: ContactsArgs, data_dir: PathBuf) -> Result<String, 
     }
 }
 
+fn run_sms(args: SmsArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_sms(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_sms(args: SmsArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    if args.send.is_some() != args.body.is_some() {
+        return Err(ControlError::Remote("--send needs --body".to_string()));
+    }
+    if args.send.is_some() && (args.thread.is_some() || args.refresh || args.refresh_thread) {
+        return Err(ControlError::Remote(
+            "--send cannot be combined with --thread or --refresh".to_string(),
+        ));
+    }
+    if args.thread.is_some() && args.refresh {
+        return Err(ControlError::Remote(
+            "--thread uses --refresh-thread".to_string(),
+        ));
+    }
+    let (action, success) = if let (Some(address), Some(body)) = (args.send, args.body) {
+        (
+            SmsAction::Send {
+                address: address.clone(),
+                body,
+            },
+            format!("sent SMS to {address}"),
+        )
+    } else if let Some(thread_id) = args.thread {
+        if args.refresh_thread {
+            (
+                SmsAction::RefreshThread { thread_id },
+                format!("requested thread {thread_id} from {}", args.device_id),
+            )
+        } else {
+            (SmsAction::Thread { thread_id }, String::new())
+        }
+    } else if args.refresh {
+        (
+            SmsAction::Refresh,
+            format!("requested conversations from {}", args.device_id),
+        )
+    } else {
+        (SmsAction::Conversations, String::new())
+    };
+    let request = ControlRequest::Sms {
+        device_id: args.device_id.clone(),
+        action,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::SmsConversations { conversations } => {
+            let mut lines = Vec::with_capacity(conversations.len());
+            for conversation in conversations {
+                lines.push(format!(
+                    "{}\t{}\t{}",
+                    conversation.thread_id, conversation.address, conversation.body
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::SmsThread { messages } => {
+            let mut lines = Vec::with_capacity(messages.len());
+            for message in messages {
+                let direction = if message.outgoing { "out" } else { "in" };
+                lines.push(format!(
+                    "{}\t{direction}\t{}\t{}",
+                    message.date, message.address, message.body
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::Ok { .. } => Ok(success),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
 async fn list_cached_commands(
     device_id: String,
     data_dir: PathBuf,
@@ -1221,7 +1352,9 @@ fn decision_message(
         | ControlResponse::Status { .. }
         | ControlResponse::ShuttingDown
         | ControlResponse::Commands { .. }
-        | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
+        | ControlResponse::Contacts { .. }
+        | ControlResponse::SmsConversations { .. }
+        | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -1259,7 +1392,9 @@ async fn request_status(data_dir: &Path) -> Result<DaemonStatus, ControlError> {
         | ControlResponse::ShuttingDown
         | ControlResponse::Decided
         | ControlResponse::Commands { .. }
-        | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
+        | ControlResponse::Contacts { .. }
+        | ControlResponse::SmsConversations { .. }
+        | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }

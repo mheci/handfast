@@ -344,3 +344,13 @@ Parity wave 14, 2026-11-16, same branch:
 - Control: `Contacts { device_id, refresh }` and `ControlResponse::Contacts`. `handfast contacts <device-id>` prints name, phones and emails; `--refresh` asks the phone for a fresh sync.
 - Evidence: runtime 12 pass, plugins 210 pass (9 contacts tests), daemon lib 150 pass (model and offline device), bin 4 pass, clippy/fmt/docs clean. The five `contacts_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
 - Gaps: the cache is in memory and is re-requested on every connect; no GUI surface; vCard photos, addresses and groups are not stored.
+
+
+Parity wave 15, 2026-11-16, same branch:
+
+- `sms` is implemented and registered. On connect the plugin requests the conversation list. `kdeconnect.sms.messages` is parsed into `SmsMessage` values (thread ID, address, body, date, type, read) with a 512-message cap, 64-byte address, 2000-byte body, and control-character rejection. The daemon caches messages per device, dedupes by thread/date/address/body, derives conversations from the latest message per thread, and clears the cache on disconnect.
+- Control: `SmsAction { Conversations, Refresh, Thread { thread_id }, RefreshThread { thread_id }, Send { address, body } }`. `handfast sms <device-id>` lists cached conversations; `--refresh` requests them; `--thread ID` lists cached messages; `--thread ID --refresh-thread` requests the thread; `--send ADDRESS --body TEXT` sends a plain-text SMS.
+- Validation: thread IDs must be non-negative, addresses must be 1-64 bytes without control characters, and send bodies must be non-empty and valid. Replies are capped at 64 conversations and 128 messages per thread.
+- Evidence: runtime 12 pass, plugins 215 pass (5 SMS tests), daemon lib 152 pass (SMS model, dedupe, conversations, thread, offline device), bin 4 pass, clippy/fmt/docs clean. The nine `sms_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Test harness: the session tests' link channel was raised from 8 to 32 because the added on-connect packets filled it and blocked the incoming-share tests. Production uses the daemon's 256-slot link queue.
+- Gaps: attachments and MMS are not implemented; the cache is in memory and re-requested on connect; no GUI surface.

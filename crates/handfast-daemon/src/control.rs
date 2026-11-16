@@ -103,6 +103,13 @@ pub enum ControlRequest {
         /// Ask the peer for a fresh sync instead of listing the cache.
         refresh: bool,
     },
+    /// List, request or send SMS messages on a connected device.
+    Sms {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// The SMS operation.
+        action: SmsAction,
+    },
     /// List or edit the local runcommand configuration.
     CommandConfig {
         /// The action to apply.
@@ -137,6 +144,16 @@ pub enum ControlResponse {
     Contacts {
         /// Contacts in name order.
         contacts: Vec<ContactSummary>,
+    },
+    /// The SMS conversations cached for one device.
+    SmsConversations {
+        /// Conversations, newest first.
+        conversations: Vec<SmsConversationSummary>,
+    },
+    /// The SMS messages cached for one thread.
+    SmsThread {
+        /// Messages, oldest first.
+        messages: Vec<SmsMessageSummary>,
     },
     /// The daemon status snapshot.
     Status {
@@ -324,6 +341,62 @@ pub struct ContactSummary {
     pub emails: Vec<String>,
 }
 
+/// One SMS operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SmsAction {
+    /// List the cached conversations.
+    Conversations,
+    /// Ask the peer for the conversation list.
+    Refresh,
+    /// List the cached messages in one thread.
+    Thread {
+        /// Conversation thread identifier.
+        thread_id: i64,
+    },
+    /// Ask the peer for every message in one thread.
+    RefreshThread {
+        /// Conversation thread identifier.
+        thread_id: i64,
+    },
+    /// Send one message.
+    Send {
+        /// Destination phone number.
+        address: String,
+        /// Message body.
+        body: String,
+    },
+}
+
+/// One SMS conversation in a control reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsConversationSummary {
+    /// Conversation thread identifier.
+    pub thread_id: i64,
+    /// Phone number.
+    pub address: String,
+    /// Latest message body.
+    pub body: String,
+    /// Latest message timestamp in milliseconds.
+    pub date: i64,
+    /// Whether the latest message is unread.
+    pub unread: bool,
+}
+
+/// One SMS message in a control reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsMessageSummary {
+    /// Phone number.
+    pub address: String,
+    /// Message body.
+    pub body: String,
+    /// Message timestamp in milliseconds.
+    pub date: i64,
+    /// Whether the message was sent by this phone.
+    pub outgoing: bool,
+    /// Whether the message is read.
+    pub read: bool,
+}
+
 /// Audio sinks reported by one peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteDeviceSinks {
@@ -471,6 +544,12 @@ pub enum DaemonCommand {
     Contacts {
         device_id: DeviceId,
         refresh: bool,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Run one SMS operation and reply.
+    Sms {
+        device_id: DeviceId,
+        action: SmsAction,
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Apply one local command configuration action.
@@ -844,6 +923,40 @@ async fn dispatch(
             DaemonCommand::Contacts {
                 device_id,
                 refresh,
+                reply,
+            }
+        }
+        ControlRequest::Sms { device_id, action } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            match &action {
+                SmsAction::Thread { thread_id } | SmsAction::RefreshThread { thread_id } => {
+                    if *thread_id < 0 {
+                        return ControlResponse::Err {
+                            message: "the thread ID is negative".to_string(),
+                        };
+                    }
+                }
+                SmsAction::Send { address, body } => {
+                    if !handfast_plugins::sms::valid_address(address) {
+                        return ControlResponse::Err {
+                            message: "the SMS address is not valid".to_string(),
+                        };
+                    }
+                    if body.is_empty() || !handfast_plugins::sms::valid_body(body) {
+                        return ControlResponse::Err {
+                            message: "the SMS body is not valid".to_string(),
+                        };
+                    }
+                }
+                SmsAction::Conversations | SmsAction::Refresh => {}
+            }
+            DaemonCommand::Sms {
+                device_id,
+                action,
                 reply,
             }
         }
@@ -1400,6 +1513,65 @@ mod tests {
                     name: "Jane Doe".to_string(),
                     phones: vec!["+123".to_string()],
                     emails: vec!["jane@example.com".to_string()],
+                }],
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::Sms {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: SmsAction::Send {
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                },
+            })
+            .await,
+            ControlRequest::Sms {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: SmsAction::Send {
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::SmsConversations {
+                conversations: vec![SmsConversationSummary {
+                    thread_id: 7,
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                    date: 10,
+                    unread: true,
+                }],
+            })
+            .await,
+            ControlResponse::SmsConversations {
+                conversations: vec![SmsConversationSummary {
+                    thread_id: 7,
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                    date: 10,
+                    unread: true,
+                }],
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::SmsThread {
+                messages: vec![SmsMessageSummary {
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                    date: 10,
+                    outgoing: false,
+                    read: true,
+                }],
+            })
+            .await,
+            ControlResponse::SmsThread {
+                messages: vec![SmsMessageSummary {
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                    date: 10,
+                    outgoing: false,
+                    read: true,
                 }],
             }
         );

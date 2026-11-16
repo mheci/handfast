@@ -1200,6 +1200,9 @@ mod tests {
 
     static PORTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    /// Holds every on-connect plugin packet until a test drains the link.
+    const TEST_LINK_QUEUE: usize = 32;
+
     async fn ports() -> tokio::sync::MutexGuard<'static, ()> {
         PORTS.lock().await
     }
@@ -1300,7 +1303,7 @@ mod tests {
     fn share_packets(
         mut link_rx: mpsc::Receiver<Packet>,
     ) -> (mpsc::Receiver<Packet>, JoinHandle<()>) {
-        let (share_tx, share_rx) = mpsc::channel(8);
+        let (share_tx, share_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let task = tokio::spawn(async move {
             while let Some(packet) = link_rx.recv().await {
                 if packet.ptype != types::SHARE_REQUEST {
@@ -1362,7 +1365,7 @@ mod tests {
         mpsc::Receiver<Packet>,
     ) {
         let (events, events_rx) = mpsc::channel(64);
-        let (link_tx, link_rx) = mpsc::channel(8);
+        let (link_tx, link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let session = DeviceSession::start_with_transfers(
             peer_identity(),
             LinkHandle::from_channel(peer_id(), link_tx),
@@ -1391,7 +1394,7 @@ mod tests {
         Arc<AtomicUsize>,
     ) {
         let (events, events_rx) = mpsc::channel(64);
-        let (link_tx, link_rx) = mpsc::channel(8);
+        let (link_tx, link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let (session, probe) = DeviceSession::start_with_probe(
             peer_identity(),
             LinkHandle::from_channel(peer_id(), link_tx),
@@ -1583,9 +1586,9 @@ mod tests {
     async fn a_control_packet_reaches_the_link() {
         let peer = peer_identity();
         let device_id = peer.device_id.clone();
-        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let (link_tx, mut link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let link = LinkHandle::from_channel(device_id, link_tx);
-        let (events_tx, _events_rx) = mpsc::channel(8);
+        let (events_tx, _events_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let session = DeviceSession::start(
             peer,
             link,
@@ -1625,9 +1628,9 @@ mod tests {
         })]));
         let peer = peer_identity();
         let device_id = peer.device_id.clone();
-        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let (link_tx, mut link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let link = LinkHandle::from_channel(device_id.clone(), link_tx);
-        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let (events_tx, mut events_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let session = DeviceSession::start(
             peer,
             link,
@@ -1692,9 +1695,9 @@ mod tests {
             gate: Arc::clone(&gate),
             disconnects: Arc::clone(&disconnects),
         })]));
-        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let (link_tx, mut link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let drain = tokio::spawn(async move { while link_rx.recv().await.is_some() {} });
-        let (events, _events_rx) = mpsc::channel(8);
+        let (events, _events_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let session = DeviceSession::start(
             peer_identity(),
             LinkHandle::from_channel(peer_id(), link_tx),
@@ -2479,8 +2482,8 @@ mod tests {
 
     #[tokio::test]
     async fn share_file_without_a_files_adapter_is_unavailable() {
-        let (events, _events_rx) = mpsc::channel(8);
-        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let (events, _events_rx) = mpsc::channel(TEST_LINK_QUEUE);
+        let (link_tx, mut link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let drain = tokio::spawn(async move { while link_rx.recv().await.is_some() {} });
         let session = DeviceSession::start(
             peer_identity(),

@@ -215,7 +215,9 @@ impl LocalControl {
             | ControlResponse::Status { .. }
             | ControlResponse::ShuttingDown
             | ControlResponse::Commands { .. }
-            | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -238,7 +240,9 @@ impl LocalControl {
             | ControlResponse::ShuttingDown
             | ControlResponse::Decided
             | ControlResponse::Commands { .. }
-            | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -271,7 +275,9 @@ impl LocalControl {
             | ControlResponse::ShuttingDown
             | ControlResponse::Decided
             | ControlResponse::Commands { .. }
-            | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -300,7 +306,9 @@ impl LocalControl {
             | ControlResponse::ShuttingDown
             | ControlResponse::Decided
             | ControlResponse::Commands { .. }
-            | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -316,7 +324,9 @@ impl DaemonControl for LocalControl {
             | ControlResponse::ShuttingDown
             | ControlResponse::Decided
             | ControlResponse::Commands { .. }
-            | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -330,7 +340,9 @@ impl DaemonControl for LocalControl {
             | ControlResponse::Status { .. }
             | ControlResponse::Decided
             | ControlResponse::Commands { .. }
-            | ControlResponse::Contacts { .. } => Err(ControlError::Remote(
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }

@@ -27,6 +27,7 @@ pub mod roster;
 pub mod runcommand;
 pub mod screensaver_inhibit;
 pub mod share;
+pub mod sms;
 pub mod systemvolume;
 pub mod telephony;
 
@@ -59,6 +60,7 @@ pub use remotesystemvolume::{
 pub use runcommand::{RunCommandFactory, RunCommandPlugin};
 pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
 pub use share::{ShareFactory, SharePlugin};
+pub use sms::{SmsFactory, SmsPlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
 pub use telephony::{TelephonyFactory, TelephonyPlugin};
 
@@ -73,6 +75,7 @@ pub fn registry() -> Registry {
         Box::new(contacts::ContactsFactory),
         Box::new(pausemusic::PauseMusicFactory),
         Box::new(share::ShareFactory),
+        Box::new(sms::SmsFactory),
         Box::new(mpriscontrol::MprisControlFactory),
         Box::new(mprisremote::MprisRemoteFactory),
         Box::new(notifications::NotificationsFactory),
