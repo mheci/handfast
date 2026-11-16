@@ -217,7 +217,8 @@ impl LocalControl {
             | ControlResponse::Commands { .. }
             | ControlResponse::Contacts { .. }
             | ControlResponse::SmsConversations { .. }
-            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -242,7 +243,8 @@ impl LocalControl {
             | ControlResponse::Commands { .. }
             | ControlResponse::Contacts { .. }
             | ControlResponse::SmsConversations { .. }
-            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -277,7 +279,8 @@ impl LocalControl {
             | ControlResponse::Commands { .. }
             | ControlResponse::Contacts { .. }
             | ControlResponse::SmsConversations { .. }
-            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -308,7 +311,8 @@ impl LocalControl {
             | ControlResponse::Commands { .. }
             | ControlResponse::Contacts { .. }
             | ControlResponse::SmsConversations { .. }
-            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -326,7 +330,8 @@ impl DaemonControl for LocalControl {
             | ControlResponse::Commands { .. }
             | ControlResponse::Contacts { .. }
             | ControlResponse::SmsConversations { .. }
-            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -342,7 +347,8 @@ impl DaemonControl for LocalControl {
             | ControlResponse::Commands { .. }
             | ControlResponse::Contacts { .. }
             | ControlResponse::SmsConversations { .. }
-            | ControlResponse::SmsThread { .. } => Err(ControlError::Remote(
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
