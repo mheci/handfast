@@ -176,10 +176,10 @@ pub const PRESENTER: PluginMeta = PluginMeta {
 pub const REMOTECOMMANDS: PluginMeta = PluginMeta {
     name: "remotecommands",
     title: "Send commands to execute",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::RUNCOMMAND],
     outgoing: &[types::RUNCOMMAND_REQUEST],
-    desktop: DesktopRequirement::Shell,
+    desktop: DesktopRequirement::None,
 };
 
 /// Send pointer input to a remote device.

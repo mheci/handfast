@@ -52,6 +52,15 @@ fn log_plugin_event(device_id: &DeviceId, event: &PluginEvent) {
                 "plugin event"
             );
         }
+        PluginEvent::RemoteCommands { commands, can_add } => {
+            tracing::info!(
+                %device_id,
+                event = "RemoteCommands",
+                commands = commands.len(),
+                can_add = *can_add,
+                "plugin event"
+            );
+        }
         PluginEvent::Clipboard { text, .. } => {
             tracing::info!(
                 %device_id,

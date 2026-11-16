@@ -832,6 +832,7 @@ mod tests {
             }],
             remote_sinks: Vec::new(),
             remote_players: Vec::new(),
+            remote_commands: Vec::new(),
             truncated: false,
         }
     }

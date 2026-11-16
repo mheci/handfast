@@ -24,15 +24,15 @@ use handfast_plugins::registry;
 use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
-use handfast_runtime::{PluginEvent, Registry, RemotePlayer, RemoteSink};
+use handfast_runtime::{PluginEvent, Registry, RemoteCommand, RemotePlayer, RemoteSink};
 use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::control::{
     ControlResponse, ControlServer, DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary,
-    PairedDevice, PairingSummary, RemoteDevicePlayers, RemoteDeviceSinks, RemoteMediaCommand,
-    TransferSummary, MAX_STATUS_DEVICES,
+    PairedDevice, PairingSummary, RemoteCommandRequest, RemoteDeviceCommands, RemoteDevicePlayers,
+    RemoteDeviceSinks, RemoteMediaCommand, TransferSummary, MAX_STATUS_DEVICES,
 };
 use crate::default_data_dir;
 use crate::identity;
@@ -51,6 +51,7 @@ const DISCOVERY_WRITE_PEERS: usize = 1024;
 
 pub(crate) const MAX_STATUS_REMOTE_DEVICES: usize = 4;
 pub(crate) const MAX_STATUS_REMOTE_ENTRIES: usize = 3;
+pub(crate) const MAX_STATUS_REMOTE_COMMANDS: usize = 4;
 pub(crate) const MAX_STATUS_TEXT_CHARS: usize = 64;
 
 /// The link event channel. Connection and pairing events use `send().await`, so
@@ -331,6 +332,7 @@ pub async fn run(
         transfers: HashMap::new(),
         remote_sinks: HashMap::new(),
         remote_players: HashMap::new(),
+        remote_commands: HashMap::new(),
         shutdown: Some(shutdown_tx),
     };
 
@@ -420,6 +422,7 @@ struct Daemon {
     transfers: HashMap<(DeviceId, u64), TransferSummary>,
     remote_sinks: HashMap<DeviceId, Vec<RemoteSink>>,
     remote_players: HashMap<DeviceId, Vec<RemotePlayer>>,
+    remote_commands: HashMap<DeviceId, (Vec<RemoteCommand>, bool)>,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -574,6 +577,7 @@ impl Daemon {
                 self.cancel_prompt(&device_id);
                 self.remote_sinks.remove(&device_id);
                 self.remote_players.remove(&device_id);
+                self.remote_commands.remove(&device_id);
                 tracing::info!(%device_id, %reason, "device link closed");
             }
         }
@@ -689,6 +693,7 @@ impl Daemon {
                 self.record_transfers(&device_id, &events);
                 self.record_remote_sinks(&device_id, &events);
                 self.record_remote_players(&device_id, &events);
+                self.record_remote_commands(&device_id, &events);
                 redact::log_plugin_events(&device_id, &events);
             }
             DaemonEvent::PairingAccepted { device_id, token } => {
@@ -819,6 +824,19 @@ impl Daemon {
         }
     }
 
+    fn record_remote_commands(&mut self, device_id: &DeviceId, events: &[PluginEvent]) {
+        for event in events {
+            if let PluginEvent::RemoteCommands { commands, can_add } = event {
+                if commands.is_empty() {
+                    self.remote_commands.remove(device_id);
+                } else {
+                    self.remote_commands
+                        .insert(device_id.clone(), (commands.clone(), *can_add));
+                }
+            }
+        }
+    }
+
     fn known_player(&self, device_id: &DeviceId, player: &str) -> Result<(), String> {
         let Some(players) = self.remote_players.get(device_id) else {
             return Err(format!(
@@ -830,6 +848,19 @@ impl Daemon {
         } else {
             Err(format!(
                 "device {device_id} has not reported the player {player}"
+            ))
+        }
+    }
+
+    fn known_command(&self, device_id: &DeviceId, key: &str) -> Result<(), String> {
+        let Some((commands, _)) = self.remote_commands.get(device_id) else {
+            return Err(format!("device {device_id} has not reported any commands"));
+        };
+        if commands.iter().any(|model| model.key == key) {
+            Ok(())
+        } else {
+            Err(format!(
+                "device {device_id} has not reported the command {key}"
             ))
         }
     }
@@ -921,6 +952,28 @@ impl Daemon {
             }
         }
 
+        let mut remote_commands: Vec<RemoteDeviceCommands> = self
+            .remote_commands
+            .iter()
+            .map(|(device_id, (commands, can_add))| RemoteDeviceCommands {
+                device_id: device_id.clone(),
+                commands: commands.clone(),
+                can_add: *can_add,
+            })
+            .collect();
+        remote_commands
+            .sort_by(|left, right| left.device_id.as_str().cmp(right.device_id.as_str()));
+        remote_truncated |= remote_commands.len() > MAX_STATUS_REMOTE_DEVICES;
+        remote_commands.truncate(MAX_STATUS_REMOTE_DEVICES);
+        for device in &mut remote_commands {
+            remote_truncated |= device.commands.len() > MAX_STATUS_REMOTE_COMMANDS;
+            device.commands.truncate(MAX_STATUS_REMOTE_COMMANDS);
+            for command in &mut device.commands {
+                command.name = status_text(&command.name);
+                command.command = status_text(&command.command);
+            }
+        }
+
         let truncated = connected.len() > MAX_STATUS_DEVICES
             || paired.len() > MAX_STATUS_DEVICES
             || pending_pairings.len() > MAX_STATUS_DEVICES
@@ -941,6 +994,7 @@ impl Daemon {
             transfers,
             remote_sinks,
             remote_players,
+            remote_commands,
             truncated,
         })
     }
@@ -1120,6 +1174,55 @@ impl Daemon {
                         player,
                         position_ms,
                     } => handfast_plugins::mprisremote::set_position_request(&player, position_ms),
+                };
+                let packet = match packet {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        let _ = reply.send(ControlResponse::Err {
+                            message: error.to_string(),
+                        });
+                        return;
+                    }
+                };
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let response = match handle.send_packet(packet).await {
+                        Ok(()) => ControlResponse::Ok { bytes: 0 },
+                        Err(error) => ControlResponse::Err {
+                            message: error.to_string(),
+                        },
+                    };
+                    let _ = reply.send(response);
+                });
+            }
+            DaemonCommand::RemoteCommand {
+                device_id,
+                request,
+                reply,
+            } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                if let RemoteCommandRequest::Run { key } = &request {
+                    if let Err(message) = self.known_command(&device_id, key) {
+                        let _ = reply.send(ControlResponse::Err { message });
+                        return;
+                    }
+                }
+                let packet = match request {
+                    RemoteCommandRequest::List => {
+                        handfast_plugins::remotecommands::request_command_list()
+                    }
+                    RemoteCommandRequest::Run { key } => {
+                        handfast_plugins::remotecommands::run_command(&key)
+                    }
+                    RemoteCommandRequest::Setup => {
+                        handfast_plugins::remotecommands::setup_request()
+                    }
+                    RemoteCommandRequest::Stop => handfast_plugins::remotecommands::stop_request(),
                 };
                 let packet = match packet {
                     Ok(packet) => packet,
@@ -1914,6 +2017,7 @@ mod tests {
             transfers: HashMap::new(),
             remote_sinks: HashMap::new(),
             remote_players: HashMap::new(),
+            remote_commands: HashMap::new(),
             shutdown: Some(shutdown),
         };
 
@@ -2128,6 +2232,7 @@ mod tests {
             transfers: HashMap::new(),
             remote_sinks: HashMap::new(),
             remote_players: HashMap::new(),
+            remote_commands: HashMap::new(),
             shutdown: Some(shutdown),
         };
         (daemon, links, manager_task)
@@ -2303,6 +2408,81 @@ mod tests {
             reply_rx.await.expect("the daemon replies"),
             ControlResponse::Err { message } if message.contains("is not connected")
         ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_remote_command_to_an_unknown_device_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::RemoteCommand {
+                device_id: peer,
+                request: RemoteCommandRequest::List,
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("is not connected")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn remote_commands_reach_the_status() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let commands = vec![RemoteCommand {
+            key: "abc".to_string(),
+            name: "List files".to_string(),
+            command: "ls -l".to_string(),
+        }];
+
+        daemon
+            .handle_daemon_event(DaemonEvent::PluginEvents {
+                device_id: peer.clone(),
+                events: vec![PluginEvent::RemoteCommands {
+                    commands: commands.clone(),
+                    can_add: true,
+                }],
+            })
+            .await;
+
+        let status = daemon.status().await.expect("build the status");
+        assert_eq!(status.remote_commands.len(), 1);
+        assert_eq!(status.remote_commands[0].device_id, peer);
+        assert_eq!(status.remote_commands[0].commands, commands);
+        assert!(status.remote_commands[0].can_add);
+
+        daemon
+            .handle_daemon_event(DaemonEvent::PluginEvents {
+                device_id: peer,
+                events: vec![PluginEvent::RemoteCommands {
+                    commands: Vec::new(),
+                    can_add: false,
+                }],
+            })
+            .await;
+        assert!(daemon
+            .status()
+            .await
+            .expect("build the status")
+            .remote_commands
+            .is_empty());
 
         links.shutdown();
         let _ = manager_task.await;

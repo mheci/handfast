@@ -129,20 +129,20 @@ is what a portable install under `~/.local/bin` needs.
 
 Windows 11: open the MSI. It installs `handfast.exe` to
 `%LOCALAPPDATA%\Handfast`, adds a Start Menu shortcut named `Handfast` that runs
-`handfast gui`, and writes state to `%LOCALAPPDATA%\handfast`. The MSI runs
+`handfast gui`, adds a per-user inbound firewall rule for the installed
+executable, and writes state to `%LOCALAPPDATA%\handfast`. The MSI runs
 `handfast service install` after the files land and `handfast service uninstall`
 before removal. Both actions log a failure and do not fail the install, so check
-`handfast service status`. The MSI cannot add the firewall rule, which needs an
-administrator. Run `handfast service install` once after the install to print
-the exact command, then run it elevated.
+`handfast service status`. If the firewall rule is missing, run
+`handfast service install` from an administrator prompt; it adds the rule when
+elevated and prints the exact command otherwise.
 
 ```text
-netsh advfirewall firewall add rule name=Handfast dir=in action=allow program="C:\Users\<you>\AppData\Local\Handfast\handfast.exe" enable=yes
+netsh advfirewall firewall add rule name="Handfast-<hash>" dir=in action=allow program="C:\Users\<you>\AppData\Local\Handfast\handfast.exe" enable=yes
 ```
 
-A per-user install cannot add the rule, and a logon task cannot answer the
-Windows firewall prompt. Until the rule exists the daemon runs but discovers no
-peers.
+A logon task cannot answer the Windows firewall prompt. The installer adds the
+rule so the daemon can discover peers on first start.
 
 ## Upgrading from 0.2.0
 
@@ -163,8 +163,8 @@ The workflow cannot prove these, so run them on the release candidate:
 
 - Install the MSI on Windows 11, open the Start Menu shortcut, confirm the
   window opens and `handfast service status` shows the installed task. Run
-  `handfast service install` once to print the firewall command, add it as an
-  administrator, then uninstall and confirm the task is gone. Upgrade 0.3.0 to
+  `handfast service install` once to confirm the firewall rule exists, then
+  uninstall and confirm the task and rule are gone. Upgrade 0.3.0 to
   the next build with the daemon running to exercise `CloseApplication`.
 - `dpkg-deb -I` and `dpkg-deb -c` on both debs. Confirm `handfast`, the unit and
   the notices, and no `handfastd`.

@@ -534,14 +534,28 @@ impl<'a> Service<'a> {
         self.start_with(control, &windows_run_task())?;
 
         let mut notes = vec![format!("installed task {TASK_NAME}")];
-        if !self.succeeds(
-            "netsh",
-            &["advfirewall", "firewall", "show", "rule", "name=Handfast"],
-        ) {
-            notes.push(format!(
-                "the Windows firewall rule is missing; add it as an administrator with:\n{}",
-                firewall_command(&self.exe)
-            ));
+        let rule = firewall_rule_name(&self.exe);
+        if self.is_elevated() {
+            self.run_ignored(&firewall_delete_command(&rule));
+            if self
+                .run_checked(&firewall_add_command(&rule, &self.exe))
+                .is_ok()
+            {
+                notes.push(format!("installed firewall rule {rule}"));
+            } else {
+                notes.push(format!(
+                    "could not install the Windows firewall rule; add it as an administrator with:\n{}",
+                    firewall_command(&self.exe)
+                ));
+            }
+        } else {
+            let name = format!("name={rule}");
+            if !self.succeeds("netsh", &["advfirewall", "firewall", "show", "rule", &name]) {
+                notes.push(format!(
+                    "the Windows firewall rule is missing; add it as an administrator with:\n{}",
+                    firewall_command(&self.exe)
+                ));
+            }
         }
         Ok(notes)
     }
@@ -551,6 +565,10 @@ impl<'a> Service<'a> {
         if self.installed_windows() {
             self.run_ignored(&windows_end_task());
             self.run_checked(&windows_delete_task())?;
+        }
+        if self.is_elevated() {
+            let rule = firewall_rule_name(&self.exe);
+            self.run_ignored(&firewall_delete_command(&rule));
         }
         Ok(())
     }
@@ -615,6 +633,11 @@ impl<'a> Service<'a> {
             .run(program, args)
             .map(|output| output.success)
             .unwrap_or(false)
+    }
+
+    #[cfg(any(windows, test))]
+    fn is_elevated(&self) -> bool {
+        self.succeeds("net", &["session"])
     }
 }
 
@@ -712,11 +735,61 @@ pub fn write_task_xml(path: &Path, xml: &str) -> io::Result<()> {
     std::fs::write(path, bytes)
 }
 
+/// Stable firewall rule name for one executable path.
+///
+/// The install path is per user, so two users never share a rule. A path hash
+/// keeps the name short and free of user-name characters.
+#[must_use]
+pub fn firewall_rule_name(exe: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+
+    let mut hasher = Sha256::new();
+    hasher.update(exe.to_string_lossy().to_ascii_lowercase().as_bytes());
+    let digest = hasher.finalize();
+    let mut name = String::from("Handfast-");
+    for byte in digest.iter().take(8) {
+        let _ = write!(name, "{byte:02x}");
+    }
+    name
+}
+
+fn firewall_add_command(rule: &str, exe: &Path) -> Cmd {
+    Cmd {
+        program: "netsh",
+        args: vec![
+            "advfirewall".to_string(),
+            "firewall".to_string(),
+            "add".to_string(),
+            "rule".to_string(),
+            format!("name={rule}"),
+            "dir=in".to_string(),
+            "action=allow".to_string(),
+            format!("program={}", exe.display()),
+            "enable=yes".to_string(),
+        ],
+    }
+}
+
+fn firewall_delete_command(rule: &str) -> Cmd {
+    Cmd {
+        program: "netsh",
+        args: vec![
+            "advfirewall".to_string(),
+            "firewall".to_string(),
+            "delete".to_string(),
+            "rule".to_string(),
+            format!("name={rule}"),
+        ],
+    }
+}
+
 /// The administrator command that opens the Windows firewall for `exe`.
 #[must_use]
 pub fn firewall_command(exe: &Path) -> String {
     format!(
-        "netsh advfirewall firewall add rule name=Handfast dir=in action=allow program=\"{}\" enable=yes",
+        "netsh advfirewall firewall add rule name=\"{}\" dir=in action=allow program=\"{}\" enable=yes",
+        firewall_rule_name(exe),
         exe.display()
     )
 }
@@ -963,6 +1036,7 @@ mod tests {
             transfers: Vec::<TransferSummary>::new(),
             remote_sinks: Vec::new(),
             remote_players: Vec::new(),
+            remote_commands: Vec::new(),
             truncated: false,
         }
     }
@@ -1293,7 +1367,7 @@ WantedBy=default.target
             .unwrap();
 
         let calls = runner.calls();
-        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(calls.len(), 5, "{calls:?}");
         assert_eq!(calls[0].0, "schtasks");
         assert_eq!(calls[0].1[0], "/Create");
         assert_eq!(calls[0].1[1], "/XML");
@@ -1303,8 +1377,21 @@ WantedBy=default.target
         );
         assert_eq!(calls[0].1[3..], ["/TN", TASK_NAME, "/F"]);
         assert_eq!(calls[1].1, ["/Run", "/TN", TASK_NAME]);
-        assert_eq!(calls[2].0, "netsh");
+        assert_eq!(calls[2].0, "net");
+        assert_eq!(calls[2].1, ["session"]);
+        assert_eq!(calls[3].0, "netsh");
+        assert_eq!(
+            calls[3].1[..4],
+            ["advfirewall", "firewall", "delete", "rule"]
+        );
+        assert!(calls[3].1[4].starts_with("name=Handfast-"));
+        assert_eq!(calls[4].0, "netsh");
+        assert_eq!(calls[4].1[..4], ["advfirewall", "firewall", "add", "rule"]);
+        assert!(calls[4].1[4].starts_with("name=Handfast-"));
+        assert_eq!(calls[4].1[7], format!("program={}", service.exe.display()));
+        assert_eq!(calls[4].1[8], "enable=yes");
         assert_eq!(notes[0], format!("installed task {TASK_NAME}"));
+        assert!(notes[1].starts_with("installed firewall rule Handfast-"));
         assert!(
             !Path::new(&calls[0].1[2]).exists(),
             "the temp definition is removed"
@@ -1330,7 +1417,7 @@ WantedBy=default.target
             .unwrap();
 
         let calls = runner.calls();
-        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls.len(), 4, "{calls:?}");
         assert_eq!(calls[0].1[0], "/Create");
         assert!(
             !calls.iter().any(|call| call.1[0] == "/Run"),
@@ -1342,7 +1429,7 @@ WantedBy=default.target
     #[test]
     fn install_prints_the_firewall_command_when_the_rule_is_missing() {
         let directory = tempfile::tempdir().unwrap();
-        let runner = FakeCommands::failing(&["netsh advfirewall firewall show"]);
+        let runner = FakeCommands::failing(&["net session", "netsh advfirewall firewall show"]);
         let data_dir = directory.path().join("data");
         let service = service_for(
             r"C:\Handfast\handfast.exe",
@@ -1357,20 +1444,30 @@ WantedBy=default.target
 
         let expected = firewall_command(Path::new(r"C:\Handfast\handfast.exe"));
         assert!(
-            expected.starts_with(
-                "netsh advfirewall firewall add rule name=Handfast dir=in action=allow"
-            ),
+            expected.starts_with("netsh advfirewall firewall add rule name=\"Handfast-"),
+            "{expected}"
+        );
+        assert!(
+            expected
+                .contains("dir=in action=allow program=\"C:\\Handfast\\handfast.exe\" enable=yes"),
             "{expected}"
         );
         assert!(
             notes.iter().any(|note| note.contains(&expected)),
             "{notes:?}"
         );
+        assert!(
+            !runner
+                .calls()
+                .iter()
+                .any(|call| call.0 == "netsh" && call.1[2] == "add"),
+            "a non-elevated install does not add the rule"
+        );
     }
 
     #[cfg(any(windows, test))]
     #[test]
-    fn install_stays_quiet_when_the_firewall_rule_exists() {
+    fn elevated_install_replaces_the_firewall_rule() {
         let directory = tempfile::tempdir().unwrap();
         let runner = FakeCommands::default();
         let data_dir = directory.path().join("data");
@@ -1385,7 +1482,89 @@ WantedBy=default.target
             .install_task_with_sid("S-1-5-21-1-2-3-1001", &FakeControl::stopped())
             .unwrap();
 
+        let calls = runner.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.0 == "netsh" && call.1[2] == "delete"),
+            "{calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.0 == "netsh" && call.1[2] == "add"),
+            "{calls:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.starts_with("installed firewall rule Handfast-")),
+            "{notes:?}"
+        );
+    }
+
+    #[cfg(any(windows, test))]
+    #[test]
+    fn unelevated_install_stays_quiet_when_the_rule_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::failing(&["net session"]);
+        let data_dir = directory.path().join("data");
+        let service = service_for(
+            r"C:\Handfast\handfast.exe",
+            &data_dir,
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+
+        let notes = service
+            .install_task_with_sid("S-1-5-21-1-2-3-1001", &FakeControl::stopped())
+            .unwrap();
+
         assert_eq!(notes, vec![format!("installed task {TASK_NAME}")]);
+        assert!(
+            !runner
+                .calls()
+                .iter()
+                .any(|call| call.0 == "netsh" && call.1[2] == "add"),
+            "a non-elevated install does not add the rule"
+        );
+    }
+
+    #[test]
+    fn firewall_rule_name_is_stable_and_path_specific() {
+        let first =
+            firewall_rule_name(Path::new(r"C:\Users\A\AppData\Local\Handfast\handfast.exe"));
+        let again =
+            firewall_rule_name(Path::new(r"c:\users\a\appdata\local\handfast\HANDFAST.EXE"));
+        let other =
+            firewall_rule_name(Path::new(r"C:\Users\B\AppData\Local\Handfast\handfast.exe"));
+
+        assert_eq!(first, again, "Windows paths are case-insensitive");
+        assert_ne!(first, other);
+        assert!(first.starts_with("Handfast-"));
+        assert_eq!(first.len(), "Handfast-".len() + 16);
+    }
+
+    #[cfg(any(windows, test))]
+    #[test]
+    fn uninstall_removes_the_firewall_rule_when_elevated() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::default();
+        let data_dir = directory.path().join("data");
+        let service = service_for(
+            r"C:\Handfast\handfast.exe",
+            &data_dir,
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+
+        service.uninstall_task().unwrap();
+
+        let calls = runner.calls();
+        let last = calls.last().expect("uninstall runs commands");
+        assert_eq!(last.0, "netsh");
+        assert_eq!(last.1[2], "delete");
+        assert!(last.1[4].starts_with("name=Handfast-"), "{calls:?}");
     }
 
     #[cfg(any(unix, test))]
@@ -1525,7 +1704,7 @@ WantedBy=default.target
 
     #[cfg(any(windows, test))]
     #[test]
-    fn uninstall_without_a_task_runs_nothing_else() {
+    fn uninstall_without_a_task_still_removes_the_firewall_rule() {
         let directory = tempfile::tempdir().unwrap();
         let runner = FakeCommands::failing(&["schtasks /Query"]);
         let service = service_for(
@@ -1537,7 +1716,17 @@ WantedBy=default.target
 
         service.uninstall_task().unwrap();
 
-        assert_eq!(runner.calls().len(), 1, "{:?}", runner.calls());
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(calls[0].0, "schtasks");
+        assert_eq!(calls[1].0, "net");
+        assert_eq!(calls[2].0, "netsh");
+        assert_eq!(calls[2].1[2], "delete");
+        assert!(
+            !calls.iter().any(|call| call.0 == "schtasks"
+                && (call.1[0] == "/End" || call.1[0] == "/Delete")),
+            "an absent task runs no task commands"
+        );
     }
 
     #[test]

@@ -28,9 +28,10 @@ Open the MSI. It installs per user to `%LOCALAPPDATA%\Handfast`, adds a Start
 Menu shortcut named `Handfast` that runs `handfast gui`, and writes state to
 `%LOCALAPPDATA%\handfast`. The 0.3.0 MSI is signed when the Windows signing
 secrets are configured. The MSI registers the logon task with
-`handfast service install` and removes it on uninstall. Run
-`handfast service install` once after the install to print the administrator
-command for the firewall rule: a per-user install cannot add the rule itself.
+`handfast service install` and removes it on uninstall. The MSI adds an inbound firewall rule for the installed executable, which
+covers UDP 1716 and TCP 1716-1764, during install. If the rule is
+missing, run `handfast service install` from an administrator prompt; it adds
+the rule when elevated and prints the exact command otherwise.
 
 Debian 12, amd64:
 
@@ -140,8 +141,8 @@ Wayland development packages on Linux; the `gui` CI job installs
 - UDP discovery in `handfast daemon`: identity announcements, peer receive and
   device persistence. A peer that announces this daemon's own ID is ignored.
 - Per-user autostart: `handfast service install` writes a systemd user unit or a
-  Task Scheduler logon task, starts the daemon and reports a missing Windows
-  firewall rule.
+  Task Scheduler logon task, starts the daemon and adds the Windows firewall
+  rule when elevated. A non-elevated run prints the exact administrator command.
 - Self-update: `handfast update check` reads the latest release, and
   `handfast update apply` verifies `SHA256SUMS`, checks Authenticode on Windows
   and replaces the running binary atomically.

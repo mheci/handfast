@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use handfast_proto::DeviceId;
-use handfast_runtime::{RemoteMediaAction, RemotePlayer, RemoteSink};
+use handfast_runtime::{RemoteCommand, RemoteMediaAction, RemotePlayer, RemoteSink};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -81,6 +81,13 @@ pub enum ControlRequest {
         /// The command to send.
         command: RemoteMediaCommand,
     },
+    /// Trigger commands configured on a connected device.
+    RemoteCommand {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// The command to send.
+        request: RemoteCommandRequest,
+    },
     /// Accept or reject a pending pairing request.
     PairingDecision {
         /// Device ID shown in the pairing prompt. The daemon validates it.
@@ -142,6 +149,8 @@ pub struct DaemonStatus {
     pub remote_sinks: Vec<RemoteDeviceSinks>,
     /// Peer media players, sorted by device ID.
     pub remote_players: Vec<RemoteDevicePlayers>,
+    /// Peer commands, sorted by device ID.
+    pub remote_commands: Vec<RemoteDeviceCommands>,
     /// Whether a device list hit [`MAX_STATUS_DEVICES`].
     pub truncated: bool,
 }
@@ -186,6 +195,22 @@ pub enum RemoteMediaCommand {
     },
 }
 
+/// One remote command request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteCommandRequest {
+    /// Ask the peer for its command list.
+    List,
+    /// Run one command by its key.
+    Run {
+        /// Command key from the device's reported list.
+        key: String,
+    },
+    /// Ask the peer to open its command editor.
+    Setup,
+    /// Ask the peer to close its command editor.
+    Stop,
+}
+
 /// Audio sinks reported by one peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteDeviceSinks {
@@ -202,6 +227,17 @@ pub struct RemoteDevicePlayers {
     pub device_id: DeviceId,
     /// Players in name order.
     pub players: Vec<RemotePlayer>,
+}
+
+/// Commands reported by one peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteDeviceCommands {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Commands in key order.
+    pub commands: Vec<RemoteCommand>,
+    /// Whether the peer lets the desktop add commands.
+    pub can_add: bool,
 }
 
 /// This device's public identity.
@@ -304,6 +340,12 @@ pub enum DaemonCommand {
     Media {
         device_id: DeviceId,
         command: RemoteMediaCommand,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Send a remote command request to one connected device and reply.
+    RemoteCommand {
+        device_id: DeviceId,
+        request: RemoteCommandRequest,
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Answer one open pairing prompt and reply.
@@ -604,6 +646,25 @@ async fn dispatch(
             DaemonCommand::Media {
                 device_id,
                 command,
+                reply,
+            }
+        }
+        ControlRequest::RemoteCommand { device_id, request } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            if let RemoteCommandRequest::Run { key } = &request {
+                if !handfast_plugins::remotecommands::valid_command_key(key) {
+                    return ControlResponse::Err {
+                        message: "the command key is not valid".to_string(),
+                    };
+                }
+            }
+            DaemonCommand::RemoteCommand {
+                device_id,
+                request,
                 reply,
             }
         }
@@ -981,6 +1042,7 @@ mod tests {
             }],
             remote_sinks: Vec::new(),
             remote_players: Vec::new(),
+            remote_commands: Vec::new(),
             truncated: false,
         }
     }
@@ -1078,6 +1140,21 @@ mod tests {
             }
         );
         assert_eq!(
+            round_trip(&ControlRequest::RemoteCommand {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                request: RemoteCommandRequest::Run {
+                    key: "abc".to_string(),
+                },
+            })
+            .await,
+            ControlRequest::RemoteCommand {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                request: RemoteCommandRequest::Run {
+                    key: "abc".to_string(),
+                },
+            }
+        );
+        assert_eq!(
             round_trip(&ControlResponse::ShuttingDown).await,
             ControlResponse::ShuttingDown
         );
@@ -1118,10 +1195,12 @@ mod tests {
                 fingerprint: "ab".repeat(32),
             })
             .collect();
-        status.remote_sinks = (0..4)
+        // Every remote section is at or above its production cap in the same
+        // snapshot, so the frame bound covers the worst case.
+        status.remote_sinks = (0..crate::daemon::MAX_STATUS_REMOTE_DEVICES)
             .map(|index| RemoteDeviceSinks {
                 device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
-                sinks: (0..4)
+                sinks: (0..crate::daemon::MAX_STATUS_REMOTE_ENTRIES)
                     .map(|sink| RemoteSink {
                         name: format!("sink-{sink}"),
                         description: "d".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
@@ -1133,10 +1212,10 @@ mod tests {
                     .collect(),
             })
             .collect();
-        status.remote_players = (0..4)
+        status.remote_players = (0..crate::daemon::MAX_STATUS_REMOTE_DEVICES)
             .map(|index| RemoteDevicePlayers {
                 device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
-                players: (0..4)
+                players: (0..crate::daemon::MAX_STATUS_REMOTE_ENTRIES)
                     .map(|player| RemotePlayer {
                         player: format!("player-{player}"),
                         title: "t".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
@@ -1147,6 +1226,19 @@ mod tests {
                         ..RemotePlayer::default()
                     })
                     .collect(),
+            })
+            .collect();
+        status.remote_commands = (0..crate::daemon::MAX_STATUS_REMOTE_DEVICES)
+            .map(|index| RemoteDeviceCommands {
+                device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
+                commands: (0..crate::daemon::MAX_STATUS_REMOTE_COMMANDS)
+                    .map(|command| RemoteCommand {
+                        key: format!("key-{command}"),
+                        name: "n".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        command: "c".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                    })
+                    .collect(),
+                can_add: false,
             })
             .collect();
         let response = ControlResponse::Status {

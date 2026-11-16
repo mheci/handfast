@@ -82,6 +82,7 @@ fn status_with_sink() -> DaemonStatus {
             sinks: vec![sink()],
         }],
         remote_players: Vec::new(),
+        remote_commands: Vec::new(),
         truncated: false,
     }
 }

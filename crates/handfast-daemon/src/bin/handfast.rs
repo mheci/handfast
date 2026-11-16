@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use handfast_daemon::control::{
     send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus, PairingSummary,
-    RemoteMediaCommand,
+    RemoteCommandRequest, RemoteMediaCommand,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::update::{Authenticode, GitHub, Updater};
@@ -45,6 +45,9 @@ enum Command {
     Volume(VolumeArgs),
     /// List or control a connected device's media players.
     Media(MediaArgs),
+    /// List or trigger a connected device's commands.
+    #[command(name = "remote-command")]
+    RemoteCommands(RemoteCommandArgs),
     /// Print the running daemon's status.
     Status(StatusArgs),
     /// Install and control the per-user autostart service.
@@ -181,6 +184,29 @@ struct MediaArgs {
 }
 
 #[derive(Debug, Parser)]
+struct RemoteCommandArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Ask the peer to resend its command list.
+    #[arg(long)]
+    list: bool,
+
+    /// Trigger the command with this key.
+    #[arg(long, value_name = "KEY")]
+    run: Option<String>,
+
+    /// Ask the peer to open its command editor.
+    #[arg(long)]
+    setup: bool,
+
+    /// Ask the peer to close its command editor.
+    #[arg(long)]
+    stop: bool,
+}
+
+#[derive(Debug, Parser)]
 struct StatusArgs {
     /// Print the status as JSON.
     #[arg(long)]
@@ -287,6 +313,10 @@ fn main() -> ExitCode {
         Command::Media(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_media(args, data_dir)
+        }
+        Command::RemoteCommands(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_remote_command(args, data_dir)
         }
         Command::Status(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
@@ -700,6 +730,108 @@ async fn send_media(args: MediaArgs, data_dir: PathBuf) -> Result<String, Contro
             "unexpected control response: {response:?}"
         ))),
     }
+}
+
+fn run_remote_command(args: RemoteCommandArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_remote_command(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_remote_command(
+    args: RemoteCommandArgs,
+    data_dir: PathBuf,
+) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let operations = [args.list, args.run.is_some(), args.setup, args.stop];
+    if operations.iter().filter(|selected| **selected).count() > 1 {
+        return Err(ControlError::Remote(
+            "remote-command needs one operation".to_string(),
+        ));
+    }
+    let (request, success) = if args.list {
+        (
+            RemoteCommandRequest::List,
+            format!("requested the command list from {}", args.device_id),
+        )
+    } else if let Some(key) = args.run.as_deref() {
+        (
+            RemoteCommandRequest::Run {
+                key: key.to_string(),
+            },
+            format!("sent command {key} to {}", args.device_id),
+        )
+    } else if args.setup {
+        (
+            RemoteCommandRequest::Setup,
+            format!("sent setup to {}", args.device_id),
+        )
+    } else if args.stop {
+        (
+            RemoteCommandRequest::Stop,
+            format!("sent stop to {}", args.device_id),
+        )
+    } else {
+        return list_cached_commands(args.device_id, data_dir).await;
+    };
+    let request = ControlRequest::RemoteCommand {
+        device_id: args.device_id.clone(),
+        request,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(success),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+async fn list_cached_commands(
+    device_id: String,
+    data_dir: PathBuf,
+) -> Result<String, ControlError> {
+    let status = request_status(&data_dir).await?;
+    if !status
+        .connected
+        .iter()
+        .any(|device| device.device_id.as_str() == device_id)
+    {
+        return Err(ControlError::Remote(format!(
+            "device {device_id} is not connected"
+        )));
+    }
+    let Some(device) = status
+        .remote_commands
+        .iter()
+        .find(|device| device.device_id.as_str() == device_id)
+    else {
+        return Ok(format!("{device_id} has not reported any commands"));
+    };
+    let mut lines = Vec::with_capacity(device.commands.len());
+    for command in &device.commands {
+        lines.push(format!(
+            "{}\t{}\t{}",
+            command.key, command.name, command.command
+        ));
+    }
+    Ok(lines.join("\n"))
 }
 
 async fn send_pair(

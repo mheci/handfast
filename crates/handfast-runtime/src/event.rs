@@ -72,6 +72,17 @@ pub struct RemotePlayer {
     pub can_rewind: bool,
 }
 
+/// One command configured on a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteCommand {
+    /// Stable command key used in requests.
+    pub key: String,
+    /// Display name.
+    pub name: String,
+    /// Command line the peer would run.
+    pub command: String,
+}
+
 /// One transport action sent to a peer player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemoteMediaAction {
@@ -145,6 +156,13 @@ pub enum PluginEvent {
     RemotePlayers {
         /// Players in name order.
         players: Vec<RemotePlayer>,
+    },
+    /// A peer reported its configured commands.
+    RemoteCommands {
+        /// Commands in key order.
+        commands: Vec<RemoteCommand>,
+        /// Whether the peer lets the desktop add commands.
+        can_add: bool,
     },
     /// Clipboard text arrived.
     Clipboard {

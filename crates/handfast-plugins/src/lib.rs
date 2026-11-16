@@ -19,6 +19,7 @@ pub mod notifications;
 pub mod pausemusic;
 pub mod ping;
 pub mod presenter;
+pub mod remotecommands;
 pub mod remotesystemvolume;
 pub mod roster;
 pub mod screensaver_inhibit;
@@ -41,6 +42,7 @@ pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
 pub use presenter::{PresenterFactory, PresenterPlugin};
+pub use remotecommands::{valid_command_key, RemoteCommandsFactory, RemoteCommandsPlugin};
 pub use remotesystemvolume::{
     mute_request, valid_sink_name, volume_request, RemoteSystemVolumeFactory,
     RemoteSystemVolumePlugin,
@@ -67,6 +69,7 @@ pub fn registry() -> Registry {
         Box::new(findmyphone::FindMyPhoneFactory),
         Box::new(systemvolume::SystemVolumeFactory),
         Box::new(remotesystemvolume::RemoteSystemVolumeFactory),
+        Box::new(remotecommands::RemoteCommandsFactory),
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
         Box::new(lockdevice::LockDeviceFactory),
         Box::new(presenter::PresenterFactory),
@@ -107,6 +110,19 @@ mod tests {
         assert!(capabilities.accepts(types::SYSTEMVOLUME_REQUEST));
         assert!(DeviceHost::new(device(), &registry, desktop.desktop())
             .is_enabled("remotesystemvolume"));
+    }
+
+    #[test]
+    fn remote_commands_need_no_desktop_adapter() {
+        let registry = registry();
+        let desktop = MockDesktop::new();
+        let capabilities = registry.capabilities(&desktop.desktop()).unwrap();
+
+        assert!(capabilities.accepts(types::RUNCOMMAND));
+        assert!(capabilities.outgoing().contains(types::RUNCOMMAND_REQUEST));
+        assert!(
+            DeviceHost::new(device(), &registry, desktop.desktop()).is_enabled("remotecommands")
+        );
     }
 
     #[test]

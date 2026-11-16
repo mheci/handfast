@@ -30,7 +30,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 14 | `pausemusic` | phone -> desktop | `kdeconnect.telephony`, `kdeconnect.mpris.request` | `playerctl` | P2 | yes | yes | no |
 | 15 | `ping` | bidirectional | `kdeconnect.ping` | none | P0 | yes | n/a | no |
 | 16 | `presenter` | phone -> desktop | `kdeconnect.presenter` | `ydotool` and `wtype` on Wayland; `enigo` on Windows | P3 | yes | yes | no |
-| 17 | `remotecommands` | phone -> desktop | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | no | no | no |
+| 17 | `remotecommands` | bidirectional | `kdeconnect.runcommand`, `.runcommand.request` | peer command model | P3 | yes | n/a | no |
 | 18 | `remotecontrol` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
 | 19 | `remotekeyboard` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
 | 20 | `remotesystemvolume` | bidirectional | `kdeconnect.systemvolume`, `.systemvolume.request` | peer sink model | P2 | yes | n/a | no |
@@ -56,6 +56,10 @@ have.
 - **Run command**: the desktop and Android each keep their own command list.
   `runcommand` executes local commands; `remotecommands` triggers the peer's
   list.
+- **Remote commands**: the desktop keeps the command list a peer reports and
+  sends list, run, setup and stop requests. Commands always execute on the
+  peer; the desktop never runs them locally. Command output
+  (`.runcommand.output`) is not fetched yet.
 - **SMS and contacts**: the phone owns the data. The desktop stores, displays and
   sends requests.
 - **Virtual monitor**: desktop-only; the official Android client has no virtual

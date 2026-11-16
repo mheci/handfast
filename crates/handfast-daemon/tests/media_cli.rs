@@ -90,6 +90,7 @@ fn status_with(players: Vec<RemotePlayer>) -> DaemonStatus {
             device_id: device_id(PEER),
             players,
         }],
+        remote_commands: Vec::new(),
         truncated: false,
     }
 }

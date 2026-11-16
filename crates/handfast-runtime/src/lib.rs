@@ -16,7 +16,8 @@ pub mod transfer;
 pub use device::Device;
 pub use error::{PluginError, RuntimeError};
 pub use event::{
-    BatteryState, Event, LogLevel, PluginEvent, RemoteMediaAction, RemotePlayer, RemoteSink,
+    BatteryState, Event, LogLevel, PluginEvent, RemoteCommand, RemoteMediaAction, RemotePlayer,
+    RemoteSink,
 };
 pub use host::{DeviceHost, Dispatch};
 pub use plugin::{
