@@ -214,14 +214,14 @@ fn build_tablet(
     .collect();
     let properties: AttributeSet<PropType> =
         [PropType::DIRECT, PropType::POINTER].into_iter().collect();
-    let open_error = |error: io::Error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            DesktopError::Unsupported(
-                "/dev/uinput is not available; pen injection needs the uinput module",
-            )
-        } else {
-            DesktopError::Backend(format!("failed to open /dev/uinput: {error}"))
-        }
+    let open_error = |error: io::Error| match error.kind() {
+        io::ErrorKind::NotFound => DesktopError::Unsupported(
+            "/dev/uinput is not available; pen injection needs the uinput module",
+        ),
+        io::ErrorKind::PermissionDenied => DesktopError::Unsupported(
+            "/dev/uinput is not writable; add the user to the uinput group",
+        ),
+        _ => DesktopError::Backend(format!("failed to open /dev/uinput: {error}")),
     };
     let setup_error = |error: io::Error| {
         DesktopError::Backend(format!("failed to configure the tablet: {error}"))
