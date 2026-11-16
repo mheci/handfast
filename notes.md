@@ -2,7 +2,7 @@
 
 Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`.
 
-Current state, 2026-11-16: 25 of 31 roster plugins are implemented. The six
+Current state, 2026-11-17: 26 of 31 roster plugins are implemented. The five
 planned plugins and their blockers are named in `docs/PARITY.md`. Branch
 `feat/parity`, PR #272. The manual P1 Android/desktop gate, GUI window check,
 signed 0.3.0 update and package installs still need the user.
@@ -386,3 +386,11 @@ Feasibility, 2026-11-16, remaining plugins:
 - `shareinputdevicesremote`: mostly `mousepad` plus absolute entry positioning; implementable now. `shareinputdevices` capture is Wayland/libei only (`reis`), and Windows capture needs a hook backend. Leave capture planned.
 - `virtualmonitor`: KDE shells out to `krdpserver` and opens `rdp://`. Linux server partial is possible; Windows needs an IddCx driver. Android has no counterpart. Leave planned.
 - `mmtelephony`: safe ModemManager DBus with `zbus` is feasible but needs modem hardware and upstream mute is a stub. Leave planned.
+
+
+Parity wave 18, 2026-11-17, same branch:
+
+- `digitizer` is implemented. The plugin opens a session from `kdeconnect.digitizer.session`, injects absolute pen events from `kdeconnect.digitizer`, clamps positions into the session space, and forces touching/pressure off on `active:false` or a lift.
+- Wayland creates an `evdev` uinput virtual tablet with `ABS_X`, `ABS_Y`, `ABS_PRESSURE` (0-1023), `BTN_TOUCH`, `BTN_TOOL_PEN` and `BTN_TOOL_RUBBER`, so pressure is real. Windows uses `enigo` `Coordinate::Abs` scaled from the session to the main display, maps Pen to the left button and Rubber to the right, and ignores pressure once per session as a named gap. The session closes on disconnect and releases a held button.
+- Evidence: desktop 148 pass (6 ignored), plugins 244 pass (18 digitizer tests), daemon lib 156 pass, bins 4 pass, clippy/fmt/docs clean. The Linux uinput path compiles against `x86_64-unknown-linux-gnu` and its event mapping is unit-tested; real tablet injection and Windows pen input remain manual.
+- Gaps: Windows pressure and tilt; real Wayland tablet injection and Windows pen input need a device/session check.

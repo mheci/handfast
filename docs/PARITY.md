@@ -138,12 +138,14 @@ Gaps, named rather than hidden:
   carrying `System.AppUserModel.ID=Handfast` is the packaging follow-up if a
   Windows build drops the toast.
 - **Remaining planned plugins**: `sendnotifications` needs a local notification
-  source; the Linux DBus monitor is not implemented, and Windows has no safe
-  supported listener without the WinRT consent prompt. `sftp` needs a sandboxed
-  SFTP server. `virtualmonitor` needs a virtual display driver. Windows
-  `digitizer` pressure needs OS APIs that the no-unsafe rule excludes (see the
-  input note above). The `shareinputdevices` pair needs libei input capture.
-  `mmtelephony` needs ModemManager and has no Android counterpart.
+  source; the Linux DBus monitor is not implemented. The Windows
+  `UserNotificationListener` polling path works unpackaged in a live probe
+  (status `Allowed`, one toast counted, text readable), but it needs a safe
+  wrapper and a one-time consent, so it stays out until that is tested.
+  `virtualmonitor` needs a virtual display driver; the Linux `krdpserver`/RDP
+  client half is not implemented. The `shareinputdevices` capture pair needs
+  libei on Wayland and a hook backend on Windows. `mmtelephony` needs
+  ModemManager and has no Android counterpart.
 
 ## Test strategy
 
