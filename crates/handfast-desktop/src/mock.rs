@@ -84,6 +84,7 @@ impl MockDesktop {
             screensaver: Some(Arc::clone(&backend) as Arc<dyn Screensaver>),
             shell: Some(Arc::clone(&backend) as Arc<dyn Shell>),
             power: None,
+            commands: None,
             files: None,
             lock: Some(Arc::clone(&lock) as Arc<dyn Lock>),
         };

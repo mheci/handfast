@@ -180,3 +180,32 @@ pub struct PlaybackState {
     /// Player volume, 0-100.
     pub volume: Option<u8>,
 }
+
+/// One locally configured command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandSpec {
+    /// Stable command key used in requests.
+    pub key: String,
+    /// Display name.
+    pub name: String,
+    /// Argument vector. The first element is the program.
+    pub argv: Vec<String>,
+}
+
+impl CommandSpec {
+    /// Render the argument vector for display.
+    #[must_use]
+    pub fn display(&self) -> String {
+        self.argv
+            .iter()
+            .map(|argument| {
+                if argument.contains(' ') || argument.contains('"') {
+                    format!("\"{}\"", argument.replace('"', "\\\""))
+                } else {
+                    argument.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}

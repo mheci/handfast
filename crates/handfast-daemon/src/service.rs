@@ -213,7 +213,8 @@ impl LocalControl {
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
             ControlResponse::Ok { .. }
             | ControlResponse::Status { .. }
-            | ControlResponse::ShuttingDown => Err(ControlError::Remote(
+            | ControlResponse::ShuttingDown
+            | ControlResponse::Commands { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -234,7 +235,8 @@ impl LocalControl {
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
             ControlResponse::Status { .. }
             | ControlResponse::ShuttingDown
-            | ControlResponse::Decided => Err(ControlError::Remote(
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -265,7 +267,8 @@ impl LocalControl {
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
             ControlResponse::Status { .. }
             | ControlResponse::ShuttingDown
-            | ControlResponse::Decided => Err(ControlError::Remote(
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -292,7 +295,8 @@ impl LocalControl {
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
             ControlResponse::Status { .. }
             | ControlResponse::ShuttingDown
-            | ControlResponse::Decided => Err(ControlError::Remote(
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -306,7 +310,8 @@ impl DaemonControl for LocalControl {
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
             ControlResponse::Ok { .. }
             | ControlResponse::ShuttingDown
-            | ControlResponse::Decided => Err(ControlError::Remote(
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -318,7 +323,8 @@ impl DaemonControl for LocalControl {
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
             ControlResponse::Ok { .. }
             | ControlResponse::Status { .. }
-            | ControlResponse::Decided => Err(ControlError::Remote(
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }

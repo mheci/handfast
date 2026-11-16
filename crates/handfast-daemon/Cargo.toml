@@ -15,6 +15,7 @@ path = "src/bin/handfast.rs"
 gui = ["dep:eframe"]
 
 [dependencies]
+async-trait.workspace = true
 clap.workspace = true
 eframe = { version = "0.33", default-features = false, features = [
     "accesskit",
@@ -32,6 +33,7 @@ handfast-store = { path = "../handfast-store", version = "0.3.0" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+uuid.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 tracing.workspace = true
@@ -47,7 +49,6 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-async-trait.workspace = true
 handfast-net = { path = "../handfast-net", version = "0.3.0", features = ["test-support"] }
 handfast-testkit = { path = "../handfast-testkit", version = "0.3.0" }
 redb.workspace = true

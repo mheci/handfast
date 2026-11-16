@@ -22,6 +22,7 @@ pub mod presenter;
 pub mod remotecommands;
 pub mod remotesystemvolume;
 pub mod roster;
+pub mod runcommand;
 pub mod screensaver_inhibit;
 pub mod share;
 pub mod systemvolume;
@@ -47,6 +48,7 @@ pub use remotesystemvolume::{
     mute_request, valid_sink_name, volume_request, RemoteSystemVolumeFactory,
     RemoteSystemVolumePlugin,
 };
+pub use runcommand::{RunCommandFactory, RunCommandPlugin};
 pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
 pub use share::{ShareFactory, SharePlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
@@ -69,6 +71,7 @@ pub fn registry() -> Registry {
         Box::new(findmyphone::FindMyPhoneFactory),
         Box::new(systemvolume::SystemVolumeFactory),
         Box::new(remotesystemvolume::RemoteSystemVolumeFactory),
+        Box::new(runcommand::RunCommandFactory),
         Box::new(remotecommands::RemoteCommandsFactory),
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
         Box::new(lockdevice::LockDeviceFactory),

@@ -29,10 +29,12 @@ use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
+use crate::commands::StoreCommands;
 use crate::control::{
-    ControlResponse, ControlServer, DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary,
-    PairedDevice, PairingSummary, RemoteCommandRequest, RemoteDeviceCommands, RemoteDevicePlayers,
-    RemoteDeviceSinks, RemoteMediaCommand, TransferSummary, MAX_STATUS_DEVICES,
+    CommandConfigAction, CommandSummary, ControlResponse, ControlServer, DaemonCommand,
+    DaemonStatus, DeviceSummary, IdentitySummary, PairedDevice, PairingSummary,
+    RemoteCommandRequest, RemoteDeviceCommands, RemoteDevicePlayers, RemoteDeviceSinks,
+    RemoteMediaCommand, TransferSummary, MAX_STATUS_DEVICES,
 };
 use crate::default_data_dir;
 use crate::identity;
@@ -188,6 +190,7 @@ pub async fn run(
     );
     let desktop = Desktop {
         files: Some(Arc::clone(&files) as Arc<dyn Files>),
+        commands: Some(Arc::new(StoreCommands::new(Arc::clone(&store)))),
         ..Desktop::default()
     };
     let desktop = install_backends(
@@ -1244,6 +1247,50 @@ impl Daemon {
                     let _ = reply.send(response);
                 });
             }
+            DaemonCommand::CommandConfig { action, reply } => {
+                let Some(commands) = self.desktop.commands.as_ref() else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: "the command adapter is unavailable".to_string(),
+                    });
+                    return;
+                };
+                let response = match action {
+                    CommandConfigAction::List => {
+                        commands
+                            .list()
+                            .await
+                            .map(|specs| ControlResponse::Commands {
+                                commands: specs
+                                    .iter()
+                                    .map(|spec| CommandSummary {
+                                        key: spec.key.clone(),
+                                        name: spec.name.clone(),
+                                        command: spec.display(),
+                                    })
+                                    .collect(),
+                            })
+                    }
+                    CommandConfigAction::Add { key, name, argv } => commands
+                        .add(&key, &name, &argv)
+                        .await
+                        .map(|()| ControlResponse::Ok { bytes: 0 }),
+                    CommandConfigAction::Remove { key } => {
+                        commands
+                            .remove(&key)
+                            .await
+                            .map(|removed| ControlResponse::Ok {
+                                bytes: u64::from(removed),
+                            })
+                    }
+                };
+                let response = match response {
+                    Ok(response) => response,
+                    Err(error) => ControlResponse::Err {
+                        message: error.to_string(),
+                    },
+                };
+                let _ = reply.send(response);
+            }
             DaemonCommand::PairingDecision {
                 device_id,
                 accept,
@@ -1539,6 +1586,7 @@ mod tests {
                 screensaver: true,
                 lock: true,
                 shell: true,
+                commands: false,
                 files: false,
             }
         );
@@ -2407,6 +2455,93 @@ mod tests {
         assert!(matches!(
             reply_rx.await.expect("the daemon replies"),
             ControlResponse::Err { message } if message.contains("is not connected")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn command_config_without_an_adapter_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::CommandConfig {
+                action: CommandConfigAction::List,
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("unavailable")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn command_config_add_list_and_remove_round_trip() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) =
+            status_daemon(Arc::clone(&store), directory.path()).await;
+        daemon.desktop.commands = Some(Arc::new(StoreCommands::new(store)));
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::CommandConfig {
+                action: CommandConfigAction::Add {
+                    key: "abc".to_string(),
+                    name: "List files".to_string(),
+                    argv: vec!["ls".to_string(), "-l".to_string()],
+                },
+                reply,
+            })
+            .await;
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Ok { bytes: 0 }
+        ));
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::CommandConfig {
+                action: CommandConfigAction::List,
+                reply,
+            })
+            .await;
+        let ControlResponse::Commands { commands } = reply_rx.await.expect("the daemon replies")
+        else {
+            panic!("list returns commands");
+        };
+        assert_eq!(
+            commands,
+            vec![CommandSummary {
+                key: "abc".to_string(),
+                name: "List files".to_string(),
+                command: "ls -l".to_string(),
+            }]
+        );
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::CommandConfig {
+                action: CommandConfigAction::Remove {
+                    key: "abc".to_string(),
+                },
+                reply,
+            })
+            .await;
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Ok { bytes: 1 }
         ));
 
         links.shutdown();

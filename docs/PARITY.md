@@ -34,7 +34,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 18 | `remotecontrol` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
 | 19 | `remotekeyboard` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
 | 20 | `remotesystemvolume` | bidirectional | `kdeconnect.systemvolume`, `.systemvolume.request` | peer sink model | P2 | yes | n/a | no |
-| 21 | `runcommand` | bidirectional | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | no | no | no |
+| 21 | `runcommand` | bidirectional | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | yes | yes | no |
 | 22 | `screensaver-inhibit` | connection state | none (uses link state) | `systemd-inhibit` | P2 | yes | yes | no |
 | 23 | `sendnotifications` | desktop -> phone | `kdeconnect.notification`, `.notification.request` | freedesktop notifications DBus | P2 | no | no | no |
 | 24 | `sftp` | phone -> desktop | `kdeconnect.sftp`, `.sftp.request` | embedded Rust SFTP server | P3 | no | no | no |
@@ -55,7 +55,10 @@ have.
 
 - **Run command**: the desktop and Android each keep their own command list.
   `runcommand` executes local commands; `remotecommands` triggers the peer's
-  list.
+  list. Commands are argv arrays with no shell, configured locally with
+  `handfast command add --name NAME -- PROGRAM ARG...` and capped at 64 entries.
+  Each run has a 30 s timeout and streams stdout and stderr back through
+  `kdeconnect.runcommand.output`.
 - **Remote commands**: the desktop keeps the command list a peer reports and
   sends list, run, setup and stop requests. Commands always execute on the
   peer; the desktop never runs them locally. Command output

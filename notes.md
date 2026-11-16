@@ -307,9 +307,9 @@ Parity wave 9, 2026-11-16, same branch:
 Parity wave 10, 2026-11-16, same branch:
 
 - Windows firewall at install: `handfast service install` probes elevation with `net session`. When elevated it deletes and re-adds one rule named `Handfast-<path hash>` for the installed exe, so two users never share a name and repeated installs do not accumulate rules. When not elevated it keeps the printed admin command. `handfast service uninstall` removes the rule when elevated.
-- The MSI adds a per-install rule through `WixQuietExec` deferred as LocalSystem: an immediate action captures `[INSTALLFOLDER]handfast.exe` into the action data, the add runs before `ServiceInstall`, and a matching delete runs on uninstall. The rule name is `Handfast-{ProductCode}` so it is unique per install. `xtask` already passes `WixUtilExtension`.
+- The MSI adds a per-install rule through `WixQuietExec` deferred as LocalSystem: an immediate action captures `[INSTALLFOLDER]handfast.exe` into the action data, the add runs before `ServiceInstall`, and a matching delete runs on uninstall. The rule name is `Handfast-[UserSID]-[ProductCode]`, so two users and two product releases never share a name. `xtask` already passes `WixUtilExtension`.
 - Evidence: the service tests pass in an isolated worktree at `3108cc1` (35 passed), including the elevation probe, idempotent delete/add, non-elevated fallback, path-hash stability and uninstall cleanup. The WiX file parses and the sequence is add-firewall, service-install, service-uninstall, delete-firewall. WiX is not installed locally, so the MSI build is unverified.
-- Known limit: the MSI names its rule from the ProductCode while `service install` names it from the exe path, so an elevated manual `service install` after an MSI install can add a second equivalent rule. It does not cause prompts. Unifying the names needs a registry or `--firewall-only` handoff.
+- Known limit: the MSI names its rule from the user SID and ProductCode while `service install` names it from the exe path, so an elevated manual `service install` after an MSI install can add a second equivalent rule. It does not cause prompts. Unifying the names needs a registry or `--firewall-only` handoff.
 
 Parity wave 11, 2026-11-16, same branch:
 
@@ -318,3 +318,11 @@ Parity wave 11, 2026-11-16, same branch:
 - The status snapshot caps remote commands at 4 per device with 64-character text. The full-frame test now uses 128 pending pairings plus every remote section at its production cap and still fits the 64 KiB control frame. `--run KEY` still works for any key in the 64-entry model, not only the four shown in the snapshot.
 - Evidence: plugins 189 pass (9 remotecommands tests), daemon lib 142 pass (command model, status, offline device, frame bound and firewall tests), runtime 12 pass, bin 4 pass, clippy/fmt/docs clean. The five `remotecommand_cli` end-to-end tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
 - Gaps: no GUI surface yet; `addCommand` is not implemented (`can_add` is surfaced but `--setup` only opens the peer editor); `.runcommand.output` is not fetched, so trigger results are not shown; the status lists at most four commands per device.
+
+Parity wave 12, 2026-11-16, same branch:
+
+- `runcommand` is implemented and registered. Commands live in the redb `commands_v1` table behind a new `Commands` desktop trait and `StoreCommands` adapter. The peer can request the list and trigger a key; the plugin runs the argv array without a shell, streams stdout and stderr back through `kdeconnect.runcommand.output`, and reports the exit code.
+- Limits: 64 stored commands, 1-16 argv entries of at most 1024 bytes, keys at most 256 bytes, no control characters, 30 s timeout, 64 KiB per stream, 200 lines per stream, 4 concurrent commands. `on_disconnect` and a peer `stop` kill running children.
+- Control: `CommandConfig { List, Add { key, name, argv }, Remove { key } }`, `ControlResponse::Commands`, and `handfast command list|add|remove`. `add` generates a UUID key and prints it; `remove` reports whether the key existed. The peer cannot add commands; `canAddCommand` is always false.
+- Evidence: store 23 pass (command round-trip), plugins 195 pass (6 runcommand tests), daemon lib 147 pass (CommandConfig round-trip and missing-adapter error), runtime 12 pass, desktop 143 pass, bin 4 pass, clippy/fmt/docs clean. The six `command_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: no GUI surface; `.runcommand.output` is not consumed by `remotecommands` yet; the MSI and `service install` still use different firewall rule names.

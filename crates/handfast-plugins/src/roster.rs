@@ -215,11 +215,11 @@ pub const REMOTESYSTEMVOLUME: PluginMeta = PluginMeta {
 /// Execute commands configured on this device.
 pub const RUNCOMMAND: PluginMeta = PluginMeta {
     name: "runcommand",
-    title: "Execute remote commands",
-    status: PLANNED,
+    title: "Execute local commands",
+    status: IMPLEMENTED,
     incoming: &[types::RUNCOMMAND_REQUEST],
     outgoing: &[types::RUNCOMMAND, types::RUNCOMMAND_OUTPUT],
-    desktop: DesktopRequirement::Shell,
+    desktop: DesktopRequirement::Commands,
 };
 
 /// Inhibit the screensaver while connected.

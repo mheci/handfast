@@ -4,8 +4,8 @@ use std::sync::Mutex;
 
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use handfast_daemon::control::{
-    send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus, PairingSummary,
-    RemoteCommandRequest, RemoteMediaCommand,
+    send_request, CommandConfigAction, ControlError, ControlRequest, ControlResponse, DaemonStatus,
+    PairingSummary, RemoteCommandRequest, RemoteMediaCommand,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::update::{Authenticode, GitHub, Updater};
@@ -48,6 +48,9 @@ enum Command {
     /// List or trigger a connected device's commands.
     #[command(name = "remote-command")]
     RemoteCommands(RemoteCommandArgs),
+    /// List or edit the local runcommand configuration.
+    #[command(name = "command")]
+    Commands(CommandArgs),
     /// Print the running daemon's status.
     Status(StatusArgs),
     /// Install and control the per-user autostart service.
@@ -206,6 +209,32 @@ struct RemoteCommandArgs {
     stop: bool,
 }
 
+#[derive(Debug, Subcommand)]
+enum CommandAction {
+    /// List the configured commands.
+    List,
+    /// Add a command. Everything after `--` is the argument vector.
+    Add {
+        /// Display name.
+        #[arg(long)]
+        name: String,
+        /// Program and arguments after `--`.
+        #[arg(last = true, required = true, value_name = "ARGV")]
+        argv: Vec<String>,
+    },
+    /// Remove a command by key.
+    Remove {
+        /// Command key from the listing.
+        key: String,
+    },
+}
+
+#[derive(Debug, Parser)]
+struct CommandArgs {
+    #[command(subcommand)]
+    action: CommandAction,
+}
+
 #[derive(Debug, Parser)]
 struct StatusArgs {
     /// Print the status as JSON.
@@ -318,6 +347,10 @@ fn main() -> ExitCode {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_remote_command(args, data_dir)
         }
+        Command::Commands(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_command_config(args, data_dir)
+        }
         Command::Status(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_status(args, data_dir)
@@ -424,7 +457,8 @@ async fn send_share(args: ShareArgs, data_dir: PathBuf) -> Result<(), ControlErr
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
         ControlResponse::Status { .. }
         | ControlResponse::ShuttingDown
-        | ControlResponse::Decided => Err(ControlError::Remote(
+        | ControlResponse::Decided
+        | ControlResponse::Commands { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -834,6 +868,75 @@ async fn list_cached_commands(
     Ok(lines.join("\n"))
 }
 
+fn run_command_config(args: CommandArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_command_config(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_command_config(args: CommandArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    enum Outcome {
+        Listed,
+        Added(String),
+        Removed(String),
+    }
+
+    let (action, outcome) = match args.action {
+        CommandAction::List => (CommandConfigAction::List, Outcome::Listed),
+        CommandAction::Add { name, argv } => {
+            let key = uuid::Uuid::new_v4().to_string();
+            (
+                CommandConfigAction::Add {
+                    key: key.clone(),
+                    name,
+                    argv,
+                },
+                Outcome::Added(key),
+            )
+        }
+        CommandAction::Remove { key } => (
+            CommandConfigAction::Remove { key: key.clone() },
+            Outcome::Removed(key),
+        ),
+    };
+    let request = ControlRequest::CommandConfig { action };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Commands { commands } => {
+            let mut lines = Vec::with_capacity(commands.len());
+            for command in commands {
+                lines.push(format!(
+                    "{}\t{}\t{}",
+                    command.key, command.name, command.command
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::Ok { bytes } => match outcome {
+            Outcome::Added(key) => Ok(format!("added {key}")),
+            Outcome::Removed(key) if bytes == 1 => Ok(format!("removed {key}")),
+            Outcome::Removed(key) => Err(ControlError::Remote(format!("no command {key}"))),
+            Outcome::Listed => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
+        },
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
 async fn send_pair(
     device_id: String,
     accept: bool,
@@ -874,7 +977,8 @@ fn decision_message(
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
         ControlResponse::Ok { .. }
         | ControlResponse::Status { .. }
-        | ControlResponse::ShuttingDown => Err(ControlError::Remote(
+        | ControlResponse::ShuttingDown
+        | ControlResponse::Commands { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -908,11 +1012,12 @@ async fn request_status(data_dir: &Path) -> Result<DaemonStatus, ControlError> {
     match send_request(data_dir, &ControlRequest::Status).await? {
         ControlResponse::Status { status } => Ok(*status),
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
-        ControlResponse::Ok { .. } | ControlResponse::ShuttingDown | ControlResponse::Decided => {
-            Err(ControlError::Remote(
-                "unexpected control response".to_string(),
-            ))
-        }
+        ControlResponse::Ok { .. }
+        | ControlResponse::ShuttingDown
+        | ControlResponse::Decided
+        | ControlResponse::Commands { .. } => Err(ControlError::Remote(
+            "unexpected control response".to_string(),
+        )),
     }
 }
 

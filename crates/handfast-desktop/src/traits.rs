@@ -4,8 +4,8 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::model::{
-    ButtonAction, KeyEvent, MediaAction, Notification, PlaybackState, PointerButton, PointerEvent,
-    PowerState, VolumeState,
+    ButtonAction, CommandSpec, KeyEvent, MediaAction, Notification, PlaybackState, PointerButton,
+    PointerEvent, PowerState, VolumeState,
 };
 
 /// Text clipboard access.
@@ -99,4 +99,20 @@ pub trait Shell: Send + Sync {
 pub trait Power: Send + Sync {
     /// Read the host battery, or `None` when the host has no battery.
     async fn state(&self) -> Result<Option<PowerState>>;
+}
+
+/// Locally configured commands that a peer may list and run.
+#[async_trait]
+pub trait Commands: Send + Sync {
+    /// List the configured commands.
+    async fn list(&self) -> Result<Vec<CommandSpec>>;
+
+    /// Read one command by key.
+    async fn get(&self, key: &str) -> Result<Option<CommandSpec>>;
+
+    /// Add one command with a caller-generated key.
+    async fn add(&self, key: &str, name: &str, argv: &[String]) -> Result<()>;
+
+    /// Remove one command. Returns whether it existed.
+    async fn remove(&self, key: &str) -> Result<bool>;
 }

@@ -88,6 +88,11 @@ pub enum ControlRequest {
         /// The command to send.
         request: RemoteCommandRequest,
     },
+    /// List or edit the local runcommand configuration.
+    CommandConfig {
+        /// The action to apply.
+        action: CommandConfigAction,
+    },
     /// Accept or reject a pending pairing request.
     PairingDecision {
         /// Device ID shown in the pairing prompt. The daemon validates it.
@@ -107,6 +112,11 @@ pub enum ControlResponse {
     Ok {
         /// Bytes written to the payload, or 0 when the request carries none.
         bytes: u64,
+    },
+    /// The configured local commands.
+    Commands {
+        /// Commands in key order.
+        commands: Vec<CommandSummary>,
     },
     /// The daemon status snapshot.
     Status {
@@ -209,6 +219,38 @@ pub enum RemoteCommandRequest {
     Setup,
     /// Ask the peer to close its command editor.
     Stop,
+}
+
+/// One local command configuration action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommandConfigAction {
+    /// List the configured commands.
+    List,
+    /// Add one command with a caller-generated key.
+    Add {
+        /// Stable command key.
+        key: String,
+        /// Display name.
+        name: String,
+        /// Argument vector. The first element is the program.
+        argv: Vec<String>,
+    },
+    /// Remove one command.
+    Remove {
+        /// Stable command key.
+        key: String,
+    },
+}
+
+/// One locally configured command in a control reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandSummary {
+    /// Stable command key.
+    pub key: String,
+    /// Display name.
+    pub name: String,
+    /// Display form of the argument vector.
+    pub command: String,
 }
 
 /// Audio sinks reported by one peer.
@@ -346,6 +388,11 @@ pub enum DaemonCommand {
     RemoteCommand {
         device_id: DeviceId,
         request: RemoteCommandRequest,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Apply one local command configuration action.
+    CommandConfig {
+        action: CommandConfigAction,
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Answer one open pairing prompt and reply.
@@ -667,6 +714,19 @@ async fn dispatch(
                 request,
                 reply,
             }
+        }
+        ControlRequest::CommandConfig { action } => {
+            match &action {
+                CommandConfigAction::List => {}
+                CommandConfigAction::Add { key, .. } | CommandConfigAction::Remove { key } => {
+                    if !handfast_plugins::runcommand::valid_command_key(key) {
+                        return ControlResponse::Err {
+                            message: "the command key is not valid".to_string(),
+                        };
+                    }
+                }
+            }
+            DaemonCommand::CommandConfig { action, reply }
         }
         ControlRequest::PairingDecision {
             device_id,
@@ -1154,6 +1214,31 @@ mod tests {
                 },
             }
         );
+        assert_eq!(
+            round_trip(&ControlRequest::CommandConfig {
+                action: CommandConfigAction::Add {
+                    key: "abc".to_string(),
+                    name: "List files".to_string(),
+                    argv: vec!["ls".to_string(), "-l".to_string()],
+                },
+            })
+            .await,
+            ControlRequest::CommandConfig {
+                action: CommandConfigAction::Add {
+                    key: "abc".to_string(),
+                    name: "List files".to_string(),
+                    argv: vec!["ls".to_string(), "-l".to_string()],
+                },
+            }
+        );
+        let response = ControlResponse::Commands {
+            commands: vec![CommandSummary {
+                key: "abc".to_string(),
+                name: "List files".to_string(),
+                command: "ls -l".to_string(),
+            }],
+        };
+        assert_eq!(round_trip(&response).await, response);
         assert_eq!(
             round_trip(&ControlResponse::ShuttingDown).await,
             ControlResponse::ShuttingDown
