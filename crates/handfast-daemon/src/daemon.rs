@@ -3150,7 +3150,7 @@ mod tests {
         assert_eq!(daemon.sftp.get(&peer), Some(&info));
 
         daemon.record_sftp(&peer, &[PluginEvent::SftpStopped]);
-        assert!(daemon.sftp.get(&peer).is_none());
+        assert!(!daemon.sftp.contains_key(&peer));
 
         links.shutdown();
         let _ = manager_task.await;
