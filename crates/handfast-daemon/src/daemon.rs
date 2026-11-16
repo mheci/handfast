@@ -1229,6 +1229,7 @@ mod tests {
             program == "ydotool" || program == "wtype"
         });
         assert!(input.capabilities().input);
+        let registry = registry();
         let capabilities = registry.capabilities(&input).unwrap();
         assert!(capabilities.accepts(types::MOUSEPAD_REQUEST));
         assert!(capabilities.accepts(types::PRESENTER));
