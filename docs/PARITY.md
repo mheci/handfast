@@ -127,6 +127,13 @@ Gaps, named rather than hidden:
 - **Toast identity**: the toast uses the `Handfast` AUMID. A Start Menu shortcut
   carrying `System.AppUserModel.ID=Handfast` is the packaging follow-up if a
   Windows build drops the toast.
+- **Remaining planned plugins**: `sendnotifications` needs a local notification
+  source; the Linux DBus monitor is not implemented, and Windows has no safe
+  supported listener without the WinRT consent prompt. `sftp` needs a sandboxed
+  SFTP server. `virtualmonitor` needs a virtual display driver. `digitizer`
+  pressure needs OS APIs that the no-unsafe rule excludes. The
+  `shareinputdevices` pair needs libei input capture. `mmtelephony` needs
+  ModemManager and has no Android counterpart.
 
 ## Test strategy
 
