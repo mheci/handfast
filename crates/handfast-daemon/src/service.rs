@@ -754,6 +754,7 @@ pub fn firewall_rule_name(exe: &Path) -> String {
     name
 }
 
+#[cfg(any(windows, test))]
 fn firewall_add_command(rule: &str, exe: &Path) -> Cmd {
     Cmd {
         program: "netsh",
@@ -771,6 +772,7 @@ fn firewall_add_command(rule: &str, exe: &Path) -> Cmd {
     }
 }
 
+#[cfg(any(windows, test))]
 fn firewall_delete_command(rule: &str) -> Cmd {
     Cmd {
         program: "netsh",
