@@ -284,4 +284,5 @@ Parity wave 7, 2026-11-16, same branch:
 - `mousepad` is registered and enabled; `presenter` becomes active on hosts with an input adapter. The special-key table matches the KDE Connect desktop mapping 1-32.
 - The daemon installs the Linux input adapter only when `WAYLAND_DISPLAY` is set and both `ydotool` and `wtype` are on `PATH`. Windows installs `enigo` unconditionally and creates the connection on first use.
 - Evidence: desktop 154 pass (input argv tests and enigo key mapping), plugins 156 pass, daemon 132 pass, clippy clean. The real injection needs the manual phone touchpad/keyboard check.
+- The real Windows enigo connection initialized in `the_real_input_backend_initializes` without injecting input. The first CI run on the input wave failed on a Linux-only test compile because the input probe used `registry` as a function; fixed by building the registry in the test.
 - Still open for full input parity: absolute pointer and pressure for `digitizer`, input capture for `shareinputdevices`, and `singlehold`/`singlerelease` on Linux use the ydotool down/up masks.

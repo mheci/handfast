@@ -1658,6 +1658,16 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "initializes the real Windows input backend"]
+    async fn the_real_input_backend_initializes() {
+        let input = WinInput::new();
+
+        input
+            .with_enigo(|_| Ok(()))
+            .expect("the input backend initializes");
+    }
+
+    #[tokio::test]
     async fn volume_errors_are_backend_errors() {
         let endpoint = Arc::new(FakeEndpoint {
             state: Mutex::new(VolumeState::default()),
