@@ -1376,10 +1376,6 @@ mod tests {
                 ][..],
             ),
             ("playerctl", &[types::MPRIS_REQUEST][..]),
-            (
-                "wpctl",
-                &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST][..],
-            ),
             ("loginctl", &[types::LOCK_REQUEST][..]),
         ];
 
@@ -1424,6 +1420,33 @@ mod tests {
         ] {
             assert!(capabilities.accepts(packet), "{packet} missing on Windows");
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn systemvolume_provider_requires_wpctl() {
+        let registry = registry();
+        let device = || {
+            handfast_runtime::Device::new(
+                DeviceId::generate(),
+                DeviceName::new("Test"),
+                DeviceType::Desktop,
+            )
+        };
+        let without = install_backends(Desktop::default(), false, |program| program != "wpctl");
+        assert!(
+            !handfast_runtime::DeviceHost::new(device(), &registry, without)
+                .is_enabled("systemvolume")
+        );
+        assert!(
+            handfast_runtime::DeviceHost::new(device(), &registry, Desktop::default())
+                .is_enabled("remotesystemvolume")
+        );
+
+        let with = install_backends(Desktop::default(), false, |program| program == "wpctl");
+        assert!(
+            handfast_runtime::DeviceHost::new(device(), &registry, with).is_enabled("systemvolume")
+        );
     }
 
     #[cfg(not(windows))]
