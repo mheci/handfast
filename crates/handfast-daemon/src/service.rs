@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 
 use handfast_proto::DeviceId;
 
-use crate::control::{send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus};
+use crate::control::{
+    send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus, RemoteMediaCommand,
+};
 
 /// The Task Scheduler task name.
 pub const TASK_NAME: &str = "Handfast";
@@ -257,6 +259,33 @@ impl LocalControl {
             sink: sink.to_string(),
             percent,
             muted,
+        };
+        match self.request(&request)? {
+            ControlResponse::Ok { .. } => Ok(()),
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            ControlResponse::Status { .. }
+            | ControlResponse::ShuttingDown
+            | ControlResponse::Decided => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
+        }
+    }
+
+    /// Control one media player on a connected device.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no daemon answers, the device is not connected or has not
+    /// reported the player, the command is invalid, or the response is not an
+    /// acknowledgement.
+    pub fn media(
+        &self,
+        device_id: &DeviceId,
+        command: RemoteMediaCommand,
+    ) -> Result<(), ControlError> {
+        let request = ControlRequest::Media {
+            device_id: device_id.as_str().to_string(),
+            command,
         };
         match self.request(&request)? {
             ControlResponse::Ok { .. } => Ok(()),
@@ -933,6 +962,7 @@ mod tests {
             pending_pairings: Vec::new(),
             transfers: Vec::<TransferSummary>::new(),
             remote_sinks: Vec::new(),
+            remote_players: Vec::new(),
             truncated: false,
         }
     }

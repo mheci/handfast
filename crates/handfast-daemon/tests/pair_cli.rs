@@ -67,6 +67,7 @@ fn status_with_pending(pending: Vec<PairingSummary>) -> DaemonStatus {
         pending_pairings: pending,
         transfers: Vec::new(),
         remote_sinks: Vec::new(),
+        remote_players: Vec::new(),
         truncated: false,
     }
 }

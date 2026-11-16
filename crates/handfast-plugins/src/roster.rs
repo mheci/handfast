@@ -125,11 +125,11 @@ pub const MPRISCONTROL: PluginMeta = PluginMeta {
 /// Control phone media from the desktop.
 pub const MPRISREMOTE: PluginMeta = PluginMeta {
     name: "mprisremote",
-    title: "Send multimedia control commands",
-    status: PLANNED,
+    title: "Control a peer's media players",
+    status: IMPLEMENTED,
     incoming: &[types::MPRIS],
     outgoing: &[types::MPRIS_REQUEST],
-    desktop: DesktopRequirement::Media,
+    desktop: DesktopRequirement::None,
 };
 
 /// Receive phone notifications.

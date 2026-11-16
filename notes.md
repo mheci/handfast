@@ -294,3 +294,12 @@ Parity wave 8, 2026-11-16, same branch:
 - The `RemoteSink` model lives in `handfast-runtime`, carries `volume`/`maxVolume` raw units, and rounds `percent()` to the nearest point so 40% of 65536 reads back as 40.
 - Evidence: plugins 166 pass, runtime 12 pass, daemon lib 134 pass (including the unknown-device and percent-scaling tests), bin 4 pass, clippy and fmt clean. `volume_cli.rs` type-checks and runs on Unix in CI.
 - Android note: the official Android SystemVolume plugin is a controller, not a sink provider, so `remotesystemvolume` has no Android counterpart. It is exercised between two desktops.
+
+Parity wave 9, 2026-11-16, same branch:
+
+- `mprisremote` is implemented and registered. The plugin keeps a per-device player model from `kdeconnect.mpris` `playerList` packets and incremental player state, requests the list on connect, requests status for new players, and emits `PluginEvent::RemotePlayers` to the daemon.
+- The control channel has `Media` with `RequestList`, `RequestStatus`, `Action`, `SetVolume`, `Seek` and `SetPosition`. The daemon checks the player against the reported model, builds `kdeconnect.mpris.request`, and sends it over the reliable session path. `Seek` is microseconds; `SetPosition` is milliseconds.
+- `handfast media <device-id>` lists players; `--list`, `--status`, `--action play|pause|toggle|stop|next|previous`, `--volume N`, `--seek US` and `--position MS` cover the actions. The window has a player selector, now-playing text, transport buttons, volume slider and position slider.
+- Android provides phone media through `MprisReceiverPlugin`, so this direction is Android-compatible. Album art URLs are modelled; album art payloads are not fetched yet.
+- Evidence: plugins 179 pass (11 new mprisremote tests), daemon lib 137 pass (media command and status model tests), runtime 12 pass, bin 4 pass, clippy and fmt clean, docs with `-D warnings` clean. The seven `media_cli` end-to-end tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- The status snapshot caps remote sinks and players at 4 devices with 3 entries each and 64-character text, and sets `truncated` when anything is dropped. The full-status frame test now carries the maximum remote data and stays under the 64 KiB control frame.

@@ -24,14 +24,15 @@ use handfast_plugins::registry;
 use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
-use handfast_runtime::{PluginEvent, Registry, RemoteSink};
+use handfast_runtime::{PluginEvent, Registry, RemotePlayer, RemoteSink};
 use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::control::{
     ControlResponse, ControlServer, DaemonCommand, DaemonStatus, DeviceSummary, IdentitySummary,
-    PairedDevice, PairingSummary, RemoteDeviceSinks, TransferSummary, MAX_STATUS_DEVICES,
+    PairedDevice, PairingSummary, RemoteDevicePlayers, RemoteDeviceSinks, RemoteMediaCommand,
+    TransferSummary, MAX_STATUS_DEVICES,
 };
 use crate::default_data_dir;
 use crate::identity;
@@ -47,6 +48,10 @@ const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
 const DISCOVERY_WRITE_INTERVAL: Duration = Duration::from_secs(60);
 
 const DISCOVERY_WRITE_PEERS: usize = 1024;
+
+pub(crate) const MAX_STATUS_REMOTE_DEVICES: usize = 4;
+pub(crate) const MAX_STATUS_REMOTE_ENTRIES: usize = 3;
+pub(crate) const MAX_STATUS_TEXT_CHARS: usize = 64;
 
 /// The link event channel. Connection and pairing events use `send().await`, so
 /// the daemon must drain this queue without stalling on a prompt or a session.
@@ -325,6 +330,7 @@ pub async fn run(
         connected: HashMap::new(),
         transfers: HashMap::new(),
         remote_sinks: HashMap::new(),
+        remote_players: HashMap::new(),
         shutdown: Some(shutdown_tx),
     };
 
@@ -413,6 +419,7 @@ struct Daemon {
     connected: HashMap<DeviceId, DeviceSummary>,
     transfers: HashMap<(DeviceId, u64), TransferSummary>,
     remote_sinks: HashMap<DeviceId, Vec<RemoteSink>>,
+    remote_players: HashMap<DeviceId, Vec<RemotePlayer>>,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -566,6 +573,7 @@ impl Daemon {
                 self.pending.remove(&device_id);
                 self.cancel_prompt(&device_id);
                 self.remote_sinks.remove(&device_id);
+                self.remote_players.remove(&device_id);
                 tracing::info!(%device_id, %reason, "device link closed");
             }
         }
@@ -680,6 +688,7 @@ impl Daemon {
             DaemonEvent::PluginEvents { device_id, events } => {
                 self.record_transfers(&device_id, &events);
                 self.record_remote_sinks(&device_id, &events);
+                self.record_remote_players(&device_id, &events);
                 redact::log_plugin_events(&device_id, &events);
             }
             DaemonEvent::PairingAccepted { device_id, token } => {
@@ -797,6 +806,34 @@ impl Daemon {
         }
     }
 
+    fn record_remote_players(&mut self, device_id: &DeviceId, events: &[PluginEvent]) {
+        for event in events {
+            if let PluginEvent::RemotePlayers { players } = event {
+                if players.is_empty() {
+                    self.remote_players.remove(device_id);
+                } else {
+                    self.remote_players
+                        .insert(device_id.clone(), players.clone());
+                }
+            }
+        }
+    }
+
+    fn known_player(&self, device_id: &DeviceId, player: &str) -> Result<(), String> {
+        let Some(players) = self.remote_players.get(device_id) else {
+            return Err(format!(
+                "device {device_id} has not reported any media players"
+            ));
+        };
+        if players.iter().any(|model| model.player == player) {
+            Ok(())
+        } else {
+            Err(format!(
+                "device {device_id} has not reported the player {player}"
+            ))
+        }
+    }
+
     async fn status(&self) -> Result<DaemonStatus, StoreError> {
         let records = Arc::clone(&self.store)
             .run_blocking(|store| {
@@ -852,9 +889,42 @@ impl Daemon {
             .collect();
         remote_sinks.sort_by(|left, right| left.device_id.as_str().cmp(right.device_id.as_str()));
 
+        let mut remote_players: Vec<RemoteDevicePlayers> = self
+            .remote_players
+            .iter()
+            .map(|(device_id, players)| RemoteDevicePlayers {
+                device_id: device_id.clone(),
+                players: players.clone(),
+            })
+            .collect();
+        remote_players.sort_by(|left, right| left.device_id.as_str().cmp(right.device_id.as_str()));
+
+        let mut remote_truncated = remote_sinks.len() > MAX_STATUS_REMOTE_DEVICES;
+        remote_sinks.truncate(MAX_STATUS_REMOTE_DEVICES);
+        for device in &mut remote_sinks {
+            remote_truncated |= device.sinks.len() > MAX_STATUS_REMOTE_ENTRIES;
+            device.sinks.truncate(MAX_STATUS_REMOTE_ENTRIES);
+            for sink in &mut device.sinks {
+                sink.description = status_text(&sink.description);
+            }
+        }
+        remote_truncated |= remote_players.len() > MAX_STATUS_REMOTE_DEVICES;
+        remote_players.truncate(MAX_STATUS_REMOTE_DEVICES);
+        for device in &mut remote_players {
+            remote_truncated |= device.players.len() > MAX_STATUS_REMOTE_ENTRIES;
+            device.players.truncate(MAX_STATUS_REMOTE_ENTRIES);
+            for player in &mut device.players {
+                player.title = status_text(&player.title);
+                player.artist = status_text(&player.artist);
+                player.album = status_text(&player.album);
+                player.album_art_url = status_text(&player.album_art_url);
+            }
+        }
+
         let truncated = connected.len() > MAX_STATUS_DEVICES
             || paired.len() > MAX_STATUS_DEVICES
-            || pending_pairings.len() > MAX_STATUS_DEVICES;
+            || pending_pairings.len() > MAX_STATUS_DEVICES
+            || remote_truncated;
         connected.truncate(MAX_STATUS_DEVICES);
         paired.truncate(MAX_STATUS_DEVICES);
         pending_pairings.truncate(MAX_STATUS_DEVICES);
@@ -870,6 +940,7 @@ impl Daemon {
             pending_pairings,
             transfers,
             remote_sinks,
+            remote_players,
             truncated,
         })
     }
@@ -983,6 +1054,72 @@ impl Daemon {
                         });
                         return;
                     }
+                };
+                let packet = match packet {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        let _ = reply.send(ControlResponse::Err {
+                            message: error.to_string(),
+                        });
+                        return;
+                    }
+                };
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let response = match handle.send_packet(packet).await {
+                        Ok(()) => ControlResponse::Ok { bytes: 0 },
+                        Err(error) => ControlResponse::Err {
+                            message: error.to_string(),
+                        },
+                    };
+                    let _ = reply.send(response);
+                });
+            }
+            DaemonCommand::Media {
+                device_id,
+                command,
+                reply,
+            } => {
+                let Some(session) = self.sessions.get(&device_id) else {
+                    let _ = reply.send(ControlResponse::Err {
+                        message: format!("device {device_id} is not connected"),
+                    });
+                    return;
+                };
+                let known = match &command {
+                    RemoteMediaCommand::RequestList => Ok(()),
+                    RemoteMediaCommand::RequestStatus { player }
+                    | RemoteMediaCommand::Action { player, .. }
+                    | RemoteMediaCommand::SetVolume { player, .. }
+                    | RemoteMediaCommand::Seek { player, .. }
+                    | RemoteMediaCommand::SetPosition { player, .. } => {
+                        self.known_player(&device_id, player)
+                    }
+                };
+                if let Err(message) = known {
+                    let _ = reply.send(ControlResponse::Err { message });
+                    return;
+                }
+                let packet = match command {
+                    RemoteMediaCommand::RequestList => {
+                        handfast_plugins::mprisremote::request_player_list()
+                    }
+                    RemoteMediaCommand::RequestStatus { player } => {
+                        handfast_plugins::mprisremote::request_player_status(&player)
+                    }
+                    RemoteMediaCommand::Action { player, action } => {
+                        handfast_plugins::mprisremote::action_request(&player, action)
+                    }
+                    RemoteMediaCommand::SetVolume { player, volume } => {
+                        handfast_plugins::mprisremote::volume_request(&player, volume)
+                    }
+                    RemoteMediaCommand::Seek { player, offset_us } => {
+                        handfast_plugins::mprisremote::seek_request(&player, offset_us)
+                    }
+                    RemoteMediaCommand::SetPosition {
+                        player,
+                        position_ms,
+                    } => handfast_plugins::mprisremote::set_position_request(&player, position_ms),
                 };
                 let packet = match packet {
                     Ok(packet) => packet,
@@ -1127,6 +1264,10 @@ impl Daemon {
 
 fn scaled_volume(percent: u8, max_volume: u32) -> u32 {
     (u64::from(percent) * u64::from(max_volume) / 100) as u32
+}
+
+fn status_text(text: &str) -> String {
+    text.chars().take(MAX_STATUS_TEXT_CHARS).collect()
 }
 
 /// Parse and range-check a KDE Connect TCP port.
@@ -1772,6 +1913,7 @@ mod tests {
             connected: HashMap::new(),
             transfers: HashMap::new(),
             remote_sinks: HashMap::new(),
+            remote_players: HashMap::new(),
             shutdown: Some(shutdown),
         };
 
@@ -1985,6 +2127,7 @@ mod tests {
             connected: HashMap::new(),
             transfers: HashMap::new(),
             remote_sinks: HashMap::new(),
+            remote_players: HashMap::new(),
             shutdown: Some(shutdown),
         };
         (daemon, links, manager_task)
@@ -2134,6 +2277,81 @@ mod tests {
             reply_rx.await.expect("the daemon replies"),
             ControlResponse::Err { message } if message.contains("is not connected")
         ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_media_command_to_an_unknown_device_is_an_error() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+
+        let (reply, reply_rx) = oneshot::channel();
+        daemon
+            .handle_command(DaemonCommand::Media {
+                device_id: peer,
+                command: RemoteMediaCommand::RequestList,
+                reply,
+            })
+            .await;
+
+        assert!(matches!(
+            reply_rx.await.expect("the daemon replies"),
+            ControlResponse::Err { message } if message.contains("is not connected")
+        ));
+
+        links.shutdown();
+        let _ = manager_task.await;
+    }
+
+    #[tokio::test]
+    async fn remote_players_reach_the_status() {
+        let directory = tempfile::tempdir().expect("create the test state directory");
+        let store =
+            Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
+        let (mut daemon, links, manager_task) = status_daemon(store, directory.path()).await;
+        let peer = DeviceId::new("fedcba9876543210fedcba9876543210").expect("a device id");
+        let players = vec![RemotePlayer {
+            player: "mpv".to_string(),
+            title: "Song".to_string(),
+            artist: "Band".to_string(),
+            volume: 40,
+            playing: true,
+            ..RemotePlayer::default()
+        }];
+
+        daemon
+            .handle_daemon_event(DaemonEvent::PluginEvents {
+                device_id: peer.clone(),
+                events: vec![PluginEvent::RemotePlayers {
+                    players: players.clone(),
+                }],
+            })
+            .await;
+
+        let status = daemon.status().await.expect("build the status");
+        assert_eq!(status.remote_players.len(), 1);
+        assert_eq!(status.remote_players[0].device_id, peer);
+        assert_eq!(status.remote_players[0].players, players);
+
+        daemon
+            .handle_daemon_event(DaemonEvent::PluginEvents {
+                device_id: peer,
+                events: vec![PluginEvent::RemotePlayers {
+                    players: Vec::new(),
+                }],
+            })
+            .await;
+        assert!(daemon
+            .status()
+            .await
+            .expect("build the status")
+            .remote_players
+            .is_empty());
 
         links.shutdown();
         let _ = manager_task.await;

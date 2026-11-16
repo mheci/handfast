@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use handfast_proto::DeviceId;
-use handfast_runtime::RemoteSink;
+use handfast_runtime::{RemoteMediaAction, RemotePlayer, RemoteSink};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -73,6 +73,13 @@ pub enum ControlRequest {
         percent: Option<u8>,
         /// Mute state. Exactly one of `percent` and `muted` is set.
         muted: Option<bool>,
+    },
+    /// Control the media players on a connected device.
+    Media {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// The command to send.
+        command: RemoteMediaCommand,
     },
     /// Accept or reject a pending pairing request.
     PairingDecision {
@@ -133,8 +140,50 @@ pub struct DaemonStatus {
     pub transfers: Vec<TransferSummary>,
     /// Peer audio sinks, sorted by device ID.
     pub remote_sinks: Vec<RemoteDeviceSinks>,
+    /// Peer media players, sorted by device ID.
+    pub remote_players: Vec<RemoteDevicePlayers>,
     /// Whether a device list hit [`MAX_STATUS_DEVICES`].
     pub truncated: bool,
+}
+
+/// One remote media request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteMediaCommand {
+    /// Ask the peer for its player list.
+    RequestList,
+    /// Ask one player for its current state.
+    RequestStatus {
+        /// Player name from the device's reported list.
+        player: String,
+    },
+    /// Send one transport action.
+    Action {
+        /// Player name from the device's reported list.
+        player: String,
+        /// Transport action.
+        action: RemoteMediaAction,
+    },
+    /// Set one player's volume percentage.
+    SetVolume {
+        /// Player name from the device's reported list.
+        player: String,
+        /// Volume percentage, 0-100.
+        volume: u8,
+    },
+    /// Seek one player by a relative offset.
+    Seek {
+        /// Player name from the device's reported list.
+        player: String,
+        /// Offset in microseconds. Negative rewinds.
+        offset_us: i64,
+    },
+    /// Seek one player to an absolute position.
+    SetPosition {
+        /// Player name from the device's reported list.
+        player: String,
+        /// Position in milliseconds.
+        position_ms: i64,
+    },
 }
 
 /// Audio sinks reported by one peer.
@@ -144,6 +193,15 @@ pub struct RemoteDeviceSinks {
     pub device_id: DeviceId,
     /// Sinks in name order.
     pub sinks: Vec<RemoteSink>,
+}
+
+/// Media players reported by one peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteDevicePlayers {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Players in name order.
+    pub players: Vec<RemotePlayer>,
 }
 
 /// This device's public identity.
@@ -241,6 +299,11 @@ pub enum DaemonCommand {
         sink: String,
         percent: Option<u8>,
         muted: Option<bool>,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    Media {
+        device_id: DeviceId,
+        command: RemoteMediaCommand,
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Answer one open pairing prompt and reply.
@@ -452,6 +515,29 @@ where
     }
 }
 
+fn validate_media_command(command: &RemoteMediaCommand) -> Result<(), String> {
+    let player = match command {
+        RemoteMediaCommand::RequestList => return Ok(()),
+        RemoteMediaCommand::RequestStatus { player }
+        | RemoteMediaCommand::Action { player, .. }
+        | RemoteMediaCommand::SetVolume { player, .. }
+        | RemoteMediaCommand::Seek { player, .. }
+        | RemoteMediaCommand::SetPosition { player, .. } => player,
+    };
+    if !handfast_plugins::mprisremote::valid_player_name(player) {
+        return Err("the player name is not valid".to_string());
+    }
+    match command {
+        RemoteMediaCommand::SetVolume { volume, .. } if *volume > 100 => {
+            Err("the volume is over 100".to_string())
+        }
+        RemoteMediaCommand::SetPosition { position_ms, .. } if *position_ms < 0 => {
+            Err("the position is negative".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
 async fn dispatch(
     request: ControlRequest,
     commands: mpsc::Sender<DaemonCommand>,
@@ -503,6 +589,21 @@ async fn dispatch(
                 sink,
                 percent,
                 muted,
+                reply,
+            }
+        }
+        ControlRequest::Media { device_id, command } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            if let Err(message) = validate_media_command(&command) {
+                return ControlResponse::Err { message };
+            }
+            DaemonCommand::Media {
+                device_id,
+                command,
                 reply,
             }
         }
@@ -879,6 +980,7 @@ mod tests {
                 total: Some(4096),
             }],
             remote_sinks: Vec::new(),
+            remote_players: Vec::new(),
             truncated: false,
         }
     }
@@ -959,6 +1061,23 @@ mod tests {
             }
         );
         assert_eq!(
+            round_trip(&ControlRequest::Media {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                command: RemoteMediaCommand::Action {
+                    player: "mpv".to_string(),
+                    action: RemoteMediaAction::Next,
+                },
+            })
+            .await,
+            ControlRequest::Media {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                command: RemoteMediaCommand::Action {
+                    player: "mpv".to_string(),
+                    action: RemoteMediaAction::Next,
+                },
+            }
+        );
+        assert_eq!(
             round_trip(&ControlResponse::ShuttingDown).await,
             ControlResponse::ShuttingDown
         );
@@ -997,6 +1116,37 @@ mod tests {
                 device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
                 device_name: "Handfast test peer".to_string(),
                 fingerprint: "ab".repeat(32),
+            })
+            .collect();
+        status.remote_sinks = (0..4)
+            .map(|index| RemoteDeviceSinks {
+                device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
+                sinks: (0..4)
+                    .map(|sink| RemoteSink {
+                        name: format!("sink-{sink}"),
+                        description: "d".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        volume: 1,
+                        muted: false,
+                        max_volume: 100,
+                        enabled: false,
+                    })
+                    .collect(),
+            })
+            .collect();
+        status.remote_players = (0..4)
+            .map(|index| RemoteDevicePlayers {
+                device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
+                players: (0..4)
+                    .map(|player| RemotePlayer {
+                        player: format!("player-{player}"),
+                        title: "t".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        artist: "a".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        album: "b".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        album_art_url: "u".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        volume: 50,
+                        ..RemotePlayer::default()
+                    })
+                    .collect(),
             })
             .collect();
         let response = ControlResponse::Status {

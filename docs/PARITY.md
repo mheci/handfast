@@ -25,7 +25,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 9 | `mmtelephony` | ModemManager -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | ModemManager DBus | P4 | no | no | no |
 | 10 | `mousepad` | phone -> desktop | `kdeconnect.mousepad.request`, `.echo`, `.keyboardstate` | `ydotool` and `wtype` on Wayland; `enigo` on Windows | P3 | yes | yes | no |
 | 11 | `mpriscontrol` | bidirectional | `kdeconnect.mpris`, `.mpris.request` | `playerctl` | P2 | yes | yes | no |
-| 12 | `mprisremote` | desktop -> phone | `kdeconnect.mpris`, `.mpris.request` | MPRIS DBus (remote players) | P2 | no | no | no |
+| 12 | `mprisremote` | bidirectional | `kdeconnect.mpris`, `.mpris.request` | peer player model | P2 | yes | n/a | no |
 | 13 | `notifications` | phone -> desktop | `kdeconnect.notification`, `.notification.action`, `.notification.reply`, `.notification.request` | `notify-send`, `gdbus` close | P2 | yes | yes | no |
 | 14 | `pausemusic` | phone -> desktop | `kdeconnect.telephony`, `kdeconnect.mpris.request` | `playerctl` | P2 | yes | yes | no |
 | 15 | `ping` | bidirectional | `kdeconnect.ping` | none | P0 | yes | n/a | no |
@@ -70,6 +70,12 @@ have.
   sends volume and mute requests. The official Android app's SystemVolume plugin
   is a controller, not a sink provider, so this plugin is exercised between two
   desktops until a peer app provides sinks.
+- **Remote media**: the desktop keeps the players a peer reports and sends
+  transport, volume and seek requests. Android provides phone media through
+  `MprisReceiverPlugin`, so the phone's media appears on the desktop. Album art
+  URLs are modelled, but album art payloads are not fetched yet.
+- **Seek units**: `Seek` is microseconds and `SetPosition` is milliseconds, as
+  the protocol specifies.
 
 ## Windows 11 backends
 

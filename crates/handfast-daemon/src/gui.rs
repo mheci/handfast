@@ -18,8 +18,9 @@ use std::time::Duration;
 
 use eframe::egui;
 use handfast_proto::DeviceId;
+use handfast_runtime::RemoteMediaAction;
 
-use crate::control::{ControlError, DaemonStatus};
+use crate::control::{ControlError, DaemonStatus, RemoteMediaCommand};
 use crate::service::{DaemonControl, LocalControl};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -67,6 +68,10 @@ enum WorkerCommand {
         percent: Option<u8>,
         muted: Option<bool>,
     },
+    Media {
+        device_id: DeviceId,
+        command: RemoteMediaCommand,
+    },
     PairingDecision {
         device_id: DeviceId,
         accept: bool,
@@ -95,6 +100,13 @@ fn daemon_command(exe: &Path, data_dir: &Path) -> Command {
 
 fn spawn_daemon(exe: &Path, data_dir: &Path) -> io::Result<Child> {
     daemon_command(exe, data_dir).spawn()
+}
+
+fn media_action(device_id: DeviceId, player: String, action: RemoteMediaAction) -> WorkerCommand {
+    WorkerCommand::Media {
+        device_id,
+        command: RemoteMediaCommand::Action { player, action },
+    }
 }
 
 fn spawn_worker(exe: PathBuf, data_dir: PathBuf) -> (Sender<WorkerCommand>, Receiver<DaemonState>) {
@@ -159,6 +171,11 @@ fn worker(
                     eprintln!("handfast: cannot change the remote volume: {error}");
                 }
             }
+            Ok(WorkerCommand::Media { device_id, command }) => {
+                if let Err(error) = control.media(&device_id, command) {
+                    eprintln!("handfast: cannot send the media command: {error}");
+                }
+            }
             Ok(WorkerCommand::PairingDecision {
                 device_id,
                 accept,
@@ -198,6 +215,9 @@ pub fn run(data_dir: PathBuf, hide_console: bool) -> ExitCode {
         states,
         state: DaemonState::Unknown,
         pending_volumes: std::collections::HashMap::new(),
+        selected_players: std::collections::HashMap::new(),
+        pending_media_volumes: std::collections::HashMap::new(),
+        pending_positions: std::collections::HashMap::new(),
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -272,6 +292,9 @@ struct HandfastApp {
     states: Receiver<DaemonState>,
     state: DaemonState,
     pending_volumes: std::collections::HashMap<(String, String), u8>,
+    selected_players: std::collections::HashMap<String, String>,
+    pending_media_volumes: std::collections::HashMap<(String, String), u8>,
+    pending_positions: std::collections::HashMap<(String, String), i64>,
 }
 
 impl HandfastApp {
@@ -464,8 +487,10 @@ impl HandfastApp {
             ui.label("The list is truncated.");
         }
         let remote_sinks = status.remote_sinks.clone();
+        let remote_players = status.remote_players.clone();
         ui.label("Send a file from a terminal with handfast share --device <id> <path>.");
         self.remote_volume(ui, &remote_sinks);
+        self.remote_media(ui, &remote_players);
     }
 
     fn remote_volume(&mut self, ui: &mut egui::Ui, devices: &[crate::control::RemoteDeviceSinks]) {
@@ -521,6 +546,163 @@ impl HandfastApp {
                     }
                 });
             }
+        }
+        for command in commands {
+            self.send(command);
+        }
+    }
+
+    fn remote_media(&mut self, ui: &mut egui::Ui, devices: &[crate::control::RemoteDevicePlayers]) {
+        if devices.is_empty() {
+            return;
+        }
+        ui.separator();
+        ui.heading("Remote media");
+        self.pending_media_volumes
+            .retain(|(device, player), volume| {
+                devices.iter().any(|reported| {
+                    reported.device_id.as_str() == device
+                        && reported
+                            .players
+                            .iter()
+                            .any(|model| &model.player == player && model.volume == *volume)
+                })
+            });
+        self.pending_positions.retain(|(device, player), position| {
+            devices.iter().any(|reported| {
+                reported.device_id.as_str() == device
+                    && reported.players.iter().any(|model| {
+                        &model.player == player && (model.position_ms - *position).abs() < 1000
+                    })
+            })
+        });
+        let mut commands = Vec::new();
+        for device in devices {
+            if device.players.is_empty() {
+                continue;
+            }
+            let key = device.device_id.to_string();
+            let mut selected = self
+                .selected_players
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| device.players[0].player.clone());
+            if !device.players.iter().any(|model| model.player == selected) {
+                selected = device.players[0].player.clone();
+            }
+            ui.horizontal(|ui| {
+                ui.label(format!("Device {}", device.device_id));
+                egui::ComboBox::from_id_salt(format!("media-player-{key}"))
+                    .selected_text(selected.clone())
+                    .show_ui(ui, |ui| {
+                        for model in &device.players {
+                            ui.selectable_value(&mut selected, model.player.clone(), &model.player);
+                        }
+                    });
+                if ui.button("Refresh").clicked() {
+                    commands.push(WorkerCommand::Media {
+                        device_id: device.device_id.clone(),
+                        command: RemoteMediaCommand::RequestStatus {
+                            player: selected.clone(),
+                        },
+                    });
+                }
+            });
+            let Some(model) = device.players.iter().find(|model| model.player == selected) else {
+                continue;
+            };
+            let title = if model.title.is_empty() {
+                &model.player
+            } else {
+                &model.title
+            };
+            let artist = if model.artist.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", model.artist)
+            };
+            ui.label(format!("{title}{artist}"));
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(model.can_go_previous, egui::Button::new("⏮"))
+                    .clicked()
+                {
+                    commands.push(media_action(
+                        device.device_id.clone(),
+                        selected.clone(),
+                        RemoteMediaAction::Previous,
+                    ));
+                }
+                let label = if model.playing { "⏸" } else { "▶" };
+                if ui
+                    .add_enabled(model.can_play || model.can_pause, egui::Button::new(label))
+                    .clicked()
+                {
+                    commands.push(media_action(
+                        device.device_id.clone(),
+                        selected.clone(),
+                        RemoteMediaAction::PlayPause,
+                    ));
+                }
+                if ui
+                    .add_enabled(model.can_go_next, egui::Button::new("⏭"))
+                    .clicked()
+                {
+                    commands.push(media_action(
+                        device.device_id.clone(),
+                        selected.clone(),
+                        RemoteMediaAction::Next,
+                    ));
+                }
+                if ui.button("⏹").clicked() {
+                    commands.push(media_action(
+                        device.device_id.clone(),
+                        selected.clone(),
+                        RemoteMediaAction::Stop,
+                    ));
+                }
+                ui.label(if model.playing { "playing" } else { "paused" });
+            });
+            let volume_key = (key.clone(), selected.clone());
+            let mut volume = *self
+                .pending_media_volumes
+                .get(&volume_key)
+                .unwrap_or(&model.volume);
+            let response = ui.add(egui::Slider::new(&mut volume, 0..=100).text("Volume"));
+            if response.changed() {
+                self.pending_media_volumes.insert(volume_key, volume);
+            }
+            if response.drag_stopped() || (response.changed() && !response.dragged()) {
+                commands.push(WorkerCommand::Media {
+                    device_id: device.device_id.clone(),
+                    command: RemoteMediaCommand::SetVolume {
+                        player: selected.clone(),
+                        volume,
+                    },
+                });
+            }
+            if model.can_seek && model.length_ms > 0 {
+                let position_key = (key.clone(), selected.clone());
+                let mut position = *self
+                    .pending_positions
+                    .get(&position_key)
+                    .unwrap_or(&model.position_ms);
+                let response =
+                    ui.add(egui::Slider::new(&mut position, 0..=model.length_ms).text("Position"));
+                if response.changed() {
+                    self.pending_positions.insert(position_key, position);
+                }
+                if response.drag_stopped() || (response.changed() && !response.dragged()) {
+                    commands.push(WorkerCommand::Media {
+                        device_id: device.device_id.clone(),
+                        command: RemoteMediaCommand::SetPosition {
+                            player: selected.clone(),
+                            position_ms: position,
+                        },
+                    });
+                }
+            }
+            self.selected_players.insert(key, selected);
         }
         for command in commands {
             self.send(command);
@@ -649,6 +831,7 @@ mod tests {
                 total: Some(4096),
             }],
             remote_sinks: Vec::new(),
+            remote_players: Vec::new(),
             truncated: false,
         }
     }
@@ -854,6 +1037,73 @@ mod tests {
         assert_eq!(seen.1, "speakers");
         assert_eq!(seen.2, Some(40));
         assert_eq!(seen.3, None);
+
+        drop(worker);
+        server.shutdown().await;
+        script.await.expect("the script joins");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_worker_sends_a_media_command() {
+        use crate::control::{ControlResponse, ControlServer, DaemonCommand};
+        use tokio::sync::{mpsc, oneshot};
+
+        let _env = ENV_LOCK.lock().await;
+        let runtime = tempfile::tempdir().expect("a temp runtime dir");
+        std::env::set_var("XDG_RUNTIME_DIR", runtime.path());
+        let data_dir = tempfile::tempdir().expect("a temp data dir");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = ControlServer::start(data_dir.path(), commands)
+            .await
+            .expect("start the control server");
+        let (observed, observed_rx) = oneshot::channel();
+        let script = tokio::spawn(async move {
+            while let Some(command) = command_rx.recv().await {
+                match command {
+                    DaemonCommand::Status { reply } => {
+                        let _ = reply.send(ControlResponse::Status {
+                            status: Box::new(sample_status()),
+                        });
+                    }
+                    DaemonCommand::Media {
+                        device_id,
+                        command,
+                        reply,
+                    } => {
+                        let _ = observed.send((device_id, command));
+                        let _ = reply.send(ControlResponse::Ok { bytes: 0 });
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let (worker, _states) =
+            spawn_worker(PathBuf::from("handfast"), data_dir.path().to_path_buf());
+        worker
+            .send(WorkerCommand::Media {
+                device_id: device_id(),
+                command: RemoteMediaCommand::Action {
+                    player: "mpv".to_string(),
+                    action: RemoteMediaAction::Next,
+                },
+            })
+            .expect("the worker is running");
+
+        let seen = tokio::time::timeout(Duration::from_secs(5), observed_rx)
+            .await
+            .expect("the worker sends the media command")
+            .expect("the script observes the request");
+        assert_eq!(seen.0, device_id());
+        assert_eq!(
+            seen.1,
+            RemoteMediaCommand::Action {
+                player: "mpv".to_string(),
+                action: RemoteMediaAction::Next,
+            }
+        );
 
         drop(worker);
         server.shutdown().await;

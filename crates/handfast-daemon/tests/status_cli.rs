@@ -77,6 +77,7 @@ fn sample_status() -> DaemonStatus {
             total: Some(4096),
         }],
         remote_sinks: Vec::new(),
+        remote_players: Vec::new(),
         truncated: false,
     }
 }

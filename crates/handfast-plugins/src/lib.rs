@@ -14,6 +14,7 @@ pub mod findthisdevice;
 pub mod lockdevice;
 pub mod mousepad;
 pub mod mpriscontrol;
+pub mod mprisremote;
 pub mod notifications;
 pub mod pausemusic;
 pub mod ping;
@@ -35,6 +36,7 @@ pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
 pub use lockdevice::{LockDeviceFactory, LockDevicePlugin};
 pub use mousepad::{MousepadFactory, MousepadPlugin};
 pub use mpriscontrol::{MprisControlFactory, MprisControlPlugin};
+pub use mprisremote::{valid_player_name, MprisRemoteFactory, MprisRemotePlugin};
 pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
@@ -59,6 +61,7 @@ pub fn registry() -> Registry {
         Box::new(pausemusic::PauseMusicFactory),
         Box::new(share::ShareFactory),
         Box::new(mpriscontrol::MprisControlFactory),
+        Box::new(mprisremote::MprisRemoteFactory),
         Box::new(notifications::NotificationsFactory),
         Box::new(findthisdevice::FindThisDeviceFactory),
         Box::new(findmyphone::FindMyPhoneFactory),

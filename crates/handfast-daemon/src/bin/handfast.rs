@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use handfast_daemon::control::{
     send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus, PairingSummary,
+    RemoteMediaCommand,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::update::{Authenticode, GitHub, Updater};
@@ -42,6 +43,8 @@ enum Command {
     Ring(RingArgs),
     /// List or change a connected device's audio sinks.
     Volume(VolumeArgs),
+    /// List or control a connected device's media players.
+    Media(MediaArgs),
     /// Print the running daemon's status.
     Status(StatusArgs),
     /// Install and control the per-user autostart service.
@@ -111,6 +114,70 @@ struct VolumeArgs {
     /// Unmute the sink.
     #[arg(long)]
     unmute: bool,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum MediaActionArg {
+    /// Start playback.
+    Play,
+    /// Pause playback.
+    Pause,
+    /// Toggle between play and pause.
+    Toggle,
+    /// Stop playback.
+    Stop,
+    /// Go to the next track.
+    Next,
+    /// Go to the previous track.
+    Previous,
+}
+
+impl From<MediaActionArg> for handfast_runtime::RemoteMediaAction {
+    fn from(action: MediaActionArg) -> Self {
+        match action {
+            MediaActionArg::Play => Self::Play,
+            MediaActionArg::Pause => Self::Pause,
+            MediaActionArg::Toggle => Self::PlayPause,
+            MediaActionArg::Stop => Self::Stop,
+            MediaActionArg::Next => Self::Next,
+            MediaActionArg::Previous => Self::Previous,
+        }
+    }
+}
+
+#[derive(Debug, Parser)]
+struct MediaArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Player name from the listing.
+    #[arg(long, value_name = "NAME")]
+    player: Option<String>,
+
+    /// Ask the peer for its player list.
+    #[arg(long)]
+    list: bool,
+
+    /// Ask one player for its current state.
+    #[arg(long)]
+    status: bool,
+
+    /// Transport action.
+    #[arg(long, value_enum)]
+    action: Option<MediaActionArg>,
+
+    /// Set the player volume as a percentage.
+    #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u8).range(0..=100))]
+    volume: Option<u8>,
+
+    /// Seek by a relative offset in microseconds.
+    #[arg(long, value_name = "MICROSECONDS", allow_hyphen_values = true)]
+    seek: Option<i64>,
+
+    /// Seek to an absolute position in milliseconds.
+    #[arg(long, value_name = "MS")]
+    position: Option<u64>,
 }
 
 #[derive(Debug, Parser)]
@@ -216,6 +283,10 @@ fn main() -> ExitCode {
         Command::Volume(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_volume(args, data_dir)
+        }
+        Command::Media(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_media(args, data_dir)
         }
         Command::Status(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
@@ -472,6 +543,158 @@ async fn send_volume(args: VolumeArgs, data_dir: PathBuf) -> Result<String, Cont
     };
     match send_request(&data_dir, &request).await? {
         ControlResponse::Ok { .. } => Ok(format!("set {sink} on {}", args.device_id)),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_media(args: MediaArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_media(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_media(args: MediaArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let operations = [
+        args.list,
+        args.status,
+        args.action.is_some(),
+        args.volume.is_some(),
+        args.seek.is_some(),
+        args.position.is_some(),
+    ];
+    if operations.iter().filter(|selected| **selected).count() > 1 {
+        return Err(ControlError::Remote(
+            "media needs one operation".to_string(),
+        ));
+    }
+    if args.list {
+        let request = ControlRequest::Media {
+            device_id: args.device_id.clone(),
+            command: RemoteMediaCommand::RequestList,
+        };
+        return match send_request(&data_dir, &request).await? {
+            ControlResponse::Ok { .. } => {
+                Ok(format!("requested the player list from {}", args.device_id))
+            }
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            response => Err(ControlError::Remote(format!(
+                "unexpected control response: {response:?}"
+            ))),
+        };
+    }
+    let status = request_status(&data_dir).await?;
+    if !status
+        .connected
+        .iter()
+        .any(|device| device.device_id.as_str() == args.device_id)
+    {
+        return Err(ControlError::Remote(format!(
+            "device {} is not connected",
+            args.device_id
+        )));
+    }
+    let players = status
+        .remote_players
+        .iter()
+        .find(|device| device.device_id.as_str() == args.device_id)
+        .map_or(&[][..], |device| device.players.as_slice());
+    if players.is_empty() {
+        return Ok(format!(
+            "{} has not reported any media players",
+            args.device_id
+        ));
+    }
+    let player = match args.player {
+        Some(player) => player,
+        None if players.len() == 1 => players[0].player.clone(),
+        None => {
+            return Err(ControlError::Remote(
+                "media needs --player <NAME>".to_string(),
+            ));
+        }
+    };
+    if !players.iter().any(|model| model.player == player) {
+        return Err(ControlError::Remote(format!(
+            "device {} has not reported the player {player}",
+            args.device_id
+        )));
+    }
+    let command = if args.status {
+        RemoteMediaCommand::RequestStatus {
+            player: player.clone(),
+        }
+    } else if let Some(action) = args.action {
+        RemoteMediaCommand::Action {
+            player: player.clone(),
+            action: action.into(),
+        }
+    } else if let Some(volume) = args.volume {
+        RemoteMediaCommand::SetVolume {
+            player: player.clone(),
+            volume,
+        }
+    } else if let Some(offset_us) = args.seek {
+        RemoteMediaCommand::Seek {
+            player: player.clone(),
+            offset_us,
+        }
+    } else if let Some(position) = args.position {
+        let Ok(position_ms) = i64::try_from(position) else {
+            return Err(ControlError::Remote(
+                "the position is too large".to_string(),
+            ));
+        };
+        RemoteMediaCommand::SetPosition {
+            player: player.clone(),
+            position_ms,
+        }
+    } else {
+        let mut lines = Vec::with_capacity(players.len());
+        for model in players {
+            let state = if model.playing { "playing" } else { "paused" };
+            let title = if model.title.is_empty() {
+                &model.player
+            } else {
+                &model.title
+            };
+            let artist = if model.artist.is_empty() {
+                String::new()
+            } else {
+                format!(" - {}", model.artist)
+            };
+            lines.push(format!(
+                "{}\t{state}\t{title}{artist}\t{}/{} ms\t{}%",
+                model.player, model.position_ms, model.length_ms, model.volume
+            ));
+        }
+        return Ok(lines.join("\n"));
+    };
+    let request = ControlRequest::Media {
+        device_id: args.device_id.clone(),
+        command,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("sent media command to {player}")),
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
         response => Err(ControlError::Remote(format!(
             "unexpected control response: {response:?}"

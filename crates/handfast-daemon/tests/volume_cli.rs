@@ -81,6 +81,7 @@ fn status_with_sink() -> DaemonStatus {
             device_id: device_id(PEER),
             sinks: vec![sink()],
         }],
+        remote_players: Vec::new(),
         truncated: false,
     }
 }

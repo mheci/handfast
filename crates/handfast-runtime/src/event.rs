@@ -35,6 +35,75 @@ impl RemoteSink {
     }
 }
 
+/// One media player reported by a peer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemotePlayer {
+    /// Stable player name used in requests.
+    pub player: String,
+    /// Track title.
+    pub title: String,
+    /// Track artist.
+    pub artist: String,
+    /// Track album.
+    pub album: String,
+    /// Remote album art URL, empty when none.
+    pub album_art_url: String,
+    /// Track length in milliseconds.
+    pub length_ms: i64,
+    /// Last reported position in milliseconds.
+    pub position_ms: i64,
+    /// Volume percentage, 0-100.
+    pub volume: u8,
+    /// Whether the player is playing.
+    pub playing: bool,
+    /// Whether the player can seek.
+    pub can_seek: bool,
+    /// Whether the player can play.
+    pub can_play: bool,
+    /// Whether the player can pause.
+    pub can_pause: bool,
+    /// Whether the player can go to the previous track.
+    pub can_go_previous: bool,
+    /// Whether the player can go to the next track.
+    pub can_go_next: bool,
+    /// Whether the player can fast forward.
+    pub can_fast_forward: bool,
+    /// Whether the player can rewind.
+    pub can_rewind: bool,
+}
+
+/// One transport action sent to a peer player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteMediaAction {
+    /// Start playback.
+    Play,
+    /// Pause playback.
+    Pause,
+    /// Toggle between play and pause.
+    PlayPause,
+    /// Stop playback.
+    Stop,
+    /// Go to the next track.
+    Next,
+    /// Go to the previous track.
+    Previous,
+}
+
+impl RemoteMediaAction {
+    /// Wire name used in `kdeconnect.mpris.request`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Play => "Play",
+            Self::Pause => "Pause",
+            Self::PlayPause => "PlayPause",
+            Self::Stop => "Stop",
+            Self::Next => "Next",
+            Self::Previous => "Previous",
+        }
+    }
+}
+
 /// Battery state reported by a peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BatteryState {
@@ -71,6 +140,11 @@ pub enum PluginEvent {
     RemoteSinks {
         /// Sinks in name order.
         sinks: Vec<RemoteSink>,
+    },
+    /// A peer reported its media players.
+    RemotePlayers {
+        /// Players in name order.
+        players: Vec<RemotePlayer>,
     },
     /// Clipboard text arrived.
     Clipboard {

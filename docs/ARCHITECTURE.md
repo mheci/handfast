@@ -190,7 +190,7 @@ announced to a peer and never receives packets.
 | --- | --- | --- | --- |
 | `Clipboard` | clipboard, share text | `wl-clipboard` (`wl-paste`, `wl-copy`) on Wayland, `xclip` on X11 | `clipboard-win` |
 | `Notifier` | notifications, sendnotifications, findthisdevice | `notify-send`, closed with `gdbus` | toast through in-box PowerShell |
-| `Media` | mpriscontrol, mprisremote, pausemusic | `playerctl` | SMTC through in-box PowerShell |
+| `Media` | mpriscontrol, pausemusic | `playerctl` | SMTC through in-box PowerShell |
 | `Volume` | systemvolume | `wpctl` | WASAPI through `volumecontrol-windows` |
 | `Input` | mousepad, presenter, digitizer, remotecontrol, remotekeyboard | `ydotool` and `wtype` on Wayland | `enigo` |
 | `Screensaver` | screensaver-inhibit | `systemd-inhibit` | `SetThreadExecutionState` through `keepawake` |
