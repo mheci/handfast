@@ -75,7 +75,9 @@ have.
   `MprisReceiverPlugin`, so the phone's media appears on the desktop. Album art
   URLs are modelled, but album art payloads are not fetched yet.
 - **Seek units**: `Seek` is microseconds and `SetPosition` is milliseconds, as
-  the protocol specifies.
+  the protocol specifies. Android's `MprisReceiverPlugin` applies `SetPosition`,
+  `setVolume` and actions but not `Seek`, so relative seek works with desktop
+  peers until the Android app adds it.
 
 ## Windows 11 backends
 
