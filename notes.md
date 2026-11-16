@@ -2,6 +2,11 @@
 
 Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`.
 
+Current state, 2026-11-16: 24 of 31 roster plugins are implemented. The seven
+planned plugins and their blockers are named in `docs/PARITY.md`. Branch
+`feat/parity`, PR #272. The manual P1 Android/desktop gate, GUI window check,
+signed 0.3.0 update and package installs still need the user.
+
 Hardening queue, 2026-11-14:
 
 - The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
