@@ -17,8 +17,8 @@ use crate::backends::clipboard::{CommandOutput, CommandRunner, TokioRunner};
 use crate::backends::shell::{Spawner, TokioSpawner};
 use crate::error::{DesktopError, Result};
 use crate::model::{
-    ButtonAction, KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerButton,
-    PointerEvent, PowerState, VolumeState,
+    ButtonAction, KeyEvent, MediaAction, Modifiers, Notification, PenEvent, PenTool, PlaybackState,
+    PointerButton, PointerEvent, PowerState, VolumeState,
 };
 use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
 
@@ -929,8 +929,24 @@ $charging = $battery.BatteryStatus -ne 1 -and $battery.BatteryStatus -ne 4 -and 
 }
 
 /// Injects pointer and keyboard input through `enigo`.
+///
+/// Digitizer support gap: Windows injects absolute position and buttons only.
+/// The Windows pen APIs (RealTimeStylus / `EnablePointer`) need unsafe code or
+/// a wrapper crate the workspace does not have, so pen pressure is ignored
+/// under the no-unsafe rule. Wayland gets pressure through uinput.
 pub struct WinInput {
     enigo: std::sync::Mutex<Option<Enigo>>,
+    /// The active digitizer session, if any.
+    pen: std::sync::Mutex<Option<PenSession>>,
+}
+
+/// The state of one active digitizer session.
+#[derive(Clone, Copy)]
+struct PenSession {
+    width: i32,
+    height: i32,
+    /// The button currently held down by a touching tool, if any.
+    pressed: Option<Button>,
 }
 
 impl WinInput {
@@ -939,6 +955,7 @@ impl WinInput {
     pub fn new() -> Self {
         Self {
             enigo: std::sync::Mutex::new(None),
+            pen: std::sync::Mutex::new(None),
         }
     }
 
@@ -957,6 +974,56 @@ impl WinInput {
         op(guard.as_mut().expect("the input backend was just created"))
             .map_err(|error| DesktopError::Backend(error.to_string()))
     }
+
+    fn pen_state(
+        &self,
+    ) -> std::result::Result<std::sync::MutexGuard<'_, Option<PenSession>>, DesktopError> {
+        self.pen
+            .lock()
+            .map_err(|_| DesktopError::Backend("the pen lock is poisoned".to_string()))
+    }
+
+    /// Close the session and release a button a touching tool left down.
+    fn close_pen_session(&self) -> Result<()> {
+        let session = self.pen_state()?.take();
+        if let Some(button) = session.and_then(|session| session.pressed) {
+            self.with_enigo(|enigo| enigo.button(button, Direction::Release))?;
+        }
+        Ok(())
+    }
+}
+
+/// The state of one pen tool between events.
+///
+/// `Rubber` maps the eraser onto the right button, so it drags like a
+/// right-button hold.
+fn pen_button(event: &PenEvent) -> Option<Button> {
+    if !event.touching {
+        return None;
+    }
+    Some(match event.tool {
+        PenTool::Pen => Button::Left,
+        PenTool::Rubber => Button::Right,
+    })
+}
+
+/// Map one pen position from the session space onto the desktop display.
+///
+/// enigo's [`Coordinate::Abs`] counts pixels within the main display, so the
+/// session rectangle `[0, width-1] x [0, height-1]` is scaled linearly onto
+/// `[0, display.0-1] x [0, display.1-1]`.
+fn absolute_position(event: &PenEvent, session: (i32, i32), display: (i32, i32)) -> (i32, i32) {
+    let scale = |value: i32, from: i32, to: i32| -> i32 {
+        if from <= 0 || to <= 0 {
+            return 0;
+        }
+        let scaled = i64::from(value).max(0) * i64::from(to) + i64::from(from) / 2;
+        scaled.div_euclid(i64::from(from)) as i32
+    };
+    (
+        scale(event.x, session.0 - 1, display.0 - 1),
+        scale(event.y, session.1 - 1, display.1 - 1),
+    )
 }
 
 impl Default for WinInput {
@@ -1151,6 +1218,66 @@ impl Input for WinInput {
             }
             result
         })
+    }
+
+    async fn start_pen_session(
+        &self,
+        width: i32,
+        height: i32,
+        _resolution_x: i32,
+        _resolution_y: i32,
+    ) -> Result<()> {
+        if width < 1 || height < 1 {
+            return Err(DesktopError::Backend(
+                "the pen session dimensions are out of range".to_string(),
+            ));
+        }
+        // A replacement session releases whatever the old one held.
+        self.close_pen_session()?;
+        *self.pen_state()? = Some(PenSession {
+            width,
+            height,
+            pressed: None,
+        });
+        Ok(())
+    }
+
+    async fn end_pen_session(&self) -> Result<()> {
+        self.close_pen_session()
+    }
+
+    async fn pen(&self, event: PenEvent) -> Result<()> {
+        let mut state = self.pen_state()?;
+        let Some(session) = *state else {
+            return Err(DesktopError::Unsupported("no pen session is active"));
+        };
+        let desired = pen_button(&event);
+        self.with_enigo(|enigo| {
+            if event.pressure > 0.0 {
+                eprintln!(
+                    "handfast-desktop: pen pressure is not available on Windows; ignoring it"
+                );
+            }
+            let display = enigo.main_display()?;
+            let (x, y) = absolute_position(&event, (session.width, session.height), display);
+            enigo.move_mouse(x, y, Coordinate::Abs)?;
+            if desired == session.pressed {
+                return Ok(());
+            }
+            if let Some(held) = session.pressed {
+                enigo.button(held, Direction::Release)?;
+            }
+            if let Some(button) = desired {
+                enigo.button(button, Direction::Press)?;
+            }
+            Ok(())
+        })?;
+        *state = Some(PenSession {
+            width: session.width,
+            height: session.height,
+            pressed: desired,
+        });
+        Ok(())
     }
 }
 
@@ -1726,6 +1853,95 @@ mod tests {
         assert_eq!(text_key('C'), Key::C);
         assert_eq!(text_key('7'), Key::Num7);
         assert_eq!(text_key('!'), Key::Unicode('!'));
+    }
+
+    fn pen_event(
+        x: i32,
+        y: i32,
+        pressure: f64,
+        touching: bool,
+        tool: PenTool,
+    ) -> crate::model::PenEvent {
+        crate::model::PenEvent {
+            x,
+            y,
+            pressure,
+            touching,
+            tool,
+        }
+    }
+
+    #[test]
+    fn absolute_position_scales_the_session_onto_the_display() {
+        // Corners map exactly; the phone is 1440x3200, the screen 1920x1080.
+        assert_eq!(
+            absolute_position(
+                &pen_event(0, 0, 0.0, false, PenTool::Pen),
+                (1440, 3200),
+                (1920, 1080)
+            ),
+            (0, 0)
+        );
+        assert_eq!(
+            absolute_position(
+                &pen_event(1439, 3199, 0.0, false, PenTool::Pen),
+                (1440, 3200),
+                (1920, 1080)
+            ),
+            (1919, 1079)
+        );
+        assert_eq!(
+            absolute_position(
+                &pen_event(720, 1600, 0.0, false, PenTool::Pen),
+                (1440, 3200),
+                (1920, 1080)
+            ),
+            (960, 540)
+        );
+        // Degenerate sessions and displays stay in range.
+        assert_eq!(
+            absolute_position(
+                &pen_event(0, 0, 0.0, false, PenTool::Pen),
+                (1, 1),
+                (1920, 1080)
+            ),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn pen_button_follows_touching_and_tool() {
+        assert_eq!(
+            pen_button(&pen_event(0, 0, 0.0, true, PenTool::Pen)),
+            Some(Button::Left)
+        );
+        assert_eq!(
+            pen_button(&pen_event(0, 0, 0.0, true, PenTool::Rubber)),
+            Some(Button::Right)
+        );
+        assert_eq!(pen_button(&pen_event(0, 0, 0.0, false, PenTool::Pen)), None);
+    }
+
+    #[tokio::test]
+    async fn pen_without_a_session_is_unsupported() {
+        let input = WinInput::new();
+        let error = input
+            .pen(pen_event(0, 0, 0.5, true, PenTool::Pen))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DesktopError::Unsupported(_)));
+
+        // Ending a session that was never started stays a no-op.
+        input.end_pen_session().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn start_pen_session_rejects_bad_dimensions() {
+        let input = WinInput::new();
+        let error = input.start_pen_session(0, 100, 0, 0).await.unwrap_err();
+        assert!(matches!(error, DesktopError::Backend(_)));
+        let error = input.start_pen_session(100, -1, 0, 0).await.unwrap_err();
+        assert!(matches!(error, DesktopError::Backend(_)));
     }
 
     #[tokio::test]

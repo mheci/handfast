@@ -10,6 +10,7 @@ pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
 pub mod contacts;
+pub mod digitizer;
 pub mod findmyphone;
 pub mod findthisdevice;
 pub mod lockdevice;
@@ -38,6 +39,7 @@ pub use battery::{BatteryFactory, BatteryPlugin};
 pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
 pub use contacts::{ContactsFactory, ContactsPlugin};
+pub use digitizer::{DigitizerFactory, DigitizerPlugin};
 pub use findmyphone::{findmyphone_packet, FindMyPhoneFactory, FindMyPhonePlugin};
 pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
 pub use lockdevice::{LockDeviceFactory, LockDevicePlugin};
@@ -77,6 +79,7 @@ pub fn registry() -> Registry {
         Box::new(clipboard::ClipboardFactory),
         Box::new(connectivity_report::ConnectivityReportFactory),
         Box::new(contacts::ContactsFactory),
+        Box::new(digitizer::DigitizerFactory),
         Box::new(pausemusic::PauseMusicFactory),
         Box::new(share::ShareFactory),
         Box::new(sms::SmsFactory),
@@ -108,7 +111,7 @@ pub fn metas() -> &'static [&'static PluginMeta] {
 
 #[cfg(test)]
 mod tests {
-    use handfast_desktop::MockDesktop;
+    use handfast_desktop::{Desktop, MockDesktop};
     use handfast_proto::{types, DeviceId, DeviceName, DeviceType};
     use handfast_runtime::{Device, DeviceHost};
 
@@ -145,6 +148,21 @@ mod tests {
         assert!(
             DeviceHost::new(device(), &registry, desktop.desktop()).is_enabled("remotecommands")
         );
+    }
+
+    #[test]
+    fn digitizer_is_advertised_with_input_adapter() {
+        let registry = registry();
+
+        let with_input = MockDesktop::new();
+        let capabilities = registry.capabilities(&with_input.desktop()).unwrap();
+        assert!(capabilities.accepts(types::DIGITIZER));
+        assert!(capabilities.accepts(types::DIGITIZER_SESSION));
+        assert!(DeviceHost::new(device(), &registry, with_input.desktop()).is_enabled("digitizer"));
+
+        let without_input = Desktop::default();
+        let capabilities = registry.capabilities(&without_input).unwrap();
+        assert!(!capabilities.accepts(types::DIGITIZER));
     }
 
     #[test]

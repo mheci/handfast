@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use crate::error::{DesktopError, Result};
 use crate::files::{FileLimits, Files, FilesError, LocalFiles};
 use crate::model::{
-    ButtonAction, KeyEvent, MediaAction, Notification, PlaybackState, PointerButton, PointerEvent,
-    VolumeState,
+    ButtonAction, KeyEvent, MediaAction, Notification, PenEvent, PlaybackState, PointerButton,
+    PointerEvent, VolumeState,
 };
 use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
 use crate::Desktop;
@@ -24,6 +24,21 @@ pub enum InputEvent {
     Button(PointerButton, ButtonAction),
     /// Keyboard event.
     Key(KeyEvent),
+    /// A digitizer session opened.
+    PenStart {
+        /// Session width in device pixels.
+        width: i32,
+        /// Session height in device pixels.
+        height: i32,
+        /// Horizontal resolution in pixels per millimetre.
+        resolution_x: i32,
+        /// Vertical resolution in pixels per millimetre.
+        resolution_y: i32,
+    },
+    /// A digitizer session closed.
+    PenEnd,
+    /// One absolute pen event.
+    Pen(PenEvent),
 }
 
 /// Counts lock calls made through the mock desktop.
@@ -325,6 +340,32 @@ impl Input for MockBackend {
         self.lock(&self.0.input)?.push(InputEvent::Key(event));
         Ok(())
     }
+
+    async fn start_pen_session(
+        &self,
+        width: i32,
+        height: i32,
+        resolution_x: i32,
+        resolution_y: i32,
+    ) -> Result<()> {
+        self.lock(&self.0.input)?.push(InputEvent::PenStart {
+            width,
+            height,
+            resolution_x,
+            resolution_y,
+        });
+        Ok(())
+    }
+
+    async fn end_pen_session(&self) -> Result<()> {
+        self.lock(&self.0.input)?.push(InputEvent::PenEnd);
+        Ok(())
+    }
+
+    async fn pen(&self, event: PenEvent) -> Result<()> {
+        self.lock(&self.0.input)?.push(InputEvent::Pen(event));
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -422,6 +463,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(desktop.input_events().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn pen_events_are_recorded() {
+        let desktop = MockDesktop::new();
+        let input = desktop.desktop().input.clone().unwrap();
+        input.start_pen_session(100, 200, 5, 6).await.unwrap();
+        input
+            .pen(crate::model::PenEvent {
+                x: 1,
+                y: 2,
+                pressure: 0.5,
+                touching: true,
+                tool: crate::model::PenTool::Pen,
+            })
+            .await
+            .unwrap();
+        input.end_pen_session().await.unwrap();
+        assert_eq!(
+            desktop.input_events(),
+            vec![
+                InputEvent::PenStart {
+                    width: 100,
+                    height: 200,
+                    resolution_x: 5,
+                    resolution_y: 6,
+                },
+                InputEvent::Pen(crate::model::PenEvent {
+                    x: 1,
+                    y: 2,
+                    pressure: 0.5,
+                    touching: true,
+                    tool: crate::model::PenTool::Pen,
+                }),
+                InputEvent::PenEnd,
+            ]
+        );
     }
 
     #[tokio::test]

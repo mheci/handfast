@@ -53,10 +53,14 @@ pub const CONTACTS: PluginMeta = PluginMeta {
 };
 
 /// Pressure-sensitive drawing tablet.
+///
+/// Windows gap: the desktop injects absolute position and buttons only; pen
+/// pressure needs the Windows pen injection APIs that the no-unsafe rule
+/// excludes. Wayland injects pressure through uinput.
 pub const DIGITIZER: PluginMeta = PluginMeta {
     name: "digitizer",
     title: "Drawing tablet",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::DIGITIZER, types::DIGITIZER_SESSION],
     outgoing: &[],
     desktop: DesktopRequirement::Input,

@@ -18,7 +18,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 2 | `clipboard` | bidirectional | `kdeconnect.clipboard`, `.clipboard.connect` | `wl-clipboard` on Wayland, `xclip` on X11, `clipboard-win` on Windows | P2 | yes | yes | no |
 | 3 | `connectivity-report` | phone -> desktop | `kdeconnect.connectivity_report`, `.connectivity_report.request` | none | P2 | yes | n/a | no |
 | 4 | `contacts` | phone -> desktop | `kdeconnect.contacts.request_all_uids_timestamps`, `.request_vcards_by_uid`, `.response_uids_timestamps`, `.response_vcards` | vCard model | P2 | yes | n/a | no |
-| 5 | `digitizer` | phone -> desktop | `kdeconnect.digitizer`, `.digitizer.session` | libei absolute pointer with pressure | P4 | no | no | no |
+| 5 | `digitizer` | phone -> desktop | `kdeconnect.digitizer`, `.digitizer.session` | `evdev` uinput tablet on Wayland; `enigo` absolute pointer on Windows (no pressure) | P4 | yes | yes | no |
 | 6 | `findmyphone` | desktop -> phone | `kdeconnect.findmyphone.request` | none | P2 | yes | n/a | no |
 | 7 | `findthisdevice` | phone -> desktop | `kdeconnect.findmyphone.request`, `.private.findthisdevice` | `notify-send` | P2 | yes | yes | no |
 | 8 | `lockdevice` | phone -> desktop | `kdeconnect.lock`, `.lock.request` | `loginctl` | P2 | yes | yes | no |
@@ -112,9 +112,14 @@ safe crate can provide. It never resolves a peer-driven executable through
 Gaps, named rather than hidden:
 
 - **Input**: relative pointer motion, buttons and keys are available through
-  `enigo` on Windows and `ydotool` plus `wtype` on Wayland. Absolute pointer and
-  pressure for `digitizer`, and input capture for `shareinputdevices`, are still
-  missing.
+  `enigo` on Windows and `ydotool` plus `wtype` on Wayland. The `digitizer`
+  drawing tablet injects absolute position on both: Wayland opens a virtual
+  tablet through the safe `evdev` uinput API and gets pen pressure for free,
+  while Windows moves the real pointer through `enigo` and maps the eraser to
+  the right button. Windows pressure is the named gap: the Windows pen
+  injection APIs need unsafe code or a wrapper crate the workspace does not
+  have, so pressure is ignored there and never faked. Input capture for
+  `shareinputdevices` is still missing.
 - **Remote input**: `handfast remote-input` sends pointer moves, scrolls,
   clicks and keys to a phone over `kdeconnect.mousepad.request`. The phone
   injects the input; nothing is injected locally. Special key codes are 1-32,
@@ -135,10 +140,10 @@ Gaps, named rather than hidden:
 - **Remaining planned plugins**: `sendnotifications` needs a local notification
   source; the Linux DBus monitor is not implemented, and Windows has no safe
   supported listener without the WinRT consent prompt. `sftp` needs a sandboxed
-  SFTP server. `virtualmonitor` needs a virtual display driver. `digitizer`
-  pressure needs OS APIs that the no-unsafe rule excludes. The
-  `shareinputdevices` pair needs libei input capture. `mmtelephony` needs
-  ModemManager and has no Android counterpart.
+  SFTP server. `virtualmonitor` needs a virtual display driver. Windows
+  `digitizer` pressure needs OS APIs that the no-unsafe rule excludes (see the
+  input note above). The `shareinputdevices` pair needs libei input capture.
+  `mmtelephony` needs ModemManager and has no Android counterpart.
 
 ## Test strategy
 

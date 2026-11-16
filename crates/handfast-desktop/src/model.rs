@@ -145,6 +145,34 @@ pub enum ButtonAction {
     Release,
 }
 
+/// Which pen tool a digitizer event uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PenTool {
+    /// The drawing pen.
+    Pen,
+    /// The eraser end of the pen.
+    Rubber,
+}
+
+/// One absolute pen event from a digitizer session.
+///
+/// Every field carries the full tool state, so backends can emit the state as
+/// given. Position is in the session coordinate space announced by
+/// [`crate::Input::start_pen_session`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PenEvent {
+    /// Absolute X position in the session coordinate space.
+    pub x: i32,
+    /// Absolute Y position in the session coordinate space.
+    pub y: i32,
+    /// Pressure, 0-1. Backends that cannot inject pressure ignore it.
+    pub pressure: f64,
+    /// Whether the tool is touching the screen.
+    pub touching: bool,
+    /// The active tool.
+    pub tool: PenTool,
+}
+
 /// Transport action for an MPRIS player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaAction {

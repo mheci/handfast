@@ -2,10 +2,10 @@
 
 use async_trait::async_trait;
 
-use crate::error::Result;
+use crate::error::{DesktopError, Result};
 use crate::model::{
-    ButtonAction, CommandSpec, KeyEvent, MediaAction, Notification, PlaybackState, PointerButton,
-    PointerEvent, PowerState, VolumeState,
+    ButtonAction, CommandSpec, KeyEvent, MediaAction, Notification, PenEvent, PlaybackState,
+    PointerButton, PointerEvent, PowerState, VolumeState,
 };
 
 /// Text clipboard access.
@@ -65,6 +65,46 @@ pub trait Input: Send + Sync {
 
     /// Inject a key press and release.
     async fn key(&self, event: KeyEvent) -> Result<()>;
+
+    /// Open a digitizer session that maps a `width` x `height` device
+    /// coordinate space, with `resolution_x` and `resolution_y` in pixels per
+    /// millimetre, onto the desktop.
+    ///
+    /// The default implementation reports [`DesktopError::Unsupported`], so
+    /// backends without absolute pen injection keep working.
+    async fn start_pen_session(
+        &self,
+        width: i32,
+        height: i32,
+        resolution_x: i32,
+        resolution_y: i32,
+    ) -> Result<()> {
+        let _ = (width, height, resolution_x, resolution_y);
+        Err(DesktopError::Unsupported(
+            "absolute pen injection is not supported on this desktop",
+        ))
+    }
+
+    /// Close the digitizer session opened by [`Input::start_pen_session`].
+    ///
+    /// No-op backends report [`DesktopError::Unsupported`]; implementations
+    /// must tolerate an end without a matching start.
+    async fn end_pen_session(&self) -> Result<()> {
+        Err(DesktopError::Unsupported(
+            "absolute pen injection is not supported on this desktop",
+        ))
+    }
+
+    /// Inject one absolute pen event from an active digitizer session.
+    ///
+    /// Pressure is best effort. Backends that cannot inject pressure must
+    /// ignore it rather than fake it.
+    async fn pen(&self, event: PenEvent) -> Result<()> {
+        let _ = event;
+        Err(DesktopError::Unsupported(
+            "absolute pen injection is not supported on this desktop",
+        ))
+    }
 }
 
 /// Screensaver inhibition.
