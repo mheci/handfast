@@ -121,6 +121,30 @@ pub struct PointerEvent {
     pub scroll: bool,
 }
 
+/// A pointer button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PointerButton {
+    /// Primary button.
+    Left,
+    /// Secondary button.
+    Right,
+    /// Middle button.
+    Middle,
+}
+
+/// What a pointer button event does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ButtonAction {
+    /// One press and release.
+    Click,
+    /// Two presses and releases.
+    DoubleClick,
+    /// Press and hold.
+    Press,
+    /// Release a held button.
+    Release,
+}
+
 /// Transport action for an MPRIS player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaAction {

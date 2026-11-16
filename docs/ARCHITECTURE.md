@@ -192,7 +192,7 @@ announced to a peer and never receives packets.
 | `Notifier` | notifications, sendnotifications, findthisdevice | `notify-send`, closed with `gdbus` | toast through in-box PowerShell |
 | `Media` | mpriscontrol, mprisremote, pausemusic | `playerctl` | SMTC through in-box PowerShell |
 | `Volume` | systemvolume, remotesystemvolume | `wpctl` | WASAPI through `volumecontrol-windows` |
-| `Input` | mousepad, presenter, digitizer, remotecontrol, remotekeyboard | none | none |
+| `Input` | mousepad, presenter, digitizer, remotecontrol, remotekeyboard | `ydotool` and `wtype` on Wayland | `enigo` |
 | `Screensaver` | screensaver-inhibit | `systemd-inhibit` | `SetThreadExecutionState` through `keepawake` |
 | `Lock` | lockdevice | `loginctl` | `rundll32.exe user32.dll,LockWorkStation` |
 | `Shell` | share URL | `xdg-open` | `explorer.exe` for http and https |

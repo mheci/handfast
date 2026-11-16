@@ -1,7 +1,9 @@
 //! Mousepad plugin.
 
 use async_trait::async_trait;
-use handfast_desktop::{KeyEvent, Modifiers, PointerEvent};
+use handfast_desktop::{
+    ButtonAction, DesktopError, KeyEvent, Modifiers, PointerButton, PointerEvent,
+};
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
     LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
@@ -35,8 +37,14 @@ impl MousepadPlugin {
 
 enum Action {
     Pointer(PointerEvent),
-    Key { event: KeyEvent, ack: bool },
-    Button(&'static str),
+    Key {
+        event: KeyEvent,
+        ack: bool,
+    },
+    Button {
+        button: PointerButton,
+        action: ButtonAction,
+    },
 }
 
 fn warn(message: &str) -> PluginOutput {
@@ -93,6 +101,18 @@ fn special_key(body: &Map<String, Value>) -> Result<Option<u8>, &'static str> {
     Ok(Some(code))
 }
 
+fn button_action(field: &str) -> Option<(PointerButton, ButtonAction)> {
+    match field {
+        "singleclick" => Some((PointerButton::Left, ButtonAction::Click)),
+        "doubleclick" => Some((PointerButton::Left, ButtonAction::DoubleClick)),
+        "middleclick" => Some((PointerButton::Middle, ButtonAction::Click)),
+        "rightclick" => Some((PointerButton::Right, ButtonAction::Click)),
+        "singlehold" => Some((PointerButton::Left, ButtonAction::Press)),
+        "singlerelease" => Some((PointerButton::Left, ButtonAction::Release)),
+        _ => None,
+    }
+}
+
 fn parse(packet: &Packet) -> Result<Action, &'static str> {
     let body = &packet.body;
     let scroll = bool_field(body, "scroll")?.unwrap_or(false);
@@ -100,7 +120,9 @@ fn parse(packet: &Packet) -> Result<Action, &'static str> {
 
     for field in CLICK_FIELDS {
         if bool_field(body, field)? == Some(true) {
-            return Ok(Action::Button(field));
+            let (button, action) =
+                button_action(field).ok_or("mousepad click field is not supported")?;
+            return Ok(Action::Button { button, action });
         }
     }
 
@@ -227,9 +249,13 @@ impl Plugin for MousepadPlugin {
                     PluginOutput::new().with_packet(packet)
                 }))
             }
-            Action::Button(name) => Ok(warn(&format!(
-                "input adapter cannot inject pointer button: {name}"
-            ))),
+            Action::Button { button, action } => match input.button(button, action).await {
+                Ok(()) => Ok(PluginOutput::new()),
+                Err(DesktopError::Unsupported(message)) => Ok(warn(&format!(
+                    "input adapter cannot inject {button:?} {action:?}: {message}"
+                ))),
+                Err(error) => Err(PluginError::Backend(error.to_string())),
+            },
         }
     }
 }
@@ -252,7 +278,7 @@ impl PluginFactory for MousepadFactory {
 mod tests {
     use super::*;
     use handfast_desktop::mock::InputEvent;
-    use handfast_desktop::{Desktop, MockDesktop};
+    use handfast_desktop::{ButtonAction, Desktop, MockDesktop, PointerButton};
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
     use handfast_runtime::Device;
 
@@ -406,17 +432,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pointer_button_is_a_warning() {
+    async fn single_click_is_injected() {
         let mock = MockDesktop::new();
-        let output = run(&mock.desktop(), request(json!({"singleclick": true}))).await;
-        assert!(mock.input_events().is_empty());
-        assert!(matches!(
-            output.events.as_slice(),
-            [PluginEvent::Log {
-                level: LogLevel::Warn,
-                ..
-            }]
-        ));
+        run(&mock.desktop(), request(json!({"singleclick": true}))).await;
+        assert_eq!(
+            mock.input_events(),
+            vec![InputEvent::Button(PointerButton::Left, ButtonAction::Click)]
+        );
+    }
+
+    #[tokio::test]
+    async fn right_click_is_injected() {
+        let mock = MockDesktop::new();
+        run(&mock.desktop(), request(json!({"rightclick": true}))).await;
+        assert_eq!(
+            mock.input_events(),
+            vec![InputEvent::Button(
+                PointerButton::Right,
+                ButtonAction::Click
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn double_click_is_injected() {
+        let mock = MockDesktop::new();
+        run(&mock.desktop(), request(json!({"doubleclick": true}))).await;
+        assert_eq!(
+            mock.input_events(),
+            vec![InputEvent::Button(
+                PointerButton::Left,
+                ButtonAction::DoubleClick
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn hold_and_release_are_injected() {
+        let mock = MockDesktop::new();
+        run(&mock.desktop(), request(json!({"singlehold": true}))).await;
+        run(&mock.desktop(), request(json!({"singlerelease": true}))).await;
+        assert_eq!(
+            mock.input_events(),
+            vec![
+                InputEvent::Button(PointerButton::Left, ButtonAction::Press),
+                InputEvent::Button(PointerButton::Left, ButtonAction::Release),
+            ]
+        );
     }
 
     #[tokio::test]

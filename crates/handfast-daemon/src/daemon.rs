@@ -1157,6 +1157,9 @@ fn install_backends(
     if available("loginctl") {
         desktop.lock = Some(backends::lock());
     }
+    if wayland && available("ydotool") && available("wtype") {
+        desktop.input = Some(backends::input());
+    }
     desktop.power = Some(backends::power());
     desktop
 }
@@ -1221,6 +1224,18 @@ mod tests {
         let xclip_on_wayland =
             install_backends(Desktop::default(), true, |program| program == "xclip");
         assert!(!xclip_on_wayland.capabilities().clipboard);
+
+        let input = install_backends(Desktop::default(), true, |program| {
+            program == "ydotool" || program == "wtype"
+        });
+        assert!(input.capabilities().input);
+        let capabilities = registry.capabilities(&input).unwrap();
+        assert!(capabilities.accepts(types::MOUSEPAD_REQUEST));
+        assert!(capabilities.accepts(types::PRESENTER));
+
+        let missing_wtype =
+            install_backends(Desktop::default(), true, |program| program == "ydotool");
+        assert!(!missing_wtype.capabilities().input);
     }
 
     #[cfg(windows)]
@@ -1233,6 +1248,7 @@ mod tests {
         assert!(capabilities.lock);
         assert!(capabilities.shell);
         assert!(capabilities.volume);
+        assert!(capabilities.input);
         if backends::win::powershell().is_file() {
             assert!(capabilities.notifications);
             assert!(capabilities.media);
@@ -1312,6 +1328,8 @@ mod tests {
             types::SYSTEMVOLUME,
             types::SYSTEMVOLUME_REQUEST,
             types::LOCK_REQUEST,
+            types::MOUSEPAD_REQUEST,
+            types::PRESENTER,
         ] {
             assert!(capabilities.accepts(packet), "{packet} missing on Windows");
         }

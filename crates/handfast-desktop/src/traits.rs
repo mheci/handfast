@@ -4,7 +4,8 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::model::{
-    KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, PowerState, VolumeState,
+    ButtonAction, KeyEvent, MediaAction, Notification, PlaybackState, PointerButton, PointerEvent,
+    PowerState, VolumeState,
 };
 
 /// Text clipboard access.
@@ -58,6 +59,9 @@ pub trait Volume: Send + Sync {
 pub trait Input: Send + Sync {
     /// Inject a relative pointer movement or scroll.
     async fn pointer(&self, event: PointerEvent) -> Result<()>;
+
+    /// Inject a pointer button event.
+    async fn button(&self, button: PointerButton, action: ButtonAction) -> Result<()>;
 
     /// Inject a key press and release.
     async fn key(&self, event: KeyEvent) -> Result<()>;

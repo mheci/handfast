@@ -8,7 +8,10 @@ use async_trait::async_trait;
 
 use crate::error::{DesktopError, Result};
 use crate::files::{FileLimits, Files, FilesError, LocalFiles};
-use crate::model::{KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, VolumeState};
+use crate::model::{
+    ButtonAction, KeyEvent, MediaAction, Notification, PlaybackState, PointerButton, PointerEvent,
+    VolumeState,
+};
 use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
 use crate::Desktop;
 
@@ -17,6 +20,8 @@ use crate::Desktop;
 pub enum InputEvent {
     /// Pointer movement or scroll.
     Pointer(PointerEvent),
+    /// Pointer button.
+    Button(PointerButton, ButtonAction),
     /// Keyboard event.
     Key(KeyEvent),
 }
@@ -306,6 +311,12 @@ impl Volume for MockBackend {
 impl Input for MockBackend {
     async fn pointer(&self, event: PointerEvent) -> Result<()> {
         self.lock(&self.0.input)?.push(InputEvent::Pointer(event));
+        Ok(())
+    }
+
+    async fn button(&self, button: PointerButton, action: ButtonAction) -> Result<()> {
+        self.lock(&self.0.input)?
+            .push(InputEvent::Button(button, action));
         Ok(())
     }
 

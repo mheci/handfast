@@ -61,6 +61,7 @@ pub fn registry() -> Registry {
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
         Box::new(lockdevice::LockDeviceFactory),
         Box::new(presenter::PresenterFactory),
+        Box::new(mousepad::MousepadFactory),
         Box::new(telephony::TelephonyFactory),
     ])
 }

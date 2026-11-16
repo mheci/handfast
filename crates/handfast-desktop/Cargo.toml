@@ -20,6 +20,7 @@ libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4"
+enigo = { version = "0.6", default-features = false }
 keepawake = "0.6"
 serde_json.workspace = true
 volumecontrol-core = "0.1"

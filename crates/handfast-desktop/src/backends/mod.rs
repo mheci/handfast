@@ -5,6 +5,7 @@
 //! executables by absolute path or wrap a safe crate.
 
 pub mod clipboard;
+pub mod input;
 pub mod lock;
 pub mod mpris;
 pub mod notifications;
@@ -18,7 +19,7 @@ pub mod win;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::traits::{Clipboard, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
+use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
 
 /// Whether `program` resolves to a regular file on `PATH`.
 ///
@@ -105,6 +106,12 @@ pub fn power() -> Arc<dyn Power> {
     Arc::new(power::SysfsPower::new())
 }
 
+/// Build the host input backend.
+#[must_use]
+pub fn input() -> Arc<dyn Input> {
+    Arc::new(input::WaylandInput::new())
+}
+
 /// Add every Windows backend that does not need an external install to
 /// `desktop`.
 ///
@@ -119,6 +126,7 @@ pub fn windows(mut desktop: crate::Desktop) -> crate::Desktop {
     desktop.shell = Some(Arc::new(win::ExplorerShell::new()));
     desktop.volume = Some(Arc::new(win::WinVolume::new()));
     desktop.power = Some(Arc::new(win::WinPower::new()));
+    desktop.input = Some(Arc::new(win::WinInput::new()));
     if win::powershell().is_file() {
         desktop.notifier = Some(Arc::new(win::WinNotifier::new()));
         desktop.media = Some(Arc::new(win::WinMedia::new()));

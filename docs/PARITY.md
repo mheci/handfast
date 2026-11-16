@@ -23,13 +23,13 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 7 | `findthisdevice` | phone -> desktop | `kdeconnect.findmyphone.request`, `.private.findthisdevice` | `notify-send` | P2 | yes | yes | no |
 | 8 | `lockdevice` | phone -> desktop | `kdeconnect.lock`, `.lock.request` | `loginctl` | P2 | yes | yes | no |
 | 9 | `mmtelephony` | ModemManager -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | ModemManager DBus | P4 | no | no | no |
-| 10 | `mousepad` | phone -> desktop | `kdeconnect.mousepad.request`, `.echo`, `.keyboardstate` | libei pointer + keyboard | P3 | no | no | no |
+| 10 | `mousepad` | phone -> desktop | `kdeconnect.mousepad.request`, `.echo`, `.keyboardstate` | `ydotool` and `wtype` on Wayland; `enigo` on Windows | P3 | yes | yes | no |
 | 11 | `mpriscontrol` | bidirectional | `kdeconnect.mpris`, `.mpris.request` | `playerctl` | P2 | yes | yes | no |
 | 12 | `mprisremote` | desktop -> phone | `kdeconnect.mpris`, `.mpris.request` | MPRIS DBus (remote players) | P2 | no | no | no |
 | 13 | `notifications` | phone -> desktop | `kdeconnect.notification`, `.notification.action`, `.notification.reply`, `.notification.request` | `notify-send`, `gdbus` close | P2 | yes | yes | no |
 | 14 | `pausemusic` | phone -> desktop | `kdeconnect.telephony`, `kdeconnect.mpris.request` | `playerctl` | P2 | yes | yes | no |
 | 15 | `ping` | bidirectional | `kdeconnect.ping` | none | P0 | yes | n/a | no |
-| 16 | `presenter` | phone -> desktop | `kdeconnect.presenter` | libei pointer injection | P3 | yes | no | no |
+| 16 | `presenter` | phone -> desktop | `kdeconnect.presenter` | `ydotool` and `wtype` on Wayland; `enigo` on Windows | P3 | yes | yes | no |
 | 17 | `remotecommands` | phone -> desktop | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | no | no | no |
 | 18 | `remotecontrol` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
 | 19 | `remotekeyboard` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
@@ -86,8 +86,10 @@ safe crate can provide. It never resolves a peer-driven executable through
 
 Gaps, named rather than hidden:
 
-- **Input**: no safe Windows backend yet, so `mousepad`, `presenter`, `digitizer`
-  and `shareinputdevices` stay unadvertised on Windows.
+- **Input**: relative pointer motion, buttons and keys are available through
+  `enigo` on Windows and `ydotool` plus `wtype` on Wayland. Absolute pointer and
+  pressure for `digitizer`, and input capture for `shareinputdevices`, are still
+  missing.
 - **Player volume read**: SMTC exposes `TryChangeVolumeAsync` but no per-session
   volume getter, so `PlaybackState.volume` is `None` on Windows.
 - **Clipboard push**: the session polls every 2 s because the clipboard trait has

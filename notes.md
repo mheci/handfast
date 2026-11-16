@@ -277,3 +277,11 @@ Parity wave 6, 2026-11-16, same branch:
 
 - `systemvolume` now pushes its sink list on connect instead of sending `requestSinks`, which is the remotesystemvolume direction. The roster outgoing drops `SYSTEMVOLUME_REQUEST`; the plugin still answers a peer's `requestSinks` and applies volume and mute requests.
 - Evidence: plugins 153 pass, clippy clean. The old `on_connect_requests_the_sink_list` test was replaced by `on_connect_pushes_the_current_sink`.
+
+Parity wave 7, 2026-11-16, same branch:
+
+- Input is implemented on both platforms. Linux/Wayland uses `ydotool` for pointer movement, wheel and buttons and `wtype` for keys; Windows uses `enigo`. The `Input` trait now carries pointer buttons with click, double-click, press and release.
+- `mousepad` is registered and enabled; `presenter` becomes active on hosts with an input adapter. The special-key table matches the KDE Connect desktop mapping 1-32.
+- The daemon installs the Linux input adapter only when `WAYLAND_DISPLAY` is set and both `ydotool` and `wtype` are on `PATH`. Windows installs `enigo` unconditionally and creates the connection on first use.
+- Evidence: desktop 154 pass (input argv tests and enigo key mapping), plugins 156 pass, daemon 132 pass, clippy clean. The real injection needs the manual phone touchpad/keyboard check.
+- Still open for full input parity: absolute pointer and pressure for `digitizer`, input capture for `shareinputdevices`, and `singlehold`/`singlerelease` on Linux use the ydotool down/up masks.

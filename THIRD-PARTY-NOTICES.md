@@ -9,6 +9,7 @@ full at the end of this file.
 | Component | Version | License | Copyright |
 | --- | --- | --- | --- |
 | `clipboard-win` | 5.4 | BSL-1.0 | Douman Ash |
+| `enigo` | 0.6 | MIT | pentamassiv |
 | `error-code` | 3.4 | BSL-1.0 | Douman Ash |
 | `keepawake` | 0.6 | MIT | segevfiner |
 | `volumecontrol-core` | 0.1 | MIT | Touchify |
@@ -22,7 +23,8 @@ full at the end of this file.
 | emoji-icon-font | bundled by `epaint_default_fonts` | MIT | John Slegers |
 
 `clipboard-win` and `error-code` are compiled into the Windows binary through
-the clipboard backend. `keepawake`, `volumecontrol-core` and
+the clipboard backend. `enigo` is compiled into the Windows binary through the
+input backend. `keepawake`, `volumecontrol-core` and
 `volumecontrol-windows` are compiled into the Windows binary through the
 screensaver and volume backends. `windows` and `windows-core` are compiled into
 the Windows binary through those crates. The fonts are compiled into the GUI
@@ -31,6 +33,8 @@ feature through `eframe` and `epaint`.
 ## MIT License, Windows backends
 
 Copyright (c) segevfiner (keepawake)
+
+Copyright (c) pentamassiv (enigo)
 
 Copyright (c) Touchify (volumecontrol-core, volumecontrol-windows)
 

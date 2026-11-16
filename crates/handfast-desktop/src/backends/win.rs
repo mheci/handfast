@@ -10,13 +10,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use serde::Deserialize;
 
 use crate::backends::clipboard::{CommandOutput, CommandRunner, TokioRunner};
 use crate::backends::shell::{Spawner, TokioSpawner};
 use crate::error::{DesktopError, Result};
-use crate::model::{MediaAction, Notification, PlaybackState, PowerState, VolumeState};
-use crate::traits::{Clipboard, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
+use crate::model::{
+    ButtonAction, KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerButton,
+    PointerEvent, PowerState, VolumeState,
+};
+use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
 
 /// `%SystemRoot%\System32\<program>`, the only directory a peer-driven tool may
 /// come from.
@@ -924,6 +928,169 @@ $charging = $battery.BatteryStatus -ne 1 -and $battery.BatteryStatus -ne 4 -and 
     }
 }
 
+/// Injects pointer and keyboard input through `enigo`.
+pub struct WinInput {
+    enigo: std::sync::Mutex<Option<Enigo>>,
+}
+
+impl WinInput {
+    /// Build an input adapter. The connection is created on first use.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            enigo: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn with_enigo<T>(&self, op: impl FnOnce(&mut Enigo) -> enigo::InputResult<T>) -> Result<T> {
+        let mut guard = self
+            .enigo
+            .lock()
+            .map_err(|_| DesktopError::Backend("the input lock is poisoned".to_string()))?;
+        if guard.is_none() {
+            *guard = Some(Enigo::new(&Settings::default()).map_err(|error| {
+                DesktopError::Backend(format!(
+                    "failed to initialize the Windows input backend: {error}"
+                ))
+            })?);
+        }
+        op(guard.as_mut().expect("the input backend was just created"))
+            .map_err(|error| DesktopError::Backend(error.to_string()))
+    }
+}
+
+impl Default for WinInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn modifier_keys(modifiers: Modifiers) -> Vec<Key> {
+    let mut keys = Vec::new();
+    if modifiers.ctrl {
+        keys.push(Key::Control);
+    }
+    if modifiers.alt {
+        keys.push(Key::Alt);
+    }
+    if modifiers.shift {
+        keys.push(Key::Shift);
+    }
+    if modifiers.sup {
+        keys.push(Key::Meta);
+    }
+    keys
+}
+
+fn special_key(code: u8) -> Option<Key> {
+    Some(match code {
+        1 => Key::Backspace,
+        2 => Key::Tab,
+        3 => Key::Return,
+        4 => Key::LeftArrow,
+        5 => Key::UpArrow,
+        6 => Key::RightArrow,
+        7 => Key::DownArrow,
+        8 => Key::PageUp,
+        9 => Key::PageDown,
+        10 => Key::Home,
+        11 => Key::End,
+        12 => Key::Return,
+        13 => Key::Delete,
+        14 => Key::Escape,
+        15 => Key::PrintScr,
+        16 => Key::Scroll,
+        17 => Key::Control,
+        18 => Key::Alt,
+        19 => Key::Shift,
+        20 => Key::Meta,
+        21 => Key::F1,
+        22 => Key::F2,
+        23 => Key::F3,
+        24 => Key::F4,
+        25 => Key::F5,
+        26 => Key::F6,
+        27 => Key::F7,
+        28 => Key::F8,
+        29 => Key::F9,
+        30 => Key::F10,
+        31 => Key::F11,
+        32 => Key::F12,
+        _ => return None,
+    })
+}
+
+#[async_trait]
+impl Input for WinInput {
+    async fn pointer(&self, event: PointerEvent) -> Result<()> {
+        self.with_enigo(|enigo| {
+            if event.scroll {
+                let dy = event.dy.round() as i32;
+                if dy != 0 {
+                    enigo.scroll(dy, Axis::Vertical)?;
+                }
+                let dx = event.dx.round() as i32;
+                if dx != 0 {
+                    enigo.scroll(dx, Axis::Horizontal)?;
+                }
+                Ok(())
+            } else {
+                enigo.move_mouse(
+                    event.dx.round() as i32,
+                    event.dy.round() as i32,
+                    Coordinate::Rel,
+                )
+            }
+        })
+    }
+
+    async fn button(&self, button: PointerButton, action: ButtonAction) -> Result<()> {
+        let button = match button {
+            PointerButton::Left => Button::Left,
+            PointerButton::Middle => Button::Middle,
+            PointerButton::Right => Button::Right,
+        };
+        self.with_enigo(|enigo| match action {
+            ButtonAction::Click => enigo.button(button, Direction::Click),
+            ButtonAction::DoubleClick => {
+                enigo.button(button, Direction::Click)?;
+                enigo.button(button, Direction::Click)
+            }
+            ButtonAction::Press => enigo.button(button, Direction::Press),
+            ButtonAction::Release => enigo.button(button, Direction::Release),
+        })
+    }
+
+    async fn key(&self, event: KeyEvent) -> Result<()> {
+        let modifiers = match &event {
+            KeyEvent::Text { modifiers, .. } | KeyEvent::Special { modifiers, .. } => *modifiers,
+        };
+        let special = match &event {
+            KeyEvent::Special { code, .. } => Some(special_key(*code).ok_or(
+                DesktopError::Unsupported("the special key is not supported"),
+            )?),
+            KeyEvent::Text { .. } => None,
+        };
+        self.with_enigo(|enigo| {
+            let held = modifier_keys(modifiers);
+            for key in &held {
+                enigo.key(*key, Direction::Press)?;
+            }
+            let result = match &event {
+                KeyEvent::Text { text, .. } => enigo.text(text),
+                KeyEvent::Special { .. } => enigo.key(
+                    special.expect("the special key was validated"),
+                    Direction::Click,
+                ),
+            };
+            for key in held.iter().rev() {
+                let _ = enigo.key(*key, Direction::Release);
+            }
+            result
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1466,6 +1633,28 @@ mod tests {
         );
         volume.set(150, false).await.unwrap();
         assert_eq!(endpoint.writes.lock().unwrap().as_slice(), &[(100, false)]);
+    }
+
+    #[test]
+    fn special_keys_map_to_enigo_keys() {
+        assert_eq!(special_key(1), Some(Key::Backspace));
+        assert_eq!(special_key(4), Some(Key::LeftArrow));
+        assert_eq!(special_key(12), Some(Key::Return));
+        assert_eq!(special_key(21), Some(Key::F1));
+        assert_eq!(special_key(32), Some(Key::F12));
+        assert_eq!(special_key(33), None);
+    }
+
+    #[test]
+    fn modifiers_are_held_in_a_fixed_order() {
+        let keys = modifier_keys(Modifiers {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            sup: true,
+        });
+
+        assert_eq!(keys, vec![Key::Control, Key::Alt, Key::Shift, Key::Meta]);
     }
 
     #[tokio::test]
