@@ -7,6 +7,17 @@ planned plugins and their blockers are named in `docs/PARITY.md`. Branch
 `feat/parity`, PR #272. The manual P1 Android/desktop gate, GUI window check,
 signed 0.3.0 update and package installs still need the user.
 
+Delegation policy, 2026-11-17: every subagent runs on the Go provider at max
+effort, never the free variants. `~/.config/opencode/pstack-models.md` encodes
+`opencode-go/hy4#high`, `opencode-go/claude-haiku-5-5#max` and
+`opencode-go/glm-5.3-flash#max` per role. The earlier free-variant
+notifications worktree was stopped without a commit and is discarded.
+
+Three parallel tracks on `c04e675`: `sendnotifications` (GLM Go max, worktree
+`handfast-notifications-go`), `shareinputdevicesremote` (Haiku Go max,
+`handfast-remote-input`), and the `virtualmonitor` client half (Hy4 Go high,
+`handfast-virtualmonitor`).
+
 Hardening queue, 2026-11-14:
 
 - The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
