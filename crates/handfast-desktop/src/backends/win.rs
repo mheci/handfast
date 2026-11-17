@@ -1222,6 +1222,14 @@ impl Input for WinInput {
         })
     }
 
+    async fn absolute_pointer(&self, x: i32, y: i32) -> Result<()> {
+        self.with_enigo(|enigo| enigo.move_mouse(x, y, Coordinate::Abs))
+    }
+
+    async fn main_display(&self) -> Result<(i32, i32)> {
+        self.with_enigo(|enigo| enigo.main_display())
+    }
+
     async fn start_pen_session(
         &self,
         width: i32,
@@ -1958,6 +1966,19 @@ mod tests {
         input
             .with_enigo(|_| Ok(()))
             .expect("the input backend initializes");
+    }
+
+    #[tokio::test]
+    #[ignore = "moves the real pointer to the center of the main display"]
+    async fn the_real_pointer_moves_to_an_absolute_position() {
+        let input = WinInput::new();
+        let (width, height) = input.main_display().await.unwrap();
+        let target = (width / 2, height / 2);
+
+        input.absolute_pointer(target.0, target.1).await.unwrap();
+
+        let location = input.with_enigo(|enigo| enigo.location()).unwrap();
+        assert_eq!(location, target);
     }
 
     #[tokio::test]

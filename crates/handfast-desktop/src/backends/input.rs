@@ -18,6 +18,10 @@ use evdev::uinput::VirtualDevice;
 const YDOTOOL: &str = "ydotool";
 const WTYPE: &str = "wtype";
 
+/// The named gap: Wayland has no portable absolute pointer, so shared input
+/// cannot enter the desktop here.
+const WAYLAND_ABSOLUTE_POINTER: &str = "absolute pointer positioning is not available on Wayland, because ydotool cannot move to absolute coordinates and libei needs a portal consent";
+
 fn failure(program: &str, output: &CommandOutput) -> DesktopError {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
@@ -331,6 +335,14 @@ impl Input for WaylandInput {
                 self.run(WTYPE, &args).await
             }
         }
+    }
+
+    async fn absolute_pointer(&self, _x: i32, _y: i32) -> Result<()> {
+        Err(DesktopError::Unsupported(WAYLAND_ABSOLUTE_POINTER))
+    }
+
+    async fn main_display(&self) -> Result<(i32, i32)> {
+        Err(DesktopError::Unsupported(WAYLAND_ABSOLUTE_POINTER))
     }
 
     async fn start_pen_session(
@@ -680,6 +692,20 @@ mod tests {
             matches!(&error, DesktopError::Backend(message) if message.contains("no ydotoold")),
             "unexpected error: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn absolute_pointer_is_unsupported_without_running_a_tool() {
+        let (input, runner) = adapter(ok());
+
+        let error = input.absolute_pointer(10, 20).await.unwrap_err();
+        assert!(
+            matches!(&error, DesktopError::Unsupported(message) if message.contains("Wayland")),
+            "unexpected error: {error}"
+        );
+        let error = input.main_display().await.unwrap_err();
+        assert!(matches!(error, DesktopError::Unsupported(_)));
+        assert!(runner.calls().is_empty());
     }
 
     #[cfg(target_os = "linux")]

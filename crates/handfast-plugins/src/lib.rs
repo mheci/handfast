@@ -29,6 +29,7 @@ pub mod runcommand;
 pub mod screensaver_inhibit;
 pub mod sftp;
 pub mod share;
+pub mod shareinputdevicesremote;
 pub mod sms;
 pub mod systemvolume;
 pub mod telephony;
@@ -66,6 +67,7 @@ pub use sftp::{
     start_request as sftp_start_request, SftpClient, SftpError, SftpFactory, SftpPlugin,
 };
 pub use share::{ShareFactory, SharePlugin};
+pub use shareinputdevicesremote::{ShareInputDevicesRemoteFactory, ShareInputDevicesRemotePlugin};
 pub use sms::{SmsFactory, SmsPlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
 pub use telephony::{TelephonyFactory, TelephonyPlugin};
@@ -82,6 +84,7 @@ pub fn registry() -> Registry {
         Box::new(digitizer::DigitizerFactory),
         Box::new(pausemusic::PauseMusicFactory),
         Box::new(share::ShareFactory),
+        Box::new(shareinputdevicesremote::ShareInputDevicesRemoteFactory),
         Box::new(sms::SmsFactory),
         Box::new(mpriscontrol::MprisControlFactory),
         Box::new(mprisremote::MprisRemoteFactory),
@@ -163,6 +166,25 @@ mod tests {
         let without_input = Desktop::default();
         let capabilities = registry.capabilities(&without_input).unwrap();
         assert!(!capabilities.accepts(types::DIGITIZER));
+    }
+
+    #[test]
+    fn shareinputdevicesremote_is_advertised_with_input_adapter() {
+        let registry = registry();
+
+        let with_input = MockDesktop::new();
+        let capabilities = registry.capabilities(&with_input.desktop()).unwrap();
+        assert!(capabilities.accepts(types::SHAREINPUTDEVICES_REQUEST));
+        assert!(capabilities.accepts(types::SHAREINPUTDEVICES));
+        assert!(capabilities.outgoing().contains(types::SHAREINPUTDEVICES));
+        assert!(DeviceHost::new(device(), &registry, with_input.desktop())
+            .is_enabled("shareinputdevicesremote"));
+
+        let without_input = Desktop::default();
+        let capabilities = registry.capabilities(&without_input).unwrap();
+        assert!(!capabilities.accepts(types::SHAREINPUTDEVICES_REQUEST));
+        assert!(!DeviceHost::new(device(), &registry, Desktop::default())
+            .is_enabled("shareinputdevicesremote"));
     }
 
     #[test]

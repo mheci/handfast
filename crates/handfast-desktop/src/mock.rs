@@ -15,6 +15,9 @@ use crate::model::{
 use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
 use crate::Desktop;
 
+/// The main display the mock reports, in pixels.
+const MOCK_DISPLAY: (i32, i32) = (1920, 1080);
+
 /// Recorded synthetic input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
@@ -39,6 +42,13 @@ pub enum InputEvent {
     PenEnd,
     /// One absolute pen event.
     Pen(PenEvent),
+    /// An absolute pointer move on the main display.
+    AbsolutePointer {
+        /// Pixel column.
+        x: i32,
+        /// Pixel row.
+        y: i32,
+    },
 }
 
 /// Counts lock calls made through the mock desktop.
@@ -366,6 +376,16 @@ impl Input for MockBackend {
         self.lock(&self.0.input)?.push(InputEvent::Pen(event));
         Ok(())
     }
+
+    async fn absolute_pointer(&self, x: i32, y: i32) -> Result<()> {
+        self.lock(&self.0.input)?
+            .push(InputEvent::AbsolutePointer { x, y });
+        Ok(())
+    }
+
+    async fn main_display(&self) -> Result<(i32, i32)> {
+        Ok(MOCK_DISPLAY)
+    }
 }
 
 #[async_trait]
@@ -499,6 +519,20 @@ mod tests {
                 }),
                 InputEvent::PenEnd,
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn absolute_pointer_is_recorded_on_the_main_display() {
+        let desktop = MockDesktop::new();
+        let input = desktop.desktop().input.clone().unwrap();
+        assert_eq!(input.main_display().await.unwrap(), (1920, 1080));
+
+        input.absolute_pointer(10, 20).await.unwrap();
+
+        assert_eq!(
+            desktop.input_events(),
+            vec![InputEvent::AbsolutePointer { x: 10, y: 20 }]
         );
     }
 

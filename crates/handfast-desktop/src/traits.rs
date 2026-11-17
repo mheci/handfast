@@ -66,6 +66,26 @@ pub trait Input: Send + Sync {
     /// Inject a key press and release.
     async fn key(&self, event: KeyEvent) -> Result<()>;
 
+    /// Move the pointer to an absolute pixel position on the main display.
+    ///
+    /// The default implementation reports [`DesktopError::Unsupported`].
+    async fn absolute_pointer(&self, x: i32, y: i32) -> Result<()> {
+        let _ = (x, y);
+        Err(DesktopError::Unsupported(
+            "absolute pointer positioning is not supported on this desktop",
+        ))
+    }
+
+    /// The main display size in pixels, as `(width, height)`. Its top-left
+    /// pixel is the origin of [`Input::absolute_pointer`].
+    ///
+    /// The default implementation reports [`DesktopError::Unsupported`].
+    async fn main_display(&self) -> Result<(i32, i32)> {
+        Err(DesktopError::Unsupported(
+            "the main display size is not available on this desktop",
+        ))
+    }
+
     /// Open a digitizer session that maps a `width` x `height` device
     /// coordinate space, with `resolution_x` and `resolution_y` in pixels per
     /// millimetre, onto the desktop.

@@ -171,6 +171,15 @@ fn parse(packet: &Packet) -> Result<Action, &'static str> {
     }
 }
 
+/// Scrolls, clicks and keys return `None`, so trackers count exactly the moves
+/// that this plugin injects.
+pub(crate) fn pointer_move(packet: &Packet) -> Option<PointerEvent> {
+    match parse(packet) {
+        Ok(Action::Pointer(event)) if !event.scroll => Some(event),
+        _ => None,
+    }
+}
+
 fn echo_packet(event: &KeyEvent) -> Result<Packet, PluginError> {
     let mut body = Map::new();
     body.insert("isAck".to_string(), Value::Bool(true));
@@ -550,6 +559,27 @@ mod tests {
         let output = run(&mock.desktop(), Packet::empty(types::PING).unwrap()).await;
         assert!(mock.input_events().is_empty());
         assert!(output.events.is_empty());
+    }
+
+    #[test]
+    fn pointer_move_is_only_a_plain_relative_move() {
+        assert_eq!(
+            pointer_move(&request(json!({"dx": 1.0, "dy": -2.0}))),
+            Some(PointerEvent {
+                dx: 1.0,
+                dy: -2.0,
+                scroll: false,
+            })
+        );
+        assert_eq!(
+            pointer_move(&request(json!({"scroll": true, "dx": 0.0, "dy": 1.0}))),
+            None
+        );
+        assert_eq!(
+            pointer_move(&request(json!({"singleclick": true, "dx": 1.0, "dy": 1.0}))),
+            None
+        );
+        assert_eq!(pointer_move(&request(json!({"key": "a"}))), None);
     }
 
     #[test]

@@ -40,7 +40,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 24 | `sftp` | phone -> desktop | `kdeconnect.sftp`, `.sftp.request` | `russh` SFTP client | P3 | yes | yes | no |
 | 25 | `share` | bidirectional | `kdeconnect.share.request`, `.share.request.update` | TLS payload channel, `LocalFiles`, `xdg-open` for URLs | P1 | yes | yes | no |
 | 26 | `shareinputdevices` | desktop -> remote | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input capture + forwarding | P4 | no | no | no |
-| 27 | `shareinputdevicesremote` | remote -> desktop | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | libei input injection | P4 | no | no | no |
+| 27 | `shareinputdevicesremote` | remote -> desktop | `kdeconnect.shareinputdevices`, `.shareinputdevices.request`, `kdeconnect.mousepad.request` | `enigo` absolute pointer on Windows; declines shares on Wayland | P4 | yes | yes | no |
 | 28 | `sms` | bidirectional | `kdeconnect.sms.messages`, `.sms.request`, `.sms.request_conversation`, `.sms.request_conversations`, `.sms.request_attachment`, `.sms.attachment_file` | phone-owned message cache | P2 | yes | n/a | no |
 | 29 | `systemvolume` | bidirectional | `kdeconnect.systemvolume`, `.systemvolume.request` | `wpctl` | P2 | yes | yes | no |
 | 30 | `telephony` | phone -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | `notify-send`; toast on Windows | P2 | yes | yes | no |
@@ -124,6 +124,14 @@ Gaps, named rather than hidden:
   clicks and keys to a phone over `kdeconnect.mousepad.request`. The phone
   injects the input; nothing is injected locally. Special key codes are 1-32,
   matching the codes the desktop `mousepad` plugin accepts.
+- **Shared input receive**: `shareinputdevicesremote` moves the pointer to the
+  entry edge with an absolute `enigo` move on Windows. Wayland has no portable
+  absolute pointer. `ydotool` cannot move to absolute coordinates, and libei
+  needs a portal consent and a new dependency. On Wayland the plugin still
+  advertises its capability, so a peer can start a share. The plugin declines
+  that share with a zero-offset release, so the peer gets its pointer back.
+  Only the main display is used, so a multi-monitor layout enters at a corner
+  of the primary display.
 - **SFTP**: the phone runs the SFTP server. `handfast sftp <device-id> --start`
   sends `kdeconnect.sftp.request`, and the phone replies with a one-session
   password plus the port, user, root and its reported IP. `--list`,
