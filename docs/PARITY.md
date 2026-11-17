@@ -129,7 +129,7 @@ Gaps, named rather than hidden:
   absolute pointer. `ydotool` cannot move to absolute coordinates, and libei
   needs a portal consent and a new dependency. On Wayland the plugin still
   advertises its capability, so a peer can start a share. The plugin declines
-  that share with a zero-offset release, so the peer gets its pointer back.
+  that share and echoes the peer's offset, so the peer gets its pointer back.
   Only the main display is used, so a multi-monitor layout enters at a corner
   of the primary display.
 - **SFTP**: the phone runs the SFTP server. `handfast sftp <device-id> --start`

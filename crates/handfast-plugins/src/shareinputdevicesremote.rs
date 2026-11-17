@@ -9,9 +9,9 @@
 //! offset.
 //!
 //! Named gaps. Wayland has no portable absolute pointer, so every share is
-//! declined there with a zero-offset release. Only the main display is used, so
-//! a multi-monitor layout enters at a corner of the primary display. Scroll
-//! packets do not move the tracked pointer, unlike upstream.
+//! declined there, and the peer's offset is echoed back. Only the main display
+//! is used, so a multi-monitor layout enters at a corner of the primary
+//! display. Scroll packets do not move the tracked pointer, unlike upstream.
 
 use async_trait::async_trait;
 use handfast_desktop::DesktopError;
@@ -247,10 +247,16 @@ fn decline_warning(message: &str) -> PluginEvent {
 }
 
 impl ShareInputDevicesRemotePlugin {
-    /// A zero offset puts the peer's pointer at the start of its barrier.
-    fn decline(&mut self, warning: Option<PluginEvent>) -> Result<PluginOutput, PluginError> {
+    /// Forget the share and release the peer at `offset`. The request's own deltas
+    /// go back, as the Android receiver echoes them. `None` means the request could
+    /// not be parsed, so the release is zero.
+    fn decline(
+        &mut self,
+        offset: Option<Point>,
+        warning: Option<PluginEvent>,
+    ) -> Result<PluginOutput, PluginError> {
         self.share = None;
-        let output = release(Point { x: 0.0, y: 0.0 })?;
+        let output = release(offset.unwrap_or(Point { x: 0.0, y: 0.0 }))?;
         Ok(match warning {
             Some(event) => output.with_event(event),
             None => output,
@@ -258,7 +264,7 @@ impl ShareInputDevicesRemotePlugin {
     }
 
     /// Decline after the backend refused. An unsupported backend warns once.
-    fn refused(&mut self, error: DesktopError) -> Result<PluginOutput, PluginError> {
+    fn refused(&mut self, offset: Point, error: DesktopError) -> Result<PluginOutput, PluginError> {
         let warning = match error {
             DesktopError::Unsupported(_) if self.warned => None,
             DesktopError::Unsupported(message) => {
@@ -267,7 +273,7 @@ impl ShareInputDevicesRemotePlugin {
             }
             other => Some(decline_warning(&other.to_string())),
         };
-        self.decline(warning)
+        self.decline(Some(offset), warning)
     }
 
     async fn request(
@@ -278,11 +284,18 @@ impl ShareInputDevicesRemotePlugin {
         let request = match parse_request(&packet.body) {
             Ok(Some(request)) => request,
             Ok(None) => return Ok(PluginOutput::new()),
-            Err(message) => return self.decline(Some(decline_warning(message))),
+            Err(message) => return self.decline(None, Some(decline_warning(message))),
+        };
+        let offset = Point {
+            x: request.deltax,
+            y: request.deltay,
         };
         self.share = None;
         let Some(input) = ctx.desktop.input.as_ref() else {
-            return self.decline(Some(decline_warning("input adapter unavailable")));
+            return self.decline(
+                Some(offset),
+                Some(decline_warning("input adapter unavailable")),
+            );
         };
         let screen = match input.main_display().await {
             Ok((width, height)) if width >= 1 && height >= 1 => Rect {
@@ -292,9 +305,12 @@ impl ShareInputDevicesRemotePlugin {
                 height,
             },
             Ok(_) => {
-                return self.decline(Some(decline_warning("the main display reports no size")))
+                return self.decline(
+                    Some(offset),
+                    Some(decline_warning("the main display reports no size")),
+                )
             }
-            Err(error) => return self.refused(error),
+            Err(error) => return self.refused(offset, error),
         };
         let (x, y) = entry_point(request.exit, request.deltax, request.deltay, screen);
         match input.absolute_pointer(x, y).await {
@@ -307,7 +323,7 @@ impl ShareInputDevicesRemotePlugin {
                 ));
                 Ok(PluginOutput::new())
             }
-            Err(error) => self.refused(error),
+            Err(error) => self.refused(offset, error),
         }
     }
 
@@ -794,11 +810,11 @@ mod tests {
         let mut plugin = ShareInputDevicesRemotePlugin::new();
 
         let first = handle(&mut plugin, &desktop, &golden(REQUEST)).await;
-        assert_eq!(first.packets, vec![release_packet(0.0, 0.0)]);
+        assert_eq!(first.packets, vec![release_packet(0.0, 300.0)]);
         assert!(has_warning(&first));
 
         let second = handle(&mut plugin, &desktop, &golden(REQUEST)).await;
-        assert_eq!(second.packets, vec![release_packet(0.0, 0.0)]);
+        assert_eq!(second.packets, vec![release_packet(0.0, 300.0)]);
         assert!(!has_warning(&second));
     }
 
@@ -812,7 +828,7 @@ mod tests {
 
         let output = handle(&mut plugin, &desktop, &golden(REQUEST)).await;
 
-        assert_eq!(output.packets, vec![release_packet(0.0, 0.0)]);
+        assert_eq!(output.packets, vec![release_packet(0.0, 300.0)]);
         assert!(has_warning(&output));
     }
 
@@ -822,7 +838,7 @@ mod tests {
 
         let output = handle(&mut plugin, &Desktop::default(), &golden(REQUEST)).await;
 
-        assert_eq!(output.packets, vec![release_packet(0.0, 0.0)]);
+        assert_eq!(output.packets, vec![release_packet(0.0, 300.0)]);
         assert!(has_warning(&output));
     }
 
@@ -841,6 +857,24 @@ mod tests {
         assert!(mock.input_events().is_empty());
         assert_eq!(output.packets, vec![release_packet(0.0, 0.0)]);
         assert!(has_warning(&output));
+    }
+
+    #[tokio::test]
+    async fn a_decline_echoes_the_request_offset() {
+        let desktop = Desktop {
+            input: Some(Arc::new(NoAbsoluteInput)),
+            ..Desktop::default()
+        };
+        let mut plugin = ShareInputDevicesRemotePlugin::new();
+
+        let output = handle(
+            &mut plugin,
+            &desktop,
+            &request_packet(json!({"exitEdge": 4, "deltax": 25.0, "deltay": 40.0})),
+        )
+        .await;
+
+        assert_eq!(output.packets, vec![release_packet(25.0, 40.0)]);
     }
 
     #[test]

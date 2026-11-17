@@ -279,7 +279,7 @@ pub const SHAREINPUTDEVICES: PluginMeta = PluginMeta {
 /// Accept shared input from a remote device.
 ///
 /// Wayland gap: the desktop cannot place the pointer at an absolute position, so
-/// every share is declined there with a zero-offset release.
+/// every share is declined there, with the peer's offset echoed back.
 pub const SHAREINPUTDEVICESREMOTE: PluginMeta = PluginMeta {
     name: "shareinputdevicesremote",
     title: "Receive shared input devices",
