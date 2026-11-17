@@ -44,6 +44,7 @@ impl Dispatch {
 
 enum Call<'a> {
     Connect,
+    Tick,
     Packet(&'a Packet),
     Disconnect,
 }
@@ -58,6 +59,7 @@ async fn invoke(
     let mut ctx = PluginContext { device, desktop };
     let future: BoxFuture<'_, Result<PluginOutput, PluginError>> = match call {
         Call::Connect => Box::pin(plugin.on_connect(&mut ctx)),
+        Call::Tick => Box::pin(plugin.on_tick(&mut ctx)),
         Call::Packet(packet) => Box::pin(plugin.on_packet(&mut ctx, packet)),
         Call::Disconnect => Box::pin(plugin.on_disconnect(&mut ctx)),
     };
@@ -152,6 +154,39 @@ impl DeviceHost {
                 continue;
             }
             match invoke(plugin.as_mut(), device, desktop, Call::Connect).await {
+                Ok(output) => result.absorb(output),
+                Err(error) => {
+                    newly_failed.push(meta.name);
+                    result.errors.push(error);
+                }
+            }
+        }
+        for name in newly_failed {
+            failed.insert(name);
+        }
+        result
+    }
+
+    /// Call `on_tick` on every enabled plugin.
+    pub async fn tick(&mut self) -> Dispatch {
+        let mut result = Dispatch::default();
+        let mut newly_failed = Vec::new();
+        let Self {
+            device,
+            desktop,
+            plugins,
+            enabled,
+            failed,
+        } = self;
+        for plugin in plugins.iter_mut() {
+            let meta = plugin.meta();
+            if meta.status != PluginStatus::Implemented
+                || !enabled.contains(meta.name)
+                || failed.contains(meta.name)
+            {
+                continue;
+            }
+            match invoke(plugin.as_mut(), device, desktop, Call::Tick).await {
                 Ok(output) => result.absorb(output),
                 Err(error) => {
                     newly_failed.push(meta.name);
@@ -283,6 +318,14 @@ mod tests {
             _ctx: &mut PluginContext<'_>,
         ) -> Result<PluginOutput, PluginError> {
             self.calls.lock().unwrap().push("connect".to_string());
+            Ok(PluginOutput::new())
+        }
+
+        async fn on_tick(
+            &mut self,
+            _ctx: &mut PluginContext<'_>,
+        ) -> Result<PluginOutput, PluginError> {
+            self.calls.lock().unwrap().push("tick".to_string());
             Ok(PluginOutput::new())
         }
 
@@ -457,10 +500,15 @@ mod tests {
             hang_on_packet: false,
         })]);
         host.on_connect().await;
+        host.tick().await;
         host.on_disconnect().await;
         assert_eq!(
             *calls.lock().unwrap(),
-            vec!["connect".to_string(), "disconnect".to_string()]
+            vec![
+                "connect".to_string(),
+                "tick".to_string(),
+                "disconnect".to_string()
+            ]
         );
     }
 

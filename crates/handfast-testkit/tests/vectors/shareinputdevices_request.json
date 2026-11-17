@@ -1,0 +1,9 @@
+{
+  "id": 0,
+  "type": "kdeconnect.shareinputdevices.request",
+  "body": {
+    "exitEdge": 2,
+    "deltax": 0.0,
+    "deltay": 300.0
+  }
+}

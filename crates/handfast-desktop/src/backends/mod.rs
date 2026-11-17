@@ -1,20 +1,28 @@
-//! Linux desktop backends.
+//! Desktop backends.
 //!
 //! Each backend is independent, so a host missing one capability still gets the
-//! others.
+//! others. Linux adapters run session tools; Windows adapters run in-box
+//! executables by absolute path or wrap a safe crate.
 
 pub mod clipboard;
+#[cfg(not(windows))]
+pub mod input;
 pub mod lock;
 pub mod mpris;
 pub mod notifications;
+pub mod power;
 pub mod screensaver;
 pub mod shell;
 pub mod volume;
+#[cfg(windows)]
+pub mod win;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::traits::{Clipboard, Lock, Media, Notifier, Screensaver, Shell, Volume};
+#[cfg(not(windows))]
+use crate::traits::Input;
+use crate::traits::{Clipboard, Lock, Media, Notifier, Power, Screensaver, Shell, Volume};
 
 /// Whether `program` resolves to a regular file on `PATH`.
 ///
@@ -93,6 +101,41 @@ pub fn screensaver() -> Arc<dyn Screensaver> {
 #[must_use]
 pub fn lock() -> Arc<dyn Lock> {
     Arc::new(lock::LoginctlLock::new())
+}
+
+/// Build the host battery backend.
+#[must_use]
+pub fn power() -> Arc<dyn Power> {
+    Arc::new(power::SysfsPower::new())
+}
+
+/// Build the Wayland input backend.
+#[cfg(not(windows))]
+#[must_use]
+pub fn input() -> Arc<dyn Input> {
+    Arc::new(input::WaylandInput::new())
+}
+
+/// Add every Windows backend that does not need an external install to
+/// `desktop`.
+///
+/// The toast, SMTC and battery adapters need the in-box Windows PowerShell. The
+/// others use System32 executables or a safe crate, so they are always present.
+#[cfg(windows)]
+#[must_use]
+pub fn windows(mut desktop: crate::Desktop) -> crate::Desktop {
+    desktop.clipboard = Some(Arc::new(win::WinClipboard::new()));
+    desktop.screensaver = Some(Arc::new(win::WinScreensaver::new()));
+    desktop.lock = Some(Arc::new(win::WinLock::new()));
+    desktop.shell = Some(Arc::new(win::ExplorerShell::new()));
+    desktop.volume = Some(Arc::new(win::WinVolume::new()));
+    desktop.power = Some(Arc::new(win::WinPower::new()));
+    desktop.input = Some(Arc::new(win::WinInput::new()));
+    if win::powershell().is_file() {
+        desktop.notifier = Some(Arc::new(win::WinNotifier::new()));
+        desktop.media = Some(Arc::new(win::WinMedia::new()));
+    }
+    desktop
 }
 
 #[cfg(test)]

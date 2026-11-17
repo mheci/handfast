@@ -192,7 +192,8 @@ fn msi(out: &Path) -> bool {
         .unwrap_or(workspace_version());
     let wxs = Path::new("packaging/windows/handfast.wxs");
     let notices = Path::new("THIRD-PARTY-NOTICES.md");
-    if !wxs.is_file() || !notices.is_file() {
+    let icon = Path::new("assets/branding/handfast.ico");
+    if !wxs.is_file() || !notices.is_file() || !icon.is_file() {
         eprintln!("run xtask from the repository root");
         return false;
     }
@@ -224,6 +225,7 @@ fn msi(out: &Path) -> bool {
         format!("-dVersion={version}"),
         format!("-dBinaryPath={}", binary.display()),
         format!("-dNoticesPath={}", notices.display()),
+        format!("-dIconPath={}", icon.display()),
         "-out".to_string(),
         wixobj.display().to_string(),
         wxs.display().to_string(),

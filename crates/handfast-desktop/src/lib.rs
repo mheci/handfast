@@ -1,7 +1,8 @@
 //! Desktop adapter contracts for Handfast.
 //!
-//! Plugins talk to these traits. Linux backends implement them with D-Bus,
-//! Wayland, PipeWire and libei. Tests use [`MockDesktop`].
+//! Plugins talk to these traits. Linux and Windows backends implement them
+//! with session tools, D-Bus, Wayland, PipeWire and in-box Windows
+//! executables. Tests use [`MockDesktop`].
 
 #![deny(missing_docs)]
 
@@ -24,10 +25,12 @@ pub use files::{
 };
 pub use mock::MockDesktop;
 pub use model::{
-    KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerEvent, Urgency,
-    VolumeState,
+    ButtonAction, CommandSpec, KeyEvent, MediaAction, Modifiers, Notification, PenEvent, PenTool,
+    PlaybackState, PointerButton, PointerEvent, PowerState, Urgency, VolumeState,
 };
-pub use traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
+pub use traits::{
+    Clipboard, Commands, Input, Lock, Media, Notifier, Power, Screensaver, Shell, Volume,
+};
 
 /// Presence of desktop adapters on the current host.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -48,6 +51,8 @@ pub struct DesktopCapabilities {
     pub lock: bool,
     /// URL and file opening is available.
     pub shell: bool,
+    /// Locally configured commands are available.
+    pub commands: bool,
     /// File receive and send is available.
     pub files: bool,
 }
@@ -71,6 +76,10 @@ pub struct Desktop {
     pub lock: Option<Arc<dyn Lock>>,
     /// Shell integration adapter.
     pub shell: Option<Arc<dyn Shell>>,
+    /// Host battery adapter.
+    pub power: Option<Arc<dyn Power>>,
+    /// Locally configured command adapter.
+    pub commands: Option<Arc<dyn Commands>>,
     /// File receive and send adapter.
     pub files: Option<Arc<dyn Files>>,
 }
@@ -112,6 +121,13 @@ impl Desktop {
         self
     }
 
+    /// Install a local command adapter.
+    #[must_use]
+    pub fn with_commands(mut self, commands: Arc<dyn Commands>) -> Self {
+        self.commands = Some(commands);
+        self
+    }
+
     /// Install a screensaver adapter.
     #[must_use]
     pub fn with_screensaver(mut self, screensaver: Arc<dyn Screensaver>) -> Self {
@@ -145,6 +161,7 @@ impl Desktop {
             screensaver: self.screensaver.is_some(),
             lock: self.lock.is_some(),
             shell: self.shell.is_some(),
+            commands: self.commands.is_some(),
             files: self.files.is_some(),
         }
     }

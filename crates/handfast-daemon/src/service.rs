@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 
 use handfast_proto::DeviceId;
 
-use crate::control::{send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus};
+use crate::control::{
+    send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus, RemoteMediaCommand,
+};
 
 /// The Task Scheduler task name.
 pub const TASK_NAME: &str = "Handfast";
@@ -211,7 +213,106 @@ impl LocalControl {
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
             ControlResponse::Ok { .. }
             | ControlResponse::Status { .. }
-            | ControlResponse::ShuttingDown => Err(ControlError::Remote(
+            | ControlResponse::ShuttingDown
+            | ControlResponse::Commands { .. }
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
+        }
+    }
+
+    /// Ask a connected device to ring.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no daemon answers, the device is not connected, or the
+    /// response is not an acknowledgement.
+    pub fn ring(&self, device_id: &DeviceId) -> Result<(), ControlError> {
+        let request = ControlRequest::Ring {
+            device_id: device_id.as_str().to_string(),
+        };
+        match self.request(&request)? {
+            ControlResponse::Ok { .. } => Ok(()),
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            ControlResponse::Status { .. }
+            | ControlResponse::ShuttingDown
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. }
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
+        }
+    }
+
+    /// Change one audio sink on a connected device.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no daemon answers, the device is not connected or has not
+    /// reported the sink, the percent is over 100, both or neither of `percent`
+    /// and `muted` are set, or the response is not an acknowledgement.
+    pub fn set_remote_volume(
+        &self,
+        device_id: &DeviceId,
+        sink: &str,
+        percent: Option<u8>,
+        muted: Option<bool>,
+    ) -> Result<(), ControlError> {
+        let request = ControlRequest::RemoteVolume {
+            device_id: device_id.as_str().to_string(),
+            sink: sink.to_string(),
+            percent,
+            muted,
+        };
+        match self.request(&request)? {
+            ControlResponse::Ok { .. } => Ok(()),
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            ControlResponse::Status { .. }
+            | ControlResponse::ShuttingDown
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. }
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
+        }
+    }
+
+    /// Control one media player on a connected device.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no daemon answers, the device is not connected or has not
+    /// reported the player, the command is invalid, or the response is not an
+    /// acknowledgement.
+    pub fn media(
+        &self,
+        device_id: &DeviceId,
+        command: RemoteMediaCommand,
+    ) -> Result<(), ControlError> {
+        let request = ControlRequest::Media {
+            device_id: device_id.as_str().to_string(),
+            command,
+        };
+        match self.request(&request)? {
+            ControlResponse::Ok { .. } => Ok(()),
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            ControlResponse::Status { .. }
+            | ControlResponse::ShuttingDown
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. }
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -225,7 +326,12 @@ impl DaemonControl for LocalControl {
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
             ControlResponse::Ok { .. }
             | ControlResponse::ShuttingDown
-            | ControlResponse::Decided => Err(ControlError::Remote(
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. }
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -237,7 +343,12 @@ impl DaemonControl for LocalControl {
             ControlResponse::Err { message } => Err(ControlError::Remote(message)),
             ControlResponse::Ok { .. }
             | ControlResponse::Status { .. }
-            | ControlResponse::Decided => Err(ControlError::Remote(
+            | ControlResponse::Decided
+            | ControlResponse::Commands { .. }
+            | ControlResponse::Contacts { .. }
+            | ControlResponse::SmsConversations { .. }
+            | ControlResponse::SmsThread { .. }
+            | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
                 "unexpected control response".to_string(),
             )),
         }
@@ -432,6 +543,12 @@ impl<'a> Service<'a> {
         self.install_task_with_sid(&sid, control)
     }
 
+    #[cfg(windows)]
+    fn uninstall_task(&self) -> Result<(), ServiceError> {
+        let sid = handfast_desktop::winacl::current_user_sid_string()?;
+        self.uninstall_task_with_sid(&sid)
+    }
+
     #[cfg(any(windows, test))]
     fn install_task_with_sid(
         &self,
@@ -453,23 +570,40 @@ impl<'a> Service<'a> {
         self.start_with(control, &windows_run_task())?;
 
         let mut notes = vec![format!("installed task {TASK_NAME}")];
-        if !self.succeeds(
-            "netsh",
-            &["advfirewall", "firewall", "show", "rule", "name=Handfast"],
-        ) {
-            notes.push(format!(
-                "the Windows firewall rule is missing; add it as an administrator with:\n{}",
-                firewall_command(&self.exe)
-            ));
+        let rule = firewall_rule_name(sid);
+        if self.is_elevated() {
+            self.run_ignored(&firewall_delete_command(&rule));
+            if self
+                .run_checked(&firewall_add_command(&rule, &self.exe))
+                .is_ok()
+            {
+                notes.push(format!("installed firewall rule {rule}"));
+            } else {
+                notes.push(format!(
+                    "could not install the Windows firewall rule; add it as an administrator with:\n{}",
+                    firewall_command(&self.exe, &rule)
+                ));
+            }
+        } else {
+            let name = format!("name={rule}");
+            if !self.succeeds("netsh", &["advfirewall", "firewall", "show", "rule", &name]) {
+                notes.push(format!(
+                    "the Windows firewall rule is missing; add it as an administrator with:\n{}",
+                    firewall_command(&self.exe, &rule)
+                ));
+            }
         }
         Ok(notes)
     }
 
     #[cfg(any(windows, test))]
-    fn uninstall_task(&self) -> Result<(), ServiceError> {
+    fn uninstall_task_with_sid(&self, sid: &str) -> Result<(), ServiceError> {
         if self.installed_windows() {
             self.run_ignored(&windows_end_task());
             self.run_checked(&windows_delete_task())?;
+        }
+        if self.is_elevated() {
+            self.run_ignored(&firewall_delete_command(&firewall_rule_name(sid)));
         }
         Ok(())
     }
@@ -534,6 +668,11 @@ impl<'a> Service<'a> {
             .run(program, args)
             .map(|output| output.success)
             .unwrap_or(false)
+    }
+
+    #[cfg(any(windows, test))]
+    fn is_elevated(&self) -> bool {
+        self.succeeds("net", &["session"])
     }
 }
 
@@ -631,11 +770,55 @@ pub fn write_task_xml(path: &Path, xml: &str) -> io::Result<()> {
     std::fs::write(path, bytes)
 }
 
+/// Stable firewall rule name for one user.
+///
+/// The name carries the user's SID, so two users never share a rule and an MSI
+/// install and a later elevated `service install` by the same user address the
+/// same rule. Windows Installer exposes that SID as its `UserSID` property,
+/// which is what the MSI's own rule actions use.
+#[must_use]
+pub fn firewall_rule_name(sid: &str) -> String {
+    format!("Handfast-{sid}")
+}
+
+#[cfg(any(windows, test))]
+fn firewall_add_command(rule: &str, exe: &Path) -> Cmd {
+    Cmd {
+        program: "netsh",
+        args: vec![
+            "advfirewall".to_string(),
+            "firewall".to_string(),
+            "add".to_string(),
+            "rule".to_string(),
+            format!("name={rule}"),
+            "dir=in".to_string(),
+            "action=allow".to_string(),
+            format!("program={}", exe.display()),
+            "enable=yes".to_string(),
+        ],
+    }
+}
+
+#[cfg(any(windows, test))]
+fn firewall_delete_command(rule: &str) -> Cmd {
+    Cmd {
+        program: "netsh",
+        args: vec![
+            "advfirewall".to_string(),
+            "firewall".to_string(),
+            "delete".to_string(),
+            "rule".to_string(),
+            format!("name={rule}"),
+        ],
+    }
+}
+
 /// The administrator command that opens the Windows firewall for `exe`.
 #[must_use]
-pub fn firewall_command(exe: &Path) -> String {
+pub fn firewall_command(exe: &Path, rule: &str) -> String {
     format!(
-        "netsh advfirewall firewall add rule name=Handfast dir=in action=allow program=\"{}\" enable=yes",
+        "netsh advfirewall firewall add rule name=\"{}\" dir=in action=allow program=\"{}\" enable=yes",
+        rule,
         exe.display()
     )
 }
@@ -880,6 +1063,9 @@ mod tests {
             paired: Vec::<PairedDevice>::new(),
             pending_pairings: Vec::new(),
             transfers: Vec::<TransferSummary>::new(),
+            remote_sinks: Vec::new(),
+            remote_players: Vec::new(),
+            remote_commands: Vec::new(),
             truncated: false,
         }
     }
@@ -1210,7 +1396,7 @@ WantedBy=default.target
             .unwrap();
 
         let calls = runner.calls();
-        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(calls.len(), 5, "{calls:?}");
         assert_eq!(calls[0].0, "schtasks");
         assert_eq!(calls[0].1[0], "/Create");
         assert_eq!(calls[0].1[1], "/XML");
@@ -1220,8 +1406,22 @@ WantedBy=default.target
         );
         assert_eq!(calls[0].1[3..], ["/TN", TASK_NAME, "/F"]);
         assert_eq!(calls[1].1, ["/Run", "/TN", TASK_NAME]);
-        assert_eq!(calls[2].0, "netsh");
+        assert_eq!(calls[2].0, "net");
+        assert_eq!(calls[2].1, ["session"]);
+        let rule = firewall_rule_name("S-1-5-21-1-2-3-1001");
+        assert_eq!(calls[3].0, "netsh");
+        assert_eq!(
+            calls[3].1[..4],
+            ["advfirewall", "firewall", "delete", "rule"]
+        );
+        assert_eq!(calls[3].1[4], format!("name={rule}"));
+        assert_eq!(calls[4].0, "netsh");
+        assert_eq!(calls[4].1[..4], ["advfirewall", "firewall", "add", "rule"]);
+        assert_eq!(calls[4].1[4], format!("name={rule}"));
+        assert_eq!(calls[4].1[7], format!("program={}", service.exe.display()));
+        assert_eq!(calls[4].1[8], "enable=yes");
         assert_eq!(notes[0], format!("installed task {TASK_NAME}"));
+        assert_eq!(notes[1], format!("installed firewall rule {rule}"));
         assert!(
             !Path::new(&calls[0].1[2]).exists(),
             "the temp definition is removed"
@@ -1247,7 +1447,7 @@ WantedBy=default.target
             .unwrap();
 
         let calls = runner.calls();
-        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls.len(), 4, "{calls:?}");
         assert_eq!(calls[0].1[0], "/Create");
         assert!(
             !calls.iter().any(|call| call.1[0] == "/Run"),
@@ -1259,7 +1459,7 @@ WantedBy=default.target
     #[test]
     fn install_prints_the_firewall_command_when_the_rule_is_missing() {
         let directory = tempfile::tempdir().unwrap();
-        let runner = FakeCommands::failing(&["netsh advfirewall firewall show"]);
+        let runner = FakeCommands::failing(&["net session", "netsh advfirewall firewall show"]);
         let data_dir = directory.path().join("data");
         let service = service_for(
             r"C:\Handfast\handfast.exe",
@@ -1272,22 +1472,35 @@ WantedBy=default.target
             .install_task_with_sid("S-1-5-21-1-2-3-1001", &FakeControl::stopped())
             .unwrap();
 
-        let expected = firewall_command(Path::new(r"C:\Handfast\handfast.exe"));
+        let rule = firewall_rule_name("S-1-5-21-1-2-3-1001");
+        let expected = firewall_command(Path::new(r"C:\Handfast\handfast.exe"), &rule);
         assert!(
             expected.starts_with(
-                "netsh advfirewall firewall add rule name=Handfast dir=in action=allow"
+                "netsh advfirewall firewall add rule name=\"Handfast-S-1-5-21-1-2-3-1001\""
             ),
+            "{expected}"
+        );
+        assert!(
+            expected
+                .contains("dir=in action=allow program=\"C:\\Handfast\\handfast.exe\" enable=yes"),
             "{expected}"
         );
         assert!(
             notes.iter().any(|note| note.contains(&expected)),
             "{notes:?}"
         );
+        assert!(
+            !runner
+                .calls()
+                .iter()
+                .any(|call| call.0 == "netsh" && call.1[2] == "add"),
+            "a non-elevated install does not add the rule"
+        );
     }
 
     #[cfg(any(windows, test))]
     #[test]
-    fn install_stays_quiet_when_the_firewall_rule_exists() {
+    fn elevated_install_replaces_the_firewall_rule() {
         let directory = tempfile::tempdir().unwrap();
         let runner = FakeCommands::default();
         let data_dir = directory.path().join("data");
@@ -1302,7 +1515,126 @@ WantedBy=default.target
             .install_task_with_sid("S-1-5-21-1-2-3-1001", &FakeControl::stopped())
             .unwrap();
 
+        let calls = runner.calls();
+        let rule = format!("name={}", firewall_rule_name("S-1-5-21-1-2-3-1001"));
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.0 == "netsh" && call.1[2] == "delete" && call.1[4] == rule),
+            "{calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.0 == "netsh" && call.1[2] == "add" && call.1[4] == rule),
+            "{calls:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.starts_with("installed firewall rule Handfast-")),
+            "{notes:?}"
+        );
+    }
+
+    #[cfg(any(windows, test))]
+    #[test]
+    fn unelevated_install_stays_quiet_when_the_rule_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::failing(&["net session"]);
+        let data_dir = directory.path().join("data");
+        let service = service_for(
+            r"C:\Handfast\handfast.exe",
+            &data_dir,
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+
+        let notes = service
+            .install_task_with_sid("S-1-5-21-1-2-3-1001", &FakeControl::stopped())
+            .unwrap();
+
         assert_eq!(notes, vec![format!("installed task {TASK_NAME}")]);
+        assert!(
+            !runner
+                .calls()
+                .iter()
+                .any(|call| call.0 == "netsh" && call.1[2] == "add"),
+            "a non-elevated install does not add the rule"
+        );
+    }
+
+    #[test]
+    fn firewall_rule_name_is_the_sid_and_stable() {
+        let first = firewall_rule_name("S-1-5-21-1-2-3-1001");
+        let again = firewall_rule_name("S-1-5-21-1-2-3-1001");
+        let other = firewall_rule_name("S-1-5-21-1-2-3-2002");
+
+        assert_eq!(first, "Handfast-S-1-5-21-1-2-3-1001");
+        assert_eq!(first, again, "one user keeps one name across installs");
+        assert_ne!(first, other, "two users never share a rule");
+    }
+
+    #[cfg(any(windows, test))]
+    #[test]
+    fn install_and_uninstall_address_the_same_rule() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::default();
+        let data_dir = directory.path().join("data");
+        let service = service_for(
+            r"C:\Handfast\handfast.exe",
+            &data_dir,
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+
+        service
+            .install_task_with_sid("S-1-5-21-1-2-3-1001", &FakeControl::stopped())
+            .unwrap();
+        service
+            .uninstall_task_with_sid("S-1-5-21-1-2-3-1001")
+            .unwrap();
+
+        let calls = runner.calls();
+        let rule = format!("name={}", firewall_rule_name("S-1-5-21-1-2-3-1001"));
+        let names: Vec<&String> = calls
+            .iter()
+            .filter(|call| call.0 == "netsh")
+            .map(|call| &call.1[4])
+            .collect();
+        assert_eq!(
+            names,
+            vec![&rule, &rule, &rule],
+            "delete, add and uninstall delete carry one name"
+        );
+    }
+
+    #[cfg(any(windows, test))]
+    #[test]
+    fn uninstall_removes_the_firewall_rule_when_elevated() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = FakeCommands::default();
+        let data_dir = directory.path().join("data");
+        let service = service_for(
+            r"C:\Handfast\handfast.exe",
+            &data_dir,
+            directory.path().join(UNIT_NAME),
+            &runner,
+        );
+
+        service
+            .uninstall_task_with_sid("S-1-5-21-1-2-3-1001")
+            .unwrap();
+
+        let calls = runner.calls();
+        let last = calls.last().expect("uninstall runs commands");
+        assert_eq!(last.0, "netsh");
+        assert_eq!(last.1[2], "delete");
+        assert_eq!(
+            last.1[4],
+            format!("name={}", firewall_rule_name("S-1-5-21-1-2-3-1001")),
+            "{calls:?}"
+        );
     }
 
     #[cfg(any(unix, test))]
@@ -1432,7 +1764,9 @@ WantedBy=default.target
             &runner,
         );
 
-        service.uninstall_task().unwrap();
+        service
+            .uninstall_task_with_sid("S-1-5-21-1-2-3-1001")
+            .unwrap();
 
         let calls = runner.calls();
         assert_eq!(calls[0].1, ["/Query", "/TN", TASK_NAME]);
@@ -1442,7 +1776,7 @@ WantedBy=default.target
 
     #[cfg(any(windows, test))]
     #[test]
-    fn uninstall_without_a_task_runs_nothing_else() {
+    fn uninstall_without_a_task_still_removes_the_firewall_rule() {
         let directory = tempfile::tempdir().unwrap();
         let runner = FakeCommands::failing(&["schtasks /Query"]);
         let service = service_for(
@@ -1452,9 +1786,26 @@ WantedBy=default.target
             &runner,
         );
 
-        service.uninstall_task().unwrap();
+        service
+            .uninstall_task_with_sid("S-1-5-21-1-2-3-1001")
+            .unwrap();
 
-        assert_eq!(runner.calls().len(), 1, "{:?}", runner.calls());
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(calls[0].0, "schtasks");
+        assert_eq!(calls[1].0, "net");
+        assert_eq!(calls[2].0, "netsh");
+        assert_eq!(calls[2].1[2], "delete");
+        assert_eq!(
+            calls[2].1[4],
+            format!("name={}", firewall_rule_name("S-1-5-21-1-2-3-1001")),
+            "{calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|call| call.0 == "schtasks"
+                && (call.1[0] == "/End" || call.1[0] == "/Delete")),
+            "an absent task runs no task commands"
+        );
     }
 
     #[test]

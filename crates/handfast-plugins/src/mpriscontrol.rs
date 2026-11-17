@@ -7,7 +7,7 @@ use handfast_runtime::{
     LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
     PluginOutput,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::roster;
 
@@ -26,6 +26,9 @@ struct Request<'a> {
     player: Option<&'a str>,
     action: Option<(&'static str, MediaAction)>,
     volume: Option<u8>,
+    request_player_list: bool,
+    request_now_playing: bool,
+    request_volume: bool,
 }
 
 fn parse(packet: &Packet) -> Result<Request<'_>, String> {
@@ -63,17 +66,49 @@ fn parse(packet: &Packet) -> Result<Request<'_>, String> {
             Some(value.clamp(0, 100) as u8)
         }
     };
-    if action.is_none() && volume.is_none() {
+    let request_player_list = packet
+        .body
+        .get("requestPlayerList")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let request_now_playing = packet
+        .body
+        .get("requestNowPlaying")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let request_volume = packet
+        .body
+        .get("requestVolume")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if action.is_none()
+        && volume.is_none()
+        && !request_player_list
+        && !request_now_playing
+        && !request_volume
+    {
         return Err("no supported action".to_string());
     }
     Ok(Request {
         player,
         action,
         volume,
+        request_player_list,
+        request_now_playing,
+        request_volume,
     })
 }
 
 fn describe(request: &Request<'_>) -> String {
+    if request.request_player_list {
+        return "player list".to_string();
+    }
+    if request.request_now_playing {
+        return "now playing".to_string();
+    }
+    if request.request_volume {
+        return "volume".to_string();
+    }
     let mut parts = Vec::new();
     if let Some((name, _)) = request.action {
         parts.push((*name).to_string());
@@ -82,6 +117,45 @@ fn describe(request: &Request<'_>) -> String {
         parts.push(format!("volume {volume}"));
     }
     parts.join(" and ")
+}
+
+async fn state_packets(media: &dyn Media, only: Option<&str>) -> Result<Vec<Packet>, String> {
+    let players = media.players().await.map_err(|error| error.to_string())?;
+    let targets: Vec<&String> = match only {
+        Some(player) => players
+            .iter()
+            .filter(|candidate| candidate.as_str() == player)
+            .collect(),
+        None => players.iter().collect(),
+    };
+    let mut packets = Vec::with_capacity(targets.len());
+    for player in targets {
+        let Some(state) = media
+            .playback(player)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        let mut body = json!({
+            "player": state.player,
+            "playerList": &players,
+            "length": state.length_ms,
+            "pos": state.position_ms,
+            "isPlaying": state.playing,
+        });
+        if let Some(title) = state.title {
+            body["title"] = Value::String(title);
+        }
+        if let Some(artist) = state.artist {
+            body["artist"] = Value::String(artist);
+        }
+        if let Some(volume) = state.volume {
+            body["volume"] = Value::from(volume);
+        }
+        packets.push(Packet::new(types::MPRIS, body).map_err(|error| error.to_string())?);
+    }
+    Ok(packets)
 }
 
 async fn apply(media: &dyn Media, player: &str, request: &Request<'_>) -> Result<(), String> {
@@ -100,7 +174,8 @@ async fn apply(media: &dyn Media, player: &str, request: &Request<'_>) -> Result
     Ok(())
 }
 
-/// Applies MPRIS transport and volume requests to desktop players.
+/// Applies MPRIS transport and volume requests and publishes player state to
+/// the phone.
 #[derive(Debug, Default)]
 pub struct MprisControlPlugin;
 
@@ -116,6 +191,24 @@ impl MprisControlPlugin {
 impl Plugin for MprisControlPlugin {
     fn meta(&self) -> &'static PluginMeta {
         &roster::MPRISCONTROL
+    }
+
+    async fn on_connect(
+        &mut self,
+        ctx: &mut PluginContext<'_>,
+    ) -> Result<PluginOutput, PluginError> {
+        let Some(media) = ctx.desktop.media.as_ref() else {
+            return Ok(PluginOutput::new());
+        };
+        match state_packets(media.as_ref(), None).await {
+            Ok(packets) => Ok(packets
+                .into_iter()
+                .fold(PluginOutput::new(), PluginOutput::with_packet)),
+            Err(message) => Ok(PluginOutput::new().with_event(PluginEvent::Log {
+                level: LogLevel::Warn,
+                message: format!("mpris state skipped: {message}"),
+            })),
+        }
     }
 
     async fn on_packet(
@@ -138,6 +231,31 @@ impl Plugin for MprisControlPlugin {
         let Some(media) = ctx.desktop.media.as_ref() else {
             return Err(PluginError::UnsupportedDesktop("media"));
         };
+        if request.request_player_list || request.request_now_playing || request.request_volume {
+            let only = if (request.request_now_playing || request.request_volume)
+                && !request.request_player_list
+            {
+                request.player
+            } else {
+                None
+            };
+            return match state_packets(media.as_ref(), only).await {
+                Ok(packets) => {
+                    let mut output = PluginOutput::new();
+                    for packet in packets {
+                        output = output.with_packet(packet);
+                    }
+                    Ok(output.with_event(PluginEvent::Log {
+                        level: LogLevel::Info,
+                        message: format!("mpris {} sent", describe(&request)),
+                    }))
+                }
+                Err(message) => Ok(PluginOutput::new().with_event(PluginEvent::Log {
+                    level: LogLevel::Warn,
+                    message: format!("mpris {} failed: {message}", describe(&request)),
+                })),
+            };
+        }
         let targets = match request.player {
             Some(player) => vec![player.to_string()],
             None => media
@@ -244,8 +362,16 @@ mod tests {
             Ok(self.players.clone())
         }
 
-        async fn playback(&self, _player: &str) -> DesktopResult<Option<PlaybackState>> {
-            Ok(None)
+        async fn playback(&self, player: &str) -> DesktopResult<Option<PlaybackState>> {
+            Ok(Some(PlaybackState {
+                player: player.to_string(),
+                playing: true,
+                title: Some(format!("Title {player}")),
+                artist: Some("Artist".to_string()),
+                position_ms: 1_200,
+                length_ms: 300_000,
+                volume: Some(40),
+            }))
         }
 
         async fn control(&self, player: &str, action: MediaAction) -> DesktopResult<()> {
@@ -287,6 +413,96 @@ mod tests {
             desktop,
         };
         MprisControlPlugin::new().on_packet(&mut ctx, packet).await
+    }
+
+    async fn run_connect(desktop: &Desktop) -> Result<PluginOutput, PluginError> {
+        let device = Device::new(
+            DeviceId::generate(),
+            DeviceName::new("Test"),
+            DeviceType::Phone,
+        );
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop,
+        };
+        MprisControlPlugin::new().on_connect(&mut ctx).await
+    }
+
+    #[tokio::test]
+    async fn connect_sends_each_player_state() {
+        let (_media, desktop) = recording_desktop(&["Living Room", "Kitchen"]);
+
+        let output = run_connect(&desktop).await.unwrap();
+
+        assert_eq!(output.packets.len(), 2);
+        assert_eq!(output.packets[0].ptype, types::MPRIS);
+        assert_eq!(output.packets[0].body["player"], "Living Room");
+        assert_eq!(
+            output.packets[0].body["playerList"],
+            json!(["Living Room", "Kitchen"])
+        );
+        assert_eq!(output.packets[0].body["title"], "Title Living Room");
+        assert_eq!(output.packets[0].body["artist"], "Artist");
+        assert_eq!(output.packets[0].body["isPlaying"], true);
+        assert_eq!(output.packets[0].body["length"], 300_000);
+        assert_eq!(output.packets[0].body["pos"], 1_200);
+        assert_eq!(output.packets[0].body["volume"], 40);
+        assert_eq!(output.packets[1].body["player"], "Kitchen");
+    }
+
+    #[tokio::test]
+    async fn request_player_list_sends_every_state() {
+        let (_media, desktop) = recording_desktop(&["Living Room", "Kitchen"]);
+
+        let output = run_with(&desktop, &request(json!({"requestPlayerList": true})))
+            .await
+            .unwrap();
+
+        assert_eq!(output.packets.len(), 2);
+        assert_eq!(output.packets[0].body["player"], "Living Room");
+        assert_eq!(output.packets[1].body["player"], "Kitchen");
+    }
+
+    #[tokio::test]
+    async fn request_now_playing_sends_one_state() {
+        let (_media, desktop) = recording_desktop(&["Living Room", "Kitchen"]);
+
+        let output = run_with(
+            &desktop,
+            &request(json!({"player": "Kitchen", "requestNowPlaying": true})),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output.packets.len(), 1);
+        assert_eq!(output.packets[0].body["player"], "Kitchen");
+        assert_eq!(
+            output.packets[0].body["playerList"],
+            json!(["Living Room", "Kitchen"])
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_without_media_is_empty() {
+        let desktop = Desktop::default();
+
+        assert!(run_connect(&desktop).await.unwrap().packets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_volume_sends_one_state() {
+        let (_media, desktop) = recording_desktop(&["Living Room", "Kitchen"]);
+
+        let output = run_with(
+            &desktop,
+            &request(json!({"player": "Kitchen", "requestVolume": true})),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output.packets.len(), 1);
+        assert_eq!(output.packets[0].body["player"], "Kitchen");
+        assert_eq!(output.packets[0].body["volume"], 40);
     }
 
     fn assert_log(output: &PluginOutput, level: LogLevel) {

@@ -2,9 +2,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
 
-use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 use handfast_daemon::control::{
-    send_request, ControlError, ControlRequest, ControlResponse, DaemonStatus, PairingSummary,
+    send_request, CommandConfigAction, ControlError, ControlRequest, ControlResponse, DaemonStatus,
+    PairingSummary, RemoteCommandRequest, RemoteInputAction, RemoteMediaCommand, SftpAction,
+    SmsAction,
 };
 use handfast_daemon::service::{LocalControl, Service, SystemCommands};
 use handfast_daemon::update::{Authenticode, GitHub, Updater};
@@ -12,6 +14,7 @@ use handfast_daemon::{
     default_data_dir, no_subcommand, parse_tcp_port, run, DaemonArgs, NoSubcommand,
     DEFAULT_TCP_PORT, SHUTDOWN_GRACE,
 };
+use handfast_plugins::remotecontrol::{RemoteClick, RemoteInputModifiers};
 use handfast_proto::DeviceId;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -38,6 +41,29 @@ enum Command {
     Share(ShareArgs),
     /// Accept or reject a pending pairing request.
     Pair(PairArgs),
+    /// Ask a connected device to ring.
+    Ring(RingArgs),
+    /// List or change a connected device's audio sinks.
+    Volume(VolumeArgs),
+    /// List or control a connected device's media players.
+    Media(MediaArgs),
+    /// List or trigger a connected device's commands.
+    #[command(name = "remote-command")]
+    RemoteCommands(RemoteCommandArgs),
+    /// Send mouse or keyboard input to a connected device.
+    #[command(name = "remote-input")]
+    RemoteInput(RemoteInputArgs),
+    /// List or refresh the contacts a connected device reports.
+    Contacts(ContactsArgs),
+    /// List, request or send SMS messages on a connected device.
+    Sms(SmsArgs),
+    /// Ask a connected device to mute its ringer.
+    Telephony(TelephonyArgs),
+    /// Start or browse a connected device's SFTP server.
+    Sftp(SftpArgs),
+    /// List or edit the local runcommand configuration.
+    #[command(name = "command")]
+    Commands(CommandArgs),
     /// Print the running daemon's status.
     Status(StatusArgs),
     /// Install and control the per-user autostart service.
@@ -72,6 +98,295 @@ struct PairArgs {
     /// Reject the pairing request from this device ID.
     #[arg(long, value_name = "DEVICE_ID", group = "answer")]
     reject: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct RingArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+}
+
+#[derive(Debug, Parser)]
+struct VolumeArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Sink name from the listing.
+    #[arg(long, value_name = "NAME")]
+    sink: Option<String>,
+
+    /// Set the sink volume as a percentage of its maximum.
+    #[arg(
+        long,
+        value_name = "PERCENT",
+        value_parser = clap::value_parser!(u8).range(0..=100),
+        conflicts_with_all = ["mute", "unmute"]
+    )]
+    percent: Option<u8>,
+
+    /// Mute the sink.
+    #[arg(long, conflicts_with = "unmute")]
+    mute: bool,
+
+    /// Unmute the sink.
+    #[arg(long)]
+    unmute: bool,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum MediaActionArg {
+    /// Start playback.
+    Play,
+    /// Pause playback.
+    Pause,
+    /// Toggle between play and pause.
+    Toggle,
+    /// Stop playback.
+    Stop,
+    /// Go to the next track.
+    Next,
+    /// Go to the previous track.
+    Previous,
+}
+
+impl From<MediaActionArg> for handfast_runtime::RemoteMediaAction {
+    fn from(action: MediaActionArg) -> Self {
+        match action {
+            MediaActionArg::Play => Self::Play,
+            MediaActionArg::Pause => Self::Pause,
+            MediaActionArg::Toggle => Self::PlayPause,
+            MediaActionArg::Stop => Self::Stop,
+            MediaActionArg::Next => Self::Next,
+            MediaActionArg::Previous => Self::Previous,
+        }
+    }
+}
+
+#[derive(Debug, Parser)]
+struct MediaArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Player name from the listing.
+    #[arg(long, value_name = "NAME")]
+    player: Option<String>,
+
+    /// Ask the peer for its player list.
+    #[arg(long)]
+    list: bool,
+
+    /// Ask one player for its current state.
+    #[arg(long)]
+    status: bool,
+
+    /// Transport action.
+    #[arg(long, value_enum)]
+    action: Option<MediaActionArg>,
+
+    /// Set the player volume as a percentage.
+    #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u8).range(0..=100))]
+    volume: Option<u8>,
+
+    /// Seek by a relative offset in microseconds.
+    #[arg(long, value_name = "MICROSECONDS", allow_hyphen_values = true)]
+    seek: Option<i64>,
+
+    /// Seek to an absolute position in milliseconds.
+    #[arg(long, value_name = "MS")]
+    position: Option<u64>,
+}
+
+#[derive(Debug, Parser)]
+struct RemoteCommandArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Ask the peer to resend its command list.
+    #[arg(long)]
+    list: bool,
+
+    /// Trigger the command with this key.
+    #[arg(long, value_name = "KEY")]
+    run: Option<String>,
+
+    /// Ask the peer to open its command editor.
+    #[arg(long)]
+    setup: bool,
+
+    /// Ask the peer to close its command editor.
+    #[arg(long)]
+    stop: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ClickArg {
+    /// Left click.
+    Left,
+    /// Left double click.
+    Double,
+    /// Middle click.
+    Middle,
+    /// Right click.
+    Right,
+    /// Left button press.
+    Hold,
+    /// Left button release.
+    Release,
+}
+
+#[derive(Debug, Parser)]
+struct RemoteInputArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Relative pointer move.
+    #[arg(
+        long = "move",
+        num_args = 2,
+        value_names = ["DX", "DY"],
+        allow_negative_numbers = true
+    )]
+    r#move: Option<Vec<i32>>,
+
+    /// Scroll step.
+    #[arg(
+        long,
+        num_args = 2,
+        value_names = ["DX", "DY"],
+        allow_negative_numbers = true
+    )]
+    scroll: Option<Vec<i32>>,
+
+    /// Mouse click.
+    #[arg(long, value_enum)]
+    click: Option<ClickArg>,
+
+    /// Text to type on the peer.
+    #[arg(long, value_name = "TEXT")]
+    key: Option<String>,
+
+    /// Special key code, 1-32.
+    #[arg(long, value_name = "CODE", value_parser = clap::value_parser!(u8).range(1..=32))]
+    special: Option<u8>,
+
+    /// Hold Alt.
+    #[arg(long)]
+    alt: bool,
+
+    /// Hold Control.
+    #[arg(long)]
+    ctrl: bool,
+
+    /// Hold Shift.
+    #[arg(long)]
+    shift: bool,
+
+    /// Hold Super.
+    #[arg(long)]
+    sup: bool,
+}
+
+#[derive(Debug, Parser)]
+struct ContactsArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Ask the peer for a fresh sync instead of listing the cache.
+    #[arg(long)]
+    refresh: bool,
+}
+
+#[derive(Debug, Parser)]
+struct SmsArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Ask the peer for the conversation list.
+    #[arg(long)]
+    refresh: bool,
+
+    /// List the cached messages in this thread.
+    #[arg(long, value_name = "THREAD_ID")]
+    thread: Option<i64>,
+
+    /// Ask the peer for every message in --thread.
+    #[arg(long, requires = "thread")]
+    refresh_thread: bool,
+
+    /// Send one message to this address.
+    #[arg(long, value_name = "ADDRESS")]
+    send: Option<String>,
+
+    /// Message body for --send.
+    #[arg(long, value_name = "TEXT", requires = "send")]
+    body: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct TelephonyArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Mute the phone's ringer.
+    #[arg(long)]
+    mute: bool,
+}
+
+#[derive(Debug, Parser)]
+struct SftpArgs {
+    /// Connected device ID from `handfast status`.
+    #[arg(value_name = "DEVICE_ID")]
+    device_id: String,
+
+    /// Ask the phone to start its SFTP server.
+    #[arg(long)]
+    start: bool,
+
+    /// List one remote directory.
+    #[arg(long, value_name = "PATH")]
+    list: Option<String>,
+
+    /// Copy a remote file to a local path.
+    #[arg(long, num_args = 2, value_names = ["REMOTE", "LOCAL"])]
+    download: Option<Vec<String>>,
+
+    /// Copy a local file to a remote path.
+    #[arg(long, num_args = 2, value_names = ["LOCAL", "REMOTE"])]
+    upload: Option<Vec<String>>,
+}
+
+#[derive(Debug, Subcommand)]
+enum CommandAction {
+    /// List the configured commands.
+    List,
+    /// Add a command. Everything after `--` is the argument vector.
+    Add {
+        /// Display name.
+        #[arg(long)]
+        name: String,
+        /// Program and arguments after `--`.
+        #[arg(last = true, required = true, value_name = "ARGV")]
+        argv: Vec<String>,
+    },
+    /// Remove a command by key.
+    Remove {
+        /// Command key from the listing.
+        key: String,
+    },
+}
+
+#[derive(Debug, Parser)]
+struct CommandArgs {
+    #[command(subcommand)]
+    action: CommandAction,
 }
 
 #[derive(Debug, Parser)]
@@ -169,6 +484,46 @@ fn main() -> ExitCode {
         Command::Pair(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
             run_pair(args, data_dir)
+        }
+        Command::Ring(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_ring(args, data_dir)
+        }
+        Command::Volume(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_volume(args, data_dir)
+        }
+        Command::Media(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_media(args, data_dir)
+        }
+        Command::RemoteCommands(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_remote_command(args, data_dir)
+        }
+        Command::RemoteInput(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_remote_input(args, data_dir)
+        }
+        Command::Contacts(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_contacts(args, data_dir)
+        }
+        Command::Sms(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_sms(args, data_dir)
+        }
+        Command::Telephony(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_telephony(args, data_dir)
+        }
+        Command::Sftp(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_sftp(args, data_dir)
+        }
+        Command::Commands(args) => {
+            let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
+            run_command_config(args, data_dir)
         }
         Command::Status(args) => {
             let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
@@ -276,7 +631,12 @@ async fn send_share(args: ShareArgs, data_dir: PathBuf) -> Result<(), ControlErr
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
         ControlResponse::Status { .. }
         | ControlResponse::ShuttingDown
-        | ControlResponse::Decided => Err(ControlError::Remote(
+        | ControlResponse::Decided
+        | ControlResponse::Commands { .. }
+        | ControlResponse::Contacts { .. }
+        | ControlResponse::SmsConversations { .. }
+        | ControlResponse::SmsThread { .. }
+        | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -303,6 +663,828 @@ fn run_pair(args: PairArgs, data_dir: PathBuf) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => fail(error),
+    }
+}
+
+fn run_ring(args: RingArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_ring(args.device_id, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_ring(device_id: String, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{device_id} is not a device ID"
+        )));
+    }
+    let request = ControlRequest::Ring {
+        device_id: device_id.clone(),
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("ringing {device_id}")),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_volume(args: VolumeArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_volume(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_volume(args: VolumeArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let changing = args.percent.is_some() || args.mute || args.unmute;
+    if !changing {
+        let status = request_status(&data_dir).await?;
+        if !status
+            .connected
+            .iter()
+            .any(|device| device.device_id.as_str() == args.device_id)
+        {
+            return Err(ControlError::Remote(format!(
+                "device {} is not connected",
+                args.device_id
+            )));
+        }
+        let Some(device) = status
+            .remote_sinks
+            .iter()
+            .find(|device| device.device_id.as_str() == args.device_id)
+        else {
+            return Ok(format!(
+                "{} has not reported any audio sinks",
+                args.device_id
+            ));
+        };
+        let mut lines = Vec::with_capacity(device.sinks.len());
+        for sink in &device.sinks {
+            let state = if sink.muted { "muted" } else { "unmuted" };
+            let default = if sink.enabled { " (default)" } else { "" };
+            lines.push(format!(
+                "{}\t{}%\t{state}\t{}{default}",
+                sink.name,
+                sink.percent(),
+                sink.description
+            ));
+        }
+        return Ok(lines.join("\n"));
+    }
+    let Some(sink) = args.sink else {
+        return Err(ControlError::Remote(
+            "volume needs --sink <NAME> with --percent, --mute or --unmute".to_string(),
+        ));
+    };
+    let (percent, muted) = if let Some(percent) = args.percent {
+        (Some(percent), None)
+    } else if args.mute {
+        (None, Some(true))
+    } else if args.unmute {
+        (None, Some(false))
+    } else {
+        return Err(ControlError::Remote(
+            "send one of --percent, --mute or --unmute".to_string(),
+        ));
+    };
+    let request = ControlRequest::RemoteVolume {
+        device_id: args.device_id.clone(),
+        sink: sink.clone(),
+        percent,
+        muted,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("set {sink} on {}", args.device_id)),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_media(args: MediaArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_media(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_media(args: MediaArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let operations = [
+        args.list,
+        args.status,
+        args.action.is_some(),
+        args.volume.is_some(),
+        args.seek.is_some(),
+        args.position.is_some(),
+    ];
+    if operations.iter().filter(|selected| **selected).count() > 1 {
+        return Err(ControlError::Remote(
+            "media needs one operation".to_string(),
+        ));
+    }
+    if args.list {
+        let request = ControlRequest::Media {
+            device_id: args.device_id.clone(),
+            command: RemoteMediaCommand::RequestList,
+        };
+        return match send_request(&data_dir, &request).await? {
+            ControlResponse::Ok { .. } => {
+                Ok(format!("requested the player list from {}", args.device_id))
+            }
+            ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+            response => Err(ControlError::Remote(format!(
+                "unexpected control response: {response:?}"
+            ))),
+        };
+    }
+    let status = request_status(&data_dir).await?;
+    if !status
+        .connected
+        .iter()
+        .any(|device| device.device_id.as_str() == args.device_id)
+    {
+        return Err(ControlError::Remote(format!(
+            "device {} is not connected",
+            args.device_id
+        )));
+    }
+    let players = status
+        .remote_players
+        .iter()
+        .find(|device| device.device_id.as_str() == args.device_id)
+        .map_or(&[][..], |device| device.players.as_slice());
+    if players.is_empty() {
+        return Ok(format!(
+            "{} has not reported any media players",
+            args.device_id
+        ));
+    }
+    let player = match args.player {
+        Some(player) => player,
+        None if players.len() == 1 => players[0].player.clone(),
+        None => {
+            return Err(ControlError::Remote(
+                "media needs --player <NAME>".to_string(),
+            ));
+        }
+    };
+    if !players.iter().any(|model| model.player == player) {
+        return Err(ControlError::Remote(format!(
+            "device {} has not reported the player {player}",
+            args.device_id
+        )));
+    }
+    let command = if args.status {
+        RemoteMediaCommand::RequestStatus {
+            player: player.clone(),
+        }
+    } else if let Some(action) = args.action {
+        RemoteMediaCommand::Action {
+            player: player.clone(),
+            action: action.into(),
+        }
+    } else if let Some(volume) = args.volume {
+        RemoteMediaCommand::SetVolume {
+            player: player.clone(),
+            volume,
+        }
+    } else if let Some(offset_us) = args.seek {
+        RemoteMediaCommand::Seek {
+            player: player.clone(),
+            offset_us,
+        }
+    } else if let Some(position) = args.position {
+        let Ok(position_ms) = i64::try_from(position) else {
+            return Err(ControlError::Remote(
+                "the position is too large".to_string(),
+            ));
+        };
+        RemoteMediaCommand::SetPosition {
+            player: player.clone(),
+            position_ms,
+        }
+    } else {
+        let mut lines = Vec::with_capacity(players.len());
+        for model in players {
+            let state = if model.playing { "playing" } else { "paused" };
+            let title = if model.title.is_empty() {
+                &model.player
+            } else {
+                &model.title
+            };
+            let artist = if model.artist.is_empty() {
+                String::new()
+            } else {
+                format!(" - {}", model.artist)
+            };
+            lines.push(format!(
+                "{}\t{state}\t{title}{artist}\t{}/{} ms\t{}%",
+                model.player, model.position_ms, model.length_ms, model.volume
+            ));
+        }
+        return Ok(lines.join("\n"));
+    };
+    let request = ControlRequest::Media {
+        device_id: args.device_id.clone(),
+        command,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("sent media command to {player}")),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_remote_command(args: RemoteCommandArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_remote_command(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_remote_command(
+    args: RemoteCommandArgs,
+    data_dir: PathBuf,
+) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let operations = [args.list, args.run.is_some(), args.setup, args.stop];
+    if operations.iter().filter(|selected| **selected).count() > 1 {
+        return Err(ControlError::Remote(
+            "remote-command needs one operation".to_string(),
+        ));
+    }
+    let (request, success) = if args.list {
+        (
+            RemoteCommandRequest::List,
+            format!("requested the command list from {}", args.device_id),
+        )
+    } else if let Some(key) = args.run.as_deref() {
+        (
+            RemoteCommandRequest::Run {
+                key: key.to_string(),
+            },
+            format!("sent command {key} to {}", args.device_id),
+        )
+    } else if args.setup {
+        (
+            RemoteCommandRequest::Setup,
+            format!("sent setup to {}", args.device_id),
+        )
+    } else if args.stop {
+        (
+            RemoteCommandRequest::Stop,
+            format!("sent stop to {}", args.device_id),
+        )
+    } else {
+        return list_cached_commands(args.device_id, data_dir).await;
+    };
+    let request = ControlRequest::RemoteCommand {
+        device_id: args.device_id.clone(),
+        request,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(success),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_remote_input(args: RemoteInputArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_remote_input(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_remote_input(
+    args: RemoteInputArgs,
+    data_dir: PathBuf,
+) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let operations = [
+        args.r#move.is_some(),
+        args.scroll.is_some(),
+        args.click.is_some(),
+        args.key.is_some(),
+        args.special.is_some(),
+    ];
+    if operations.iter().filter(|selected| **selected).count() != 1 {
+        return Err(ControlError::Remote(
+            "remote-input needs one operation".to_string(),
+        ));
+    }
+    let modifiers = RemoteInputModifiers {
+        alt: args.alt,
+        ctrl: args.ctrl,
+        shift: args.shift,
+        sup: args.sup,
+    };
+    if (args.alt || args.ctrl || args.shift || args.sup)
+        && args.key.is_none()
+        && args.special.is_none()
+    {
+        return Err(ControlError::Remote(
+            "modifiers need --key or --special".to_string(),
+        ));
+    }
+    let action = if let Some(delta) = args.r#move.as_deref() {
+        RemoteInputAction::Move {
+            dx: delta[0],
+            dy: delta[1],
+        }
+    } else if let Some(delta) = args.scroll.as_deref() {
+        RemoteInputAction::Scroll {
+            dx: delta[0],
+            dy: delta[1],
+        }
+    } else if let Some(click) = args.click {
+        RemoteInputAction::Click {
+            button: match click {
+                ClickArg::Left => RemoteClick::Single,
+                ClickArg::Double => RemoteClick::Double,
+                ClickArg::Middle => RemoteClick::Middle,
+                ClickArg::Right => RemoteClick::Right,
+                ClickArg::Hold => RemoteClick::Hold,
+                ClickArg::Release => RemoteClick::Release,
+            },
+        }
+    } else if let Some(text) = args.key {
+        RemoteInputAction::Key { text, modifiers }
+    } else if let Some(code) = args.special {
+        RemoteInputAction::SpecialKey { code, modifiers }
+    } else {
+        return Err(ControlError::Remote(
+            "remote-input needs one operation".to_string(),
+        ));
+    };
+    let request = ControlRequest::RemoteInput {
+        device_id: args.device_id.clone(),
+        action,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("sent input to {}", args.device_id)),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_contacts(args: ContactsArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_contacts(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_contacts(args: ContactsArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let request = ControlRequest::Contacts {
+        device_id: args.device_id.clone(),
+        refresh: args.refresh,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Contacts { contacts } => {
+            let mut lines = Vec::with_capacity(contacts.len());
+            for contact in contacts {
+                lines.push(format!(
+                    "{}\t{}\t{}",
+                    contact.name,
+                    contact.phones.join(","),
+                    contact.emails.join(",")
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::Ok { .. } if args.refresh => {
+            Ok(format!("requested contacts from {}", args.device_id))
+        }
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_sms(args: SmsArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_sms(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_sms(args: SmsArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    if args.send.is_some() != args.body.is_some() {
+        return Err(ControlError::Remote("--send needs --body".to_string()));
+    }
+    if args.send.is_some() && (args.thread.is_some() || args.refresh || args.refresh_thread) {
+        return Err(ControlError::Remote(
+            "--send cannot be combined with --thread or --refresh".to_string(),
+        ));
+    }
+    if args.thread.is_some() && args.refresh {
+        return Err(ControlError::Remote(
+            "--thread uses --refresh-thread".to_string(),
+        ));
+    }
+    let (action, success) = if let (Some(address), Some(body)) = (args.send, args.body) {
+        (
+            SmsAction::Send {
+                address: address.clone(),
+                body,
+            },
+            format!("sent SMS to {address}"),
+        )
+    } else if let Some(thread_id) = args.thread {
+        if args.refresh_thread {
+            (
+                SmsAction::RefreshThread { thread_id },
+                format!("requested thread {thread_id} from {}", args.device_id),
+            )
+        } else {
+            (SmsAction::Thread { thread_id }, String::new())
+        }
+    } else if args.refresh {
+        (
+            SmsAction::Refresh,
+            format!("requested conversations from {}", args.device_id),
+        )
+    } else {
+        (SmsAction::Conversations, String::new())
+    };
+    let request = ControlRequest::Sms {
+        device_id: args.device_id.clone(),
+        action,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::SmsConversations { conversations } => {
+            let mut lines = Vec::with_capacity(conversations.len());
+            for conversation in conversations {
+                lines.push(format!(
+                    "{}\t{}\t{}",
+                    conversation.thread_id, conversation.address, conversation.body
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::SmsThread { messages } => {
+            let mut lines = Vec::with_capacity(messages.len());
+            for message in messages {
+                let direction = if message.outgoing { "out" } else { "in" };
+                lines.push(format!(
+                    "{}\t{direction}\t{}\t{}",
+                    message.date, message.address, message.body
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::Ok { .. } => Ok(success),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_telephony(args: TelephonyArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_telephony(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_telephony(args: TelephonyArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    if !args.mute {
+        return Err(ControlError::Remote("telephony needs --mute".to_string()));
+    }
+    let request = ControlRequest::TelephonyMute {
+        device_id: args.device_id.clone(),
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Ok { .. } => Ok(format!("muted the ringer on {}", args.device_id)),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+fn run_sftp(args: SftpArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_sftp(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_sftp(args: SftpArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    if DeviceId::new(&args.device_id).is_err() {
+        return Err(ControlError::Remote(format!(
+            "{} is not a device ID",
+            args.device_id
+        )));
+    }
+    let operations = [
+        args.start,
+        args.list.is_some(),
+        args.download.is_some(),
+        args.upload.is_some(),
+    ];
+    if operations.iter().filter(|selected| **selected).count() != 1 {
+        return Err(ControlError::Remote("sftp needs one operation".to_string()));
+    }
+    let (action, message, reports_bytes) = if args.start {
+        (
+            SftpAction::Start,
+            format!(
+                "requested SFTP from {}; retry --list after the phone responds",
+                args.device_id
+            ),
+            false,
+        )
+    } else if let Some(path) = args.list {
+        (SftpAction::List { path }, String::new(), false)
+    } else if let Some(download) = args.download {
+        let remote = download[0].clone();
+        let local = download[1].clone();
+        (
+            SftpAction::Download {
+                remote: remote.clone(),
+                local: PathBuf::from(&local),
+            },
+            format!("downloaded {remote} to {local}"),
+            true,
+        )
+    } else if let Some(upload) = args.upload {
+        let local = upload[0].clone();
+        let remote = upload[1].clone();
+        (
+            SftpAction::Upload {
+                local: PathBuf::from(&local),
+                remote: remote.clone(),
+            },
+            format!("uploaded {local} to {remote}"),
+            true,
+        )
+    } else {
+        return Err(ControlError::Remote("sftp needs one operation".to_string()));
+    };
+    let request = ControlRequest::Sftp {
+        device_id: args.device_id.clone(),
+        action,
+    };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::SftpEntries { entries } => {
+            let mut lines = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let kind = if entry.directory { "dir" } else { "file" };
+                lines.push(format!("{}\t{kind}\t{}", entry.name, entry.size));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::Ok { bytes } if reports_bytes => Ok(format!("{message} ({bytes} bytes)")),
+        ControlResponse::Ok { .. } => Ok(message),
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
+    }
+}
+
+async fn list_cached_commands(
+    device_id: String,
+    data_dir: PathBuf,
+) -> Result<String, ControlError> {
+    let status = request_status(&data_dir).await?;
+    if !status
+        .connected
+        .iter()
+        .any(|device| device.device_id.as_str() == device_id)
+    {
+        return Err(ControlError::Remote(format!(
+            "device {device_id} is not connected"
+        )));
+    }
+    let Some(device) = status
+        .remote_commands
+        .iter()
+        .find(|device| device.device_id.as_str() == device_id)
+    else {
+        return Ok(format!("{device_id} has not reported any commands"));
+    };
+    let mut lines = Vec::with_capacity(device.commands.len());
+    for command in &device.commands {
+        lines.push(format!(
+            "{}\t{}\t{}",
+            command.key, command.name, command.command
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn run_command_config(args: CommandArgs, data_dir: PathBuf) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(error),
+    };
+    match runtime.block_on(send_command_config(args, data_dir)) {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
+async fn send_command_config(args: CommandArgs, data_dir: PathBuf) -> Result<String, ControlError> {
+    enum Outcome {
+        Listed,
+        Added(String),
+        Removed(String),
+    }
+
+    let (action, outcome) = match args.action {
+        CommandAction::List => (CommandConfigAction::List, Outcome::Listed),
+        CommandAction::Add { name, argv } => {
+            let key = uuid::Uuid::new_v4().to_string();
+            (
+                CommandConfigAction::Add {
+                    key: key.clone(),
+                    name,
+                    argv,
+                },
+                Outcome::Added(key),
+            )
+        }
+        CommandAction::Remove { key } => (
+            CommandConfigAction::Remove { key: key.clone() },
+            Outcome::Removed(key),
+        ),
+    };
+    let request = ControlRequest::CommandConfig { action };
+    match send_request(&data_dir, &request).await? {
+        ControlResponse::Commands { commands } => {
+            let mut lines = Vec::with_capacity(commands.len());
+            for command in commands {
+                lines.push(format!(
+                    "{}\t{}\t{}",
+                    command.key, command.name, command.command
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+        ControlResponse::Ok { bytes } => match outcome {
+            Outcome::Added(key) => Ok(format!("added {key}")),
+            Outcome::Removed(key) if bytes == 1 => Ok(format!("removed {key}")),
+            Outcome::Removed(key) => Err(ControlError::Remote(format!("no command {key}"))),
+            Outcome::Listed => Err(ControlError::Remote(
+                "unexpected control response".to_string(),
+            )),
+        },
+        ControlResponse::Err { message } => Err(ControlError::Remote(message)),
+        response => Err(ControlError::Remote(format!(
+            "unexpected control response: {response:?}"
+        ))),
     }
 }
 
@@ -346,7 +1528,12 @@ fn decision_message(
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
         ControlResponse::Ok { .. }
         | ControlResponse::Status { .. }
-        | ControlResponse::ShuttingDown => Err(ControlError::Remote(
+        | ControlResponse::ShuttingDown
+        | ControlResponse::Commands { .. }
+        | ControlResponse::Contacts { .. }
+        | ControlResponse::SmsConversations { .. }
+        | ControlResponse::SmsThread { .. }
+        | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
             "unexpected control response".to_string(),
         )),
     }
@@ -380,11 +1567,16 @@ async fn request_status(data_dir: &Path) -> Result<DaemonStatus, ControlError> {
     match send_request(data_dir, &ControlRequest::Status).await? {
         ControlResponse::Status { status } => Ok(*status),
         ControlResponse::Err { message } => Err(ControlError::Remote(message)),
-        ControlResponse::Ok { .. } | ControlResponse::ShuttingDown | ControlResponse::Decided => {
-            Err(ControlError::Remote(
-                "unexpected control response".to_string(),
-            ))
-        }
+        ControlResponse::Ok { .. }
+        | ControlResponse::ShuttingDown
+        | ControlResponse::Decided
+        | ControlResponse::Commands { .. }
+        | ControlResponse::Contacts { .. }
+        | ControlResponse::SmsConversations { .. }
+        | ControlResponse::SmsThread { .. }
+        | ControlResponse::SftpEntries { .. } => Err(ControlError::Remote(
+            "unexpected control response".to_string(),
+        )),
     }
 }
 

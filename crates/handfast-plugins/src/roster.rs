@@ -12,7 +12,7 @@ pub const BATTERY: PluginMeta = PluginMeta {
     title: "Battery monitor",
     status: IMPLEMENTED,
     incoming: &[types::BATTERY],
-    outgoing: &[],
+    outgoing: &[types::BATTERY_REQUEST, types::BATTERY],
     desktop: DesktopRequirement::None,
 };
 
@@ -22,7 +22,7 @@ pub const CLIPBOARD: PluginMeta = PluginMeta {
     title: "Clipboard synchronization",
     status: IMPLEMENTED,
     incoming: &[types::CLIPBOARD, types::CLIPBOARD_CONNECT],
-    outgoing: &[],
+    outgoing: &[types::CLIPBOARD, types::CLIPBOARD_CONNECT],
     desktop: DesktopRequirement::Clipboard,
 };
 
@@ -40,7 +40,7 @@ pub const CONNECTIVITY_REPORT: PluginMeta = PluginMeta {
 pub const CONTACTS: PluginMeta = PluginMeta {
     name: "contacts",
     title: "Sync contacts",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[
         types::CONTACTS_RESPONSE_UIDS_TIMESTAMPS,
         types::CONTACTS_RESPONSE_VCARDS,
@@ -49,14 +49,18 @@ pub const CONTACTS: PluginMeta = PluginMeta {
         types::CONTACTS_REQUEST_ALL_UIDS_TIMESTAMPS,
         types::CONTACTS_REQUEST_VCARDS_BY_UID,
     ],
-    desktop: DesktopRequirement::Contacts,
+    desktop: DesktopRequirement::None,
 };
 
 /// Pressure-sensitive drawing tablet.
+///
+/// Windows gap: the desktop injects absolute position and buttons only; pen
+/// pressure needs the Windows pen injection APIs that the no-unsafe rule
+/// excludes. Wayland injects pressure through uinput.
 pub const DIGITIZER: PluginMeta = PluginMeta {
     name: "digitizer",
     title: "Drawing tablet",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::DIGITIZER, types::DIGITIZER_SESSION],
     outgoing: &[],
     desktop: DesktopRequirement::Input,
@@ -65,8 +69,8 @@ pub const DIGITIZER: PluginMeta = PluginMeta {
 /// Ring a remote phone.
 pub const FINDMYPHONE: PluginMeta = PluginMeta {
     name: "findmyphone",
-    title: "Find other devices",
-    status: PLANNED,
+    title: "Find my phone",
+    status: IMPLEMENTED,
     incoming: &[],
     outgoing: &[types::FINDMYPHONE_REQUEST],
     desktop: DesktopRequirement::None,
@@ -106,30 +110,30 @@ pub const MMTELEPHONY: PluginMeta = PluginMeta {
 pub const MOUSEPAD: PluginMeta = PluginMeta {
     name: "mousepad",
     title: "Receive remote input",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::MOUSEPAD_REQUEST],
     outgoing: &[types::MOUSEPAD_ECHO, types::MOUSEPAD_KEYBOARDSTATE],
     desktop: DesktopRequirement::Input,
 };
 
-/// Control desktop media from the phone.
+/// Control desktop media from the phone and publish its player state.
 pub const MPRISCONTROL: PluginMeta = PluginMeta {
     name: "mpriscontrol",
     title: "Multimedia control receiver",
     status: IMPLEMENTED,
     incoming: &[types::MPRIS_REQUEST],
-    outgoing: &[],
+    outgoing: &[types::MPRIS],
     desktop: DesktopRequirement::Media,
 };
 
 /// Control phone media from the desktop.
 pub const MPRISREMOTE: PluginMeta = PluginMeta {
     name: "mprisremote",
-    title: "Send multimedia control commands",
-    status: PLANNED,
+    title: "Control a peer's media players",
+    status: IMPLEMENTED,
     incoming: &[types::MPRIS],
     outgoing: &[types::MPRIS_REQUEST],
-    desktop: DesktopRequirement::Media,
+    desktop: DesktopRequirement::None,
 };
 
 /// Receive phone notifications.
@@ -176,17 +180,17 @@ pub const PRESENTER: PluginMeta = PluginMeta {
 pub const REMOTECOMMANDS: PluginMeta = PluginMeta {
     name: "remotecommands",
     title: "Send commands to execute",
-    status: PLANNED,
-    incoming: &[types::RUNCOMMAND_REQUEST],
-    outgoing: &[types::RUNCOMMAND],
-    desktop: DesktopRequirement::Shell,
+    status: IMPLEMENTED,
+    incoming: &[types::RUNCOMMAND],
+    outgoing: &[types::RUNCOMMAND_REQUEST],
+    desktop: DesktopRequirement::None,
 };
 
 /// Send pointer input to a remote device.
 pub const REMOTECONTROL: PluginMeta = PluginMeta {
     name: "remotecontrol",
     title: "Send remote mouse input",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[],
     outgoing: &[types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::None,
@@ -196,8 +200,8 @@ pub const REMOTECONTROL: PluginMeta = PluginMeta {
 pub const REMOTEKEYBOARD: PluginMeta = PluginMeta {
     name: "remotekeyboard",
     title: "Send remote keyboard input",
-    status: PLANNED,
-    incoming: &[],
+    status: IMPLEMENTED,
+    incoming: &[types::MOUSEPAD_ECHO, types::MOUSEPAD_KEYBOARDSTATE],
     outgoing: &[types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::None,
 };
@@ -205,21 +209,21 @@ pub const REMOTEKEYBOARD: PluginMeta = PluginMeta {
 /// Control remote volume.
 pub const REMOTESYSTEMVOLUME: PluginMeta = PluginMeta {
     name: "remotesystemvolume",
-    title: "Remote volume control",
-    status: PLANNED,
+    title: "Control a peer's audio sinks",
+    status: IMPLEMENTED,
     incoming: &[types::SYSTEMVOLUME],
     outgoing: &[types::SYSTEMVOLUME_REQUEST],
-    desktop: DesktopRequirement::Volume,
+    desktop: DesktopRequirement::None,
 };
 
 /// Execute commands configured on this device.
 pub const RUNCOMMAND: PluginMeta = PluginMeta {
     name: "runcommand",
-    title: "Execute remote commands",
-    status: PLANNED,
+    title: "Execute local commands",
+    status: IMPLEMENTED,
     incoming: &[types::RUNCOMMAND_REQUEST],
     outgoing: &[types::RUNCOMMAND, types::RUNCOMMAND_OUTPUT],
-    desktop: DesktopRequirement::Shell,
+    desktop: DesktopRequirement::Commands,
 };
 
 /// Inhibit the screensaver while connected.
@@ -246,10 +250,10 @@ pub const SENDNOTIFICATIONS: PluginMeta = PluginMeta {
 pub const SFTP: PluginMeta = PluginMeta {
     name: "sftp",
     title: "Remote filesystem browser",
-    status: PLANNED,
-    incoming: &[types::SFTP_REQUEST],
-    outgoing: &[types::SFTP],
-    desktop: DesktopRequirement::Files,
+    status: IMPLEMENTED,
+    incoming: &[types::SFTP],
+    outgoing: &[types::SFTP_REQUEST],
+    desktop: DesktopRequirement::None,
 };
 
 /// File, URL and text sharing.
@@ -267,18 +271,25 @@ pub const SHAREINPUTDEVICES: PluginMeta = PluginMeta {
     name: "shareinputdevices",
     title: "Share input devices",
     status: PLANNED,
-    incoming: &[types::SHAREINPUTDEVICES_REQUEST],
-    outgoing: &[types::SHAREINPUTDEVICES, types::MOUSEPAD_REQUEST],
+    incoming: &[types::SHAREINPUTDEVICES],
+    outgoing: &[types::SHAREINPUTDEVICES_REQUEST, types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::Input,
 };
 
 /// Accept shared input from a remote device.
+///
+/// Wayland gap: the desktop cannot place the pointer at an absolute position, so
+/// every share is declined there, with the peer's offset echoed back.
 pub const SHAREINPUTDEVICESREMOTE: PluginMeta = PluginMeta {
     name: "shareinputdevicesremote",
     title: "Receive shared input devices",
-    status: PLANNED,
-    incoming: &[types::SHAREINPUTDEVICES, types::MOUSEPAD_REQUEST],
-    outgoing: &[types::SHAREINPUTDEVICES_REQUEST],
+    status: IMPLEMENTED,
+    incoming: &[
+        types::SHAREINPUTDEVICES_REQUEST,
+        types::MOUSEPAD_REQUEST,
+        types::SHAREINPUTDEVICES,
+    ],
+    outgoing: &[types::SHAREINPUTDEVICES],
     desktop: DesktopRequirement::Input,
 };
 
@@ -286,7 +297,7 @@ pub const SHAREINPUTDEVICESREMOTE: PluginMeta = PluginMeta {
 pub const SMS: PluginMeta = PluginMeta {
     name: "sms",
     title: "SMS integration",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[
         types::SMS_MESSAGES,
         types::SMS_REQUEST_CONVERSATION,
@@ -295,13 +306,12 @@ pub const SMS: PluginMeta = PluginMeta {
         types::SMS_ATTACHMENT_FILE,
     ],
     outgoing: &[
-        types::SMS_MESSAGES,
         types::SMS_REQUEST,
         types::SMS_REQUEST_CONVERSATION,
         types::SMS_REQUEST_CONVERSATIONS,
         types::SMS_REQUEST_ATTACHMENT,
     ],
-    desktop: DesktopRequirement::Telephony,
+    desktop: DesktopRequirement::None,
 };
 
 /// Receive volume controls from the phone.
@@ -310,18 +320,18 @@ pub const SYSTEMVOLUME: PluginMeta = PluginMeta {
     title: "Receive volume controls",
     status: IMPLEMENTED,
     incoming: &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST],
-    outgoing: &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST],
+    outgoing: &[types::SYSTEMVOLUME],
     desktop: DesktopRequirement::Volume,
 };
 
-/// Incoming call notifications.
+/// Incoming, missed and active call notifications.
 pub const TELEPHONY: PluginMeta = PluginMeta {
     name: "telephony",
     title: "Telephony integration",
-    status: PLANNED,
-    incoming: &[types::TELEPHONY, types::TELEPHONY_REQUEST_MUTE],
+    status: IMPLEMENTED,
+    incoming: &[types::TELEPHONY],
     outgoing: &[types::TELEPHONY_REQUEST_MUTE],
-    desktop: DesktopRequirement::Telephony,
+    desktop: DesktopRequirement::Notifications,
 };
 
 /// Use the phone as a virtual monitor.
@@ -387,15 +397,15 @@ mod tests {
     }
 
     #[test]
-    fn implemented_plugins_have_an_incoming_contract() {
+    fn implemented_plugins_have_a_contract() {
         for meta in ALL.iter().filter(|meta| meta.status == IMPLEMENTED) {
             if meta.desktop == DesktopRequirement::Screensaver {
                 // Screensaver inhibition is connection-driven and handles no packets.
                 continue;
             }
             assert!(
-                !meta.incoming.is_empty(),
-                "{} is implemented but handles no packets",
+                !meta.incoming.is_empty() || !meta.outgoing.is_empty(),
+                "{} is implemented but has no packet contract",
                 meta.name
             );
         }

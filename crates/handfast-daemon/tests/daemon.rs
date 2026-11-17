@@ -1561,7 +1561,7 @@ async fn two_queued_files_arrive_in_order() {
     let _serial = serial().await;
     let directory = tempfile::tempdir().unwrap();
     let log = directory.path().join("daemon.log");
-    let (daemon, mut peer, config, _) =
+    let (mut daemon, mut peer, config, _) =
         spawn_and_pair(directory.path(), &log, free_udp_port()).await;
 
     let first_port = free_payload_port();
@@ -1602,6 +1602,8 @@ async fn two_queued_files_arrive_in_order() {
         .expect("the second sender joins")
         .expect("sent");
 
+    wait_for_log(&log, "first.bin", &mut daemon).await;
+    wait_for_log(&log, "second.bin", &mut daemon).await;
     let text = read_log(&log);
     let first_done = text
         .find("first.bin")

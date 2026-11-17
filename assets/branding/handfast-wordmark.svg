@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 160" role="img" aria-labelledby="title">
+  <title id="title">Handfast</title>
+  <g transform="translate(8 8) scale(0.28)" fill="none" stroke-width="50">
+    <g transform="rotate(-18 256 256)">
+      <circle cx="341" cy="256" r="91" stroke="#e8833a"/>
+      <circle cx="171" cy="256" r="91" stroke="#128c7e"/>
+    </g>
+  </g>
+  <text x="176" y="107" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="76" font-weight="650" letter-spacing="-2" fill="#0b1220">Hand<tspan fill="#128c7e">fast</tspan></text>
+</svg>

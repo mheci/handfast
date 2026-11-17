@@ -1,9 +1,9 @@
 //! Minimal same-user local control channel.
 //!
-//! The channel carries four requests, `share`, `status`, `shutdown` and
-//! `pairing decision`. Unix uses a Unix domain socket with a peer-credential
-//! check; Windows uses a named pipe with a current-user DACL. The frame is a
-//! 4-byte big-endian length followed by JSON, capped at 64 KiB.
+//! The channel carries same-user requests from the CLI and the window. Unix
+//! uses a Unix domain socket with a peer-credential check; Windows uses a named
+//! pipe with a current-user DACL. The frame is a 4-byte big-endian length
+//! followed by JSON, capped at 64 KiB.
 //!
 //! The server never touches the session map. It forwards a [`DaemonCommand`] to
 //! the daemon event loop and relays the framed result. The path is validated by
@@ -14,7 +14,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use handfast_plugins::remotecontrol::{RemoteClick, RemoteInputModifiers};
 use handfast_proto::DeviceId;
+use handfast_runtime::{RemoteCommand, RemoteMediaAction, RemotePlayer, RemoteSink, SftpEntry};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -57,6 +59,73 @@ pub enum ControlRequest {
     Status,
     /// Stop the daemon through its bounded shutdown path.
     Shutdown,
+    /// Ask a connected device to ring.
+    Ring {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+    },
+    /// Change one audio sink on a connected device.
+    RemoteVolume {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// Sink name from the device's reported list.
+        sink: String,
+        /// Volume as a percentage of the sink's maximum.
+        percent: Option<u8>,
+        /// Mute state. Exactly one of `percent` and `muted` is set.
+        muted: Option<bool>,
+    },
+    /// Control the media players on a connected device.
+    Media {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// The command to send.
+        command: RemoteMediaCommand,
+    },
+    /// Trigger commands configured on a connected device.
+    RemoteCommand {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// The command to send.
+        request: RemoteCommandRequest,
+    },
+    /// Send mouse or keyboard input to a connected device.
+    RemoteInput {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// The input to send.
+        action: RemoteInputAction,
+    },
+    /// Read or refresh the contacts a connected device reports.
+    Contacts {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// Ask the peer for a fresh sync instead of listing the cache.
+        refresh: bool,
+    },
+    /// List, request or send SMS messages on a connected device.
+    Sms {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        /// The SMS operation.
+        action: SmsAction,
+    },
+    /// Ask a connected device to mute its ringer.
+    TelephonyMute {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+    },
+    /// Start or browse a connected device's SFTP server.
+    Sftp {
+        /// Paired device ID. The daemon validates it.
+        device_id: String,
+        action: SftpAction,
+    },
+    /// List or edit the local runcommand configuration.
+    CommandConfig {
+        /// The action to apply.
+        action: CommandConfigAction,
+    },
     /// Accept or reject a pending pairing request.
     PairingDecision {
         /// Device ID shown in the pairing prompt. The daemon validates it.
@@ -72,10 +141,35 @@ pub enum ControlRequest {
 /// One response on the local control channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlResponse {
-    /// The transfer completed.
+    /// The request completed.
     Ok {
-        /// Bytes written to the payload.
+        /// Bytes written to the payload, or 0 when the request carries none.
         bytes: u64,
+    },
+    /// The configured local commands.
+    Commands {
+        /// Commands in key order.
+        commands: Vec<CommandSummary>,
+    },
+    /// The contacts cached for one device.
+    Contacts {
+        /// Contacts in name order.
+        contacts: Vec<ContactSummary>,
+    },
+    /// The SMS conversations cached for one device.
+    SmsConversations {
+        /// Conversations, newest first.
+        conversations: Vec<SmsConversationSummary>,
+    },
+    /// The SMS messages cached for one thread.
+    SmsThread {
+        /// Messages, oldest first.
+        messages: Vec<SmsMessageSummary>,
+    },
+    /// One directory on a phone's SFTP server.
+    SftpEntries {
+        /// Entries, directories first.
+        entries: Vec<SftpEntry>,
     },
     /// The daemon status snapshot.
     Status {
@@ -114,8 +208,264 @@ pub struct DaemonStatus {
     pub pending_pairings: Vec<PairingSummary>,
     /// In-flight transfers, sorted by device ID then transfer ID.
     pub transfers: Vec<TransferSummary>,
+    /// Peer audio sinks, sorted by device ID.
+    pub remote_sinks: Vec<RemoteDeviceSinks>,
+    /// Peer media players, sorted by device ID.
+    pub remote_players: Vec<RemoteDevicePlayers>,
+    /// Peer commands, sorted by device ID.
+    pub remote_commands: Vec<RemoteDeviceCommands>,
     /// Whether a device list hit [`MAX_STATUS_DEVICES`].
     pub truncated: bool,
+}
+
+/// One remote media request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteMediaCommand {
+    /// Ask the peer for its player list.
+    RequestList,
+    /// Ask one player for its current state.
+    RequestStatus {
+        /// Player name from the device's reported list.
+        player: String,
+    },
+    /// Send one transport action.
+    Action {
+        /// Player name from the device's reported list.
+        player: String,
+        /// Transport action.
+        action: RemoteMediaAction,
+    },
+    /// Set one player's volume percentage.
+    SetVolume {
+        /// Player name from the device's reported list.
+        player: String,
+        /// Volume percentage, 0-100.
+        volume: u8,
+    },
+    /// Seek one player by a relative offset.
+    Seek {
+        /// Player name from the device's reported list.
+        player: String,
+        /// Offset in microseconds. Negative rewinds.
+        offset_us: i64,
+    },
+    /// Seek one player to an absolute position.
+    SetPosition {
+        /// Player name from the device's reported list.
+        player: String,
+        /// Position in milliseconds.
+        position_ms: i64,
+    },
+}
+
+/// One remote command request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteCommandRequest {
+    /// Ask the peer for its command list.
+    List,
+    /// Run one command by its key.
+    Run {
+        /// Command key from the device's reported list.
+        key: String,
+    },
+    /// Ask the peer to open its command editor.
+    Setup,
+    /// Ask the peer to close its command editor.
+    Stop,
+}
+
+/// One input action sent to a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteInputAction {
+    /// Relative pointer movement.
+    Move {
+        /// Horizontal delta.
+        dx: i32,
+        /// Vertical delta.
+        dy: i32,
+    },
+    /// Scroll step.
+    Scroll {
+        /// Horizontal delta.
+        dx: i32,
+        /// Vertical delta.
+        dy: i32,
+    },
+    /// One mouse click or button action.
+    Click {
+        /// The click to perform.
+        button: RemoteClick,
+    },
+    /// Text typed on the peer.
+    Key {
+        /// Text to type.
+        text: String,
+        /// Modifiers held while typing.
+        modifiers: RemoteInputModifiers,
+    },
+    /// One special key press.
+    SpecialKey {
+        /// Special key code, 1-32.
+        code: u8,
+        /// Modifiers held while pressing.
+        modifiers: RemoteInputModifiers,
+    },
+}
+
+/// One local command configuration action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommandConfigAction {
+    /// List the configured commands.
+    List,
+    /// Add one command with a caller-generated key.
+    Add {
+        /// Stable command key.
+        key: String,
+        /// Display name.
+        name: String,
+        /// Argument vector. The first element is the program.
+        argv: Vec<String>,
+    },
+    /// Remove one command.
+    Remove {
+        /// Stable command key.
+        key: String,
+    },
+}
+
+/// One locally configured command in a control reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandSummary {
+    /// Stable command key.
+    pub key: String,
+    /// Display name.
+    pub name: String,
+    /// Display form of the argument vector.
+    pub command: String,
+}
+
+/// One contact in a control reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactSummary {
+    /// Stable contact identifier from the peer.
+    pub uid: String,
+    /// Display name.
+    pub name: String,
+    /// Phone numbers.
+    pub phones: Vec<String>,
+    /// Email addresses.
+    pub emails: Vec<String>,
+}
+
+/// One SMS operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SmsAction {
+    /// List the cached conversations.
+    Conversations,
+    /// Ask the peer for the conversation list.
+    Refresh,
+    /// List the cached messages in one thread.
+    Thread {
+        /// Conversation thread identifier.
+        thread_id: i64,
+    },
+    /// Ask the peer for every message in one thread.
+    RefreshThread {
+        /// Conversation thread identifier.
+        thread_id: i64,
+    },
+    /// Send one message.
+    Send {
+        /// Destination phone number.
+        address: String,
+        /// Message body.
+        body: String,
+    },
+}
+
+/// One SMS conversation in a control reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsConversationSummary {
+    /// Conversation thread identifier.
+    pub thread_id: i64,
+    /// Phone number.
+    pub address: String,
+    /// Latest message body.
+    pub body: String,
+    /// Latest message timestamp in milliseconds.
+    pub date: i64,
+    /// Whether the latest message is unread.
+    pub unread: bool,
+}
+
+/// One SMS message in a control reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsMessageSummary {
+    /// Phone number.
+    pub address: String,
+    /// Message body.
+    pub body: String,
+    /// Message timestamp in milliseconds.
+    pub date: i64,
+    /// Whether the message was sent by this phone.
+    pub outgoing: bool,
+    /// Whether the message is read.
+    pub read: bool,
+}
+
+/// One SFTP operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SftpAction {
+    /// Ask the phone to start its SFTP server.
+    Start,
+    /// List one remote directory.
+    List {
+        /// Remote path.
+        path: String,
+    },
+    /// Copy one remote file to a local path.
+    Download {
+        /// Remote path.
+        remote: String,
+        /// Local destination.
+        local: PathBuf,
+    },
+    /// Copy one local file to a remote path.
+    Upload {
+        /// Local source.
+        local: PathBuf,
+        /// Remote destination.
+        remote: String,
+    },
+}
+
+/// Audio sinks reported by one peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteDeviceSinks {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Sinks in name order.
+    pub sinks: Vec<RemoteSink>,
+}
+
+/// Media players reported by one peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteDevicePlayers {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Players in name order.
+    pub players: Vec<RemotePlayer>,
+}
+
+/// Commands reported by one peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteDeviceCommands {
+    /// Device identifier.
+    pub device_id: DeviceId,
+    /// Commands in key order.
+    pub commands: Vec<RemoteCommand>,
+    /// Whether the peer lets the desktop add commands.
+    pub can_add: bool,
 }
 
 /// This device's public identity.
@@ -201,6 +551,61 @@ pub enum DaemonCommand {
     /// Reply, then complete the daemon's shutdown future.
     Shutdown {
         /// Reply sender.
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Send the ring request to one connected device and reply.
+    Ring {
+        device_id: DeviceId,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    RemoteVolume {
+        device_id: DeviceId,
+        sink: String,
+        percent: Option<u8>,
+        muted: Option<bool>,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    Media {
+        device_id: DeviceId,
+        command: RemoteMediaCommand,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Send a remote command request to one connected device and reply.
+    RemoteCommand {
+        device_id: DeviceId,
+        request: RemoteCommandRequest,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Send one input action to a connected device and reply.
+    RemoteInput {
+        device_id: DeviceId,
+        action: RemoteInputAction,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// List or refresh one device's contacts and reply.
+    Contacts {
+        device_id: DeviceId,
+        refresh: bool,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Run one SMS operation and reply.
+    Sms {
+        device_id: DeviceId,
+        action: SmsAction,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    TelephonyMute {
+        device_id: DeviceId,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    Sftp {
+        device_id: DeviceId,
+        action: SftpAction,
+        reply: oneshot::Sender<ControlResponse>,
+    },
+    /// Apply one local command configuration action.
+    CommandConfig {
+        action: CommandConfigAction,
         reply: oneshot::Sender<ControlResponse>,
     },
     /// Answer one open pairing prompt and reply.
@@ -412,6 +817,55 @@ where
     }
 }
 
+fn validate_media_command(command: &RemoteMediaCommand) -> Result<(), String> {
+    let player = match command {
+        RemoteMediaCommand::RequestList => return Ok(()),
+        RemoteMediaCommand::RequestStatus { player }
+        | RemoteMediaCommand::Action { player, .. }
+        | RemoteMediaCommand::SetVolume { player, .. }
+        | RemoteMediaCommand::Seek { player, .. }
+        | RemoteMediaCommand::SetPosition { player, .. } => player,
+    };
+    if !handfast_plugins::mprisremote::valid_player_name(player) {
+        return Err("the player name is not valid".to_string());
+    }
+    match command {
+        RemoteMediaCommand::SetVolume { volume, .. } if *volume > 100 => {
+            Err("the volume is over 100".to_string())
+        }
+        RemoteMediaCommand::SetPosition { position_ms, .. } if *position_ms < 0 => {
+            Err("the position is negative".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_input_action(action: &RemoteInputAction) -> Result<(), String> {
+    match action {
+        RemoteInputAction::Move { dx, dy } | RemoteInputAction::Scroll { dx, dy } => {
+            if dx.unsigned_abs() > 10_000 || dy.unsigned_abs() > 10_000 {
+                return Err("the pointer delta is out of range".to_string());
+            }
+        }
+        RemoteInputAction::Key { text, .. } => {
+            if text.is_empty() || text.len() > 64 || text.chars().any(char::is_control) {
+                return Err("the key text is not valid".to_string());
+            }
+        }
+        RemoteInputAction::SpecialKey { code, .. } => {
+            if !(1..=handfast_plugins::remotecontrol::MAX_SPECIAL_KEY).contains(code) {
+                return Err("the special key code is out of range".to_string());
+            }
+        }
+        RemoteInputAction::Click { .. } => {}
+    }
+    Ok(())
+}
+
+fn valid_sftp_path(path: &str) -> bool {
+    !path.is_empty() && path.len() <= 4096 && !path.chars().any(char::is_control)
+}
+
 async fn dispatch(
     request: ControlRequest,
     commands: mpsc::Sender<DaemonCommand>,
@@ -425,6 +879,209 @@ async fn dispatch(
         },
         ControlRequest::Status => DaemonCommand::Status { reply },
         ControlRequest::Shutdown => DaemonCommand::Shutdown { reply },
+        ControlRequest::Ring { device_id } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            DaemonCommand::Ring { device_id, reply }
+        }
+        ControlRequest::RemoteVolume {
+            device_id,
+            sink,
+            percent,
+            muted,
+        } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            if !handfast_plugins::remotesystemvolume::valid_sink_name(&sink) {
+                return ControlResponse::Err {
+                    message: "the sink name is not valid".to_string(),
+                };
+            }
+            match (percent, muted) {
+                (Some(percent), None) if percent <= 100 => {}
+                (None, Some(_)) => {}
+                _ => {
+                    return ControlResponse::Err {
+                        message: "send exactly one of percent and muted".to_string(),
+                    };
+                }
+            }
+            DaemonCommand::RemoteVolume {
+                device_id,
+                sink,
+                percent,
+                muted,
+                reply,
+            }
+        }
+        ControlRequest::Media { device_id, command } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            if let Err(message) = validate_media_command(&command) {
+                return ControlResponse::Err { message };
+            }
+            DaemonCommand::Media {
+                device_id,
+                command,
+                reply,
+            }
+        }
+        ControlRequest::RemoteCommand { device_id, request } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            if let RemoteCommandRequest::Run { key } = &request {
+                if !handfast_plugins::remotecommands::valid_command_key(key) {
+                    return ControlResponse::Err {
+                        message: "the command key is not valid".to_string(),
+                    };
+                }
+            }
+            DaemonCommand::RemoteCommand {
+                device_id,
+                request,
+                reply,
+            }
+        }
+        ControlRequest::RemoteInput { device_id, action } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            if let Err(message) = validate_input_action(&action) {
+                return ControlResponse::Err { message };
+            }
+            DaemonCommand::RemoteInput {
+                device_id,
+                action,
+                reply,
+            }
+        }
+        ControlRequest::Contacts { device_id, refresh } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            DaemonCommand::Contacts {
+                device_id,
+                refresh,
+                reply,
+            }
+        }
+        ControlRequest::Sms { device_id, action } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            match &action {
+                SmsAction::Thread { thread_id } | SmsAction::RefreshThread { thread_id } => {
+                    if *thread_id < 0 {
+                        return ControlResponse::Err {
+                            message: "the thread ID is negative".to_string(),
+                        };
+                    }
+                }
+                SmsAction::Send { address, body } => {
+                    if !handfast_plugins::sms::valid_address(address) {
+                        return ControlResponse::Err {
+                            message: "the SMS address is not valid".to_string(),
+                        };
+                    }
+                    if body.is_empty() || !handfast_plugins::sms::valid_body(body) {
+                        return ControlResponse::Err {
+                            message: "the SMS body is not valid".to_string(),
+                        };
+                    }
+                }
+                SmsAction::Conversations | SmsAction::Refresh => {}
+            }
+            DaemonCommand::Sms {
+                device_id,
+                action,
+                reply,
+            }
+        }
+        ControlRequest::TelephonyMute { device_id } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            DaemonCommand::TelephonyMute { device_id, reply }
+        }
+        ControlRequest::Sftp { device_id, action } => {
+            let Ok(device_id) = DeviceId::new(&device_id) else {
+                return ControlResponse::Err {
+                    message: format!("{device_id} is not a device ID"),
+                };
+            };
+            match &action {
+                SftpAction::Start => {}
+                SftpAction::List { path } => {
+                    if !valid_sftp_path(path) {
+                        return ControlResponse::Err {
+                            message: "the SFTP path is not valid".to_string(),
+                        };
+                    }
+                }
+                SftpAction::Download { remote, local } => {
+                    if !valid_sftp_path(remote) {
+                        return ControlResponse::Err {
+                            message: "the SFTP path is not valid".to_string(),
+                        };
+                    }
+                    if local.as_os_str().is_empty() {
+                        return ControlResponse::Err {
+                            message: "the local path is empty".to_string(),
+                        };
+                    }
+                }
+                SftpAction::Upload { local, remote } => {
+                    if !valid_sftp_path(remote) {
+                        return ControlResponse::Err {
+                            message: "the SFTP path is not valid".to_string(),
+                        };
+                    }
+                    if local.as_os_str().is_empty() {
+                        return ControlResponse::Err {
+                            message: "the local path is empty".to_string(),
+                        };
+                    }
+                }
+            }
+            DaemonCommand::Sftp {
+                device_id,
+                action,
+                reply,
+            }
+        }
+        ControlRequest::CommandConfig { action } => {
+            match &action {
+                CommandConfigAction::List => {}
+                CommandConfigAction::Add { key, .. } | CommandConfigAction::Remove { key } => {
+                    if !handfast_plugins::runcommand::valid_command_key(key) {
+                        return ControlResponse::Err {
+                            message: "the command key is not valid".to_string(),
+                        };
+                    }
+                }
+            }
+            DaemonCommand::CommandConfig { action, reply }
+        }
         ControlRequest::PairingDecision {
             device_id,
             accept,
@@ -797,6 +1454,9 @@ mod tests {
                 bytes: 1024,
                 total: Some(4096),
             }],
+            remote_sinks: Vec::new(),
+            remote_players: Vec::new(),
+            remote_commands: Vec::new(),
             truncated: false,
         }
     }
@@ -853,6 +1513,246 @@ mod tests {
             }
         );
         assert_eq!(
+            round_trip(&ControlRequest::Ring {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+            })
+            .await,
+            ControlRequest::Ring {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::RemoteVolume {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                sink: "speakers".to_string(),
+                percent: Some(40),
+                muted: None,
+            })
+            .await,
+            ControlRequest::RemoteVolume {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                sink: "speakers".to_string(),
+                percent: Some(40),
+                muted: None,
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::Media {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                command: RemoteMediaCommand::Action {
+                    player: "mpv".to_string(),
+                    action: RemoteMediaAction::Next,
+                },
+            })
+            .await,
+            ControlRequest::Media {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                command: RemoteMediaCommand::Action {
+                    player: "mpv".to_string(),
+                    action: RemoteMediaAction::Next,
+                },
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::RemoteCommand {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                request: RemoteCommandRequest::Run {
+                    key: "abc".to_string(),
+                },
+            })
+            .await,
+            ControlRequest::RemoteCommand {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                request: RemoteCommandRequest::Run {
+                    key: "abc".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::RemoteInput {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: RemoteInputAction::Key {
+                    text: "hello".to_string(),
+                    modifiers: RemoteInputModifiers {
+                        alt: true,
+                        ctrl: false,
+                        shift: true,
+                        sup: false,
+                    },
+                },
+            })
+            .await,
+            ControlRequest::RemoteInput {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: RemoteInputAction::Key {
+                    text: "hello".to_string(),
+                    modifiers: RemoteInputModifiers {
+                        alt: true,
+                        ctrl: false,
+                        shift: true,
+                        sup: false,
+                    },
+                },
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::Contacts {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                refresh: true,
+            })
+            .await,
+            ControlRequest::Contacts {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                refresh: true,
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::Contacts {
+                contacts: vec![ContactSummary {
+                    uid: "uid-1".to_string(),
+                    name: "Jane Doe".to_string(),
+                    phones: vec!["+123".to_string()],
+                    emails: vec!["jane@example.com".to_string()],
+                }],
+            })
+            .await,
+            ControlResponse::Contacts {
+                contacts: vec![ContactSummary {
+                    uid: "uid-1".to_string(),
+                    name: "Jane Doe".to_string(),
+                    phones: vec!["+123".to_string()],
+                    emails: vec!["jane@example.com".to_string()],
+                }],
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::Sms {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: SmsAction::Send {
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                },
+            })
+            .await,
+            ControlRequest::Sms {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: SmsAction::Send {
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::SmsConversations {
+                conversations: vec![SmsConversationSummary {
+                    thread_id: 7,
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                    date: 10,
+                    unread: true,
+                }],
+            })
+            .await,
+            ControlResponse::SmsConversations {
+                conversations: vec![SmsConversationSummary {
+                    thread_id: 7,
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                    date: 10,
+                    unread: true,
+                }],
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::SmsThread {
+                messages: vec![SmsMessageSummary {
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                    date: 10,
+                    outgoing: false,
+                    read: true,
+                }],
+            })
+            .await,
+            ControlResponse::SmsThread {
+                messages: vec![SmsMessageSummary {
+                    address: "+123".to_string(),
+                    body: "hello".to_string(),
+                    date: 10,
+                    outgoing: false,
+                    read: true,
+                }],
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::TelephonyMute {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+            })
+            .await,
+            ControlRequest::TelephonyMute {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::Sftp {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: SftpAction::Download {
+                    remote: "/storage/file".to_string(),
+                    local: PathBuf::from("file"),
+                },
+            })
+            .await,
+            ControlRequest::Sftp {
+                device_id: "0123456789abcdef0123456789abcdef".to_string(),
+                action: SftpAction::Download {
+                    remote: "/storage/file".to_string(),
+                    local: PathBuf::from("file"),
+                },
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlResponse::SftpEntries {
+                entries: vec![SftpEntry {
+                    name: "file".to_string(),
+                    directory: false,
+                    size: 12,
+                }],
+            })
+            .await,
+            ControlResponse::SftpEntries {
+                entries: vec![SftpEntry {
+                    name: "file".to_string(),
+                    directory: false,
+                    size: 12,
+                }],
+            }
+        );
+        assert_eq!(
+            round_trip(&ControlRequest::CommandConfig {
+                action: CommandConfigAction::Add {
+                    key: "abc".to_string(),
+                    name: "List files".to_string(),
+                    argv: vec!["ls".to_string(), "-l".to_string()],
+                },
+            })
+            .await,
+            ControlRequest::CommandConfig {
+                action: CommandConfigAction::Add {
+                    key: "abc".to_string(),
+                    name: "List files".to_string(),
+                    argv: vec!["ls".to_string(), "-l".to_string()],
+                },
+            }
+        );
+        let response = ControlResponse::Commands {
+            commands: vec![CommandSummary {
+                key: "abc".to_string(),
+                name: "List files".to_string(),
+                command: "ls -l".to_string(),
+            }],
+        };
+        assert_eq!(round_trip(&response).await, response);
+        assert_eq!(
             round_trip(&ControlResponse::ShuttingDown).await,
             ControlResponse::ShuttingDown
         );
@@ -891,6 +1791,52 @@ mod tests {
                 device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
                 device_name: "Handfast test peer".to_string(),
                 fingerprint: "ab".repeat(32),
+            })
+            .collect();
+        // Every remote section is at or above its production cap in the same
+        // snapshot, so the frame bound covers the worst case.
+        status.remote_sinks = (0..crate::daemon::MAX_STATUS_REMOTE_DEVICES)
+            .map(|index| RemoteDeviceSinks {
+                device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
+                sinks: (0..crate::daemon::MAX_STATUS_REMOTE_ENTRIES)
+                    .map(|sink| RemoteSink {
+                        name: format!("sink-{sink}"),
+                        description: "d".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        volume: 1,
+                        muted: false,
+                        max_volume: 100,
+                        enabled: false,
+                    })
+                    .collect(),
+            })
+            .collect();
+        status.remote_players = (0..crate::daemon::MAX_STATUS_REMOTE_DEVICES)
+            .map(|index| RemoteDevicePlayers {
+                device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
+                players: (0..crate::daemon::MAX_STATUS_REMOTE_ENTRIES)
+                    .map(|player| RemotePlayer {
+                        player: format!("player-{player}"),
+                        title: "t".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        artist: "a".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        album: "b".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        album_art_url: "u".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        volume: 50,
+                        ..RemotePlayer::default()
+                    })
+                    .collect(),
+            })
+            .collect();
+        status.remote_commands = (0..crate::daemon::MAX_STATUS_REMOTE_DEVICES)
+            .map(|index| RemoteDeviceCommands {
+                device_id: DeviceId::new(format!("{index:032x}")).expect("a device id"),
+                commands: (0..crate::daemon::MAX_STATUS_REMOTE_COMMANDS)
+                    .map(|command| RemoteCommand {
+                        key: format!("key-{command}"),
+                        name: "n".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                        command: "c".repeat(crate::daemon::MAX_STATUS_TEXT_CHARS),
+                    })
+                    .collect(),
+                can_add: false,
             })
             .collect();
         let response = ControlResponse::Status {
@@ -1200,6 +2146,63 @@ mod tests {
 
         server.shutdown().await;
         script.await.expect("the script joins");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_ring_request_is_relayed_to_the_daemon() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("handfast.sock");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = start_at(path.clone(), commands)
+            .await
+            .expect("start the control server");
+        let expected = device_id();
+        let script = tokio::spawn(async move {
+            if let Some(DaemonCommand::Ring { device_id, reply }) = command_rx.recv().await {
+                assert_eq!(device_id, expected);
+                let _ = reply.send(ControlResponse::Ok { bytes: 0 });
+            }
+        });
+
+        let request = ControlRequest::Ring {
+            device_id: device_id().as_str().to_string(),
+        };
+        let response = send_to_path(&path, &request)
+            .await
+            .expect("relay the ring request");
+        assert_eq!(response, ControlResponse::Ok { bytes: 0 });
+
+        server.shutdown().await;
+        script.await.expect("the script joins");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_malformed_ring_device_id_is_an_error() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("handfast.sock");
+        let (commands, mut command_rx) = mpsc::channel(4);
+        let server = start_at(path.clone(), commands)
+            .await
+            .expect("start the control server");
+
+        let request = ControlRequest::Ring {
+            device_id: "not-a-device".to_string(),
+        };
+        let response = send_to_path(&path, &request)
+            .await
+            .expect("the boundary replies");
+        assert!(
+            matches!(&response, ControlResponse::Err { message } if message.contains("is not a device ID")),
+            "{response:?}"
+        );
+        assert!(
+            command_rx.try_recv().is_err(),
+            "a malformed device ID never reaches the daemon"
+        );
+
+        server.shutdown().await;
     }
 
     #[cfg(unix)]

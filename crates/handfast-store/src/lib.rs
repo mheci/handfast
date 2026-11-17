@@ -25,6 +25,19 @@ const PLUGIN_STATE: TableDefinition<&str, u8> = TableDefinition::new("plugin_sta
 const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings_v1");
 /// Daemon identity, singleton key `1`.
 const IDENTITY: TableDefinition<u8, &[u8]> = TableDefinition::new("identity_v1");
+/// Configured run commands, keyed by command key, JSON-encoded.
+const COMMANDS: TableDefinition<&str, &[u8]> = TableDefinition::new("commands_v1");
+
+/// One locally configured command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandRecord {
+    /// Stable command key.
+    pub key: String,
+    /// Display name.
+    pub name: String,
+    /// Argument vector. The first element is the program.
+    pub argv: Vec<String>,
+}
 
 /// Store errors.
 #[derive(Debug, Error)]
@@ -194,6 +207,7 @@ impl Store {
             let _ = write.open_table(PLUGIN_STATE)?;
             let _ = write.open_table(SETTINGS)?;
             let _ = write.open_table(IDENTITY)?;
+            let _ = write.open_table(COMMANDS)?;
         }
         write.commit()?;
         Ok(())
@@ -492,6 +506,67 @@ impl Store {
         }
         write.commit()?;
         Ok(())
+    }
+
+    /// List every configured command, sorted by key.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the table cannot be read or a record cannot be decoded.
+    pub fn commands(&self) -> Result<Vec<CommandRecord>> {
+        let read = self.database.begin_read()?;
+        let table = read.open_table(COMMANDS)?;
+        let mut commands: Vec<CommandRecord> = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            commands.push(serde_json::from_slice(value.value())?);
+        }
+        commands.sort_by(|left, right| left.key.cmp(&right.key));
+        Ok(commands)
+    }
+
+    /// Read one configured command.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the table cannot be read or the record cannot be decoded.
+    pub fn command(&self, key: &str) -> Result<Option<CommandRecord>> {
+        let read = self.database.begin_read()?;
+        let table = read.open_table(COMMANDS)?;
+        let Some(value) = table.get(key)? else {
+            return Ok(None);
+        };
+        Ok(Some(serde_json::from_slice(value.value())?))
+    }
+
+    /// Insert or replace one configured command.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the record cannot be encoded or the write fails.
+    pub fn add_command(&self, command: &CommandRecord) -> Result<()> {
+        let value = serde_json::to_vec(command)?;
+        let write = self.database.begin_write()?;
+        {
+            let mut table = write.open_table(COMMANDS)?;
+            table.insert(command.key.as_str(), value.as_slice())?;
+        }
+        write.commit()?;
+        Ok(())
+    }
+
+    /// Remove one configured command. Returns whether it existed.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the write fails.
+    pub fn remove_command(&self, key: &str) -> Result<bool> {
+        let write = self.database.begin_write()?;
+        let mut table = write.open_table(COMMANDS)?;
+        let removed = table.remove(key)?.is_some();
+        drop(table);
+        write.commit()?;
+        Ok(removed)
     }
 
     /// Run a blocking store operation on the blocking pool.
@@ -938,6 +1013,25 @@ mod tests {
         assert_eq!(record.device_id, device_id);
         assert_eq!(record.cert_der, vec![1, 2, 3]);
         assert_eq!(record.key_der, vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn commands_round_trip_and_remove() {
+        let (_directory, store) = test_store();
+        assert!(store.commands().unwrap().is_empty());
+
+        let command = CommandRecord {
+            key: "list".to_string(),
+            name: "List files".to_string(),
+            argv: vec!["ls".to_string(), "-l".to_string()],
+        };
+        store.add_command(&command).unwrap();
+
+        assert_eq!(store.commands().unwrap(), vec![command.clone()]);
+        assert_eq!(store.command("list").unwrap(), Some(command));
+        assert!(store.remove_command("list").unwrap());
+        assert!(!store.remove_command("list").unwrap());
+        assert!(store.commands().unwrap().is_empty());
     }
 
     #[test]

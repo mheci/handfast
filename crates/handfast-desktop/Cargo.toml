@@ -18,7 +18,16 @@ uuid.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = { version = "0.13", default-features = false }
+
 [target.'cfg(windows)'.dependencies]
+clipboard-win = "5.4"
+enigo = { version = "0.6", default-features = false }
+keepawake = "0.6"
+serde_json.workspace = true
+volumecontrol-core = "0.1"
+volumecontrol-windows = { version = "0.1", features = ["wasapi"] }
 windows-sys.workspace = true
 
 [lints.rust]

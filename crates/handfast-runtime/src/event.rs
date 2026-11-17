@@ -3,7 +3,173 @@
 use std::path::PathBuf;
 
 use handfast_proto::{DeviceId, Packet};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// One audio sink reported by a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSink {
+    /// Stable sink name used in requests.
+    pub name: String,
+    /// Display name.
+    pub description: String,
+    /// Current volume in the peer's units.
+    pub volume: u32,
+    /// Whether the sink is muted.
+    pub muted: bool,
+    /// Maximum volume in the peer's units.
+    pub max_volume: u32,
+    /// Whether the sink is the peer's default.
+    pub enabled: bool,
+}
+
+impl RemoteSink {
+    /// Current volume as a percentage of [`Self::max_volume`], rounded to the
+    /// nearest point.
+    #[must_use]
+    pub fn percent(&self) -> u8 {
+        if self.max_volume == 0 {
+            return 0;
+        }
+        let scaled = u64::from(self.volume) * 100 + u64::from(self.max_volume) / 2;
+        (scaled / u64::from(self.max_volume)).min(100) as u8
+    }
+}
+
+/// One media player reported by a peer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemotePlayer {
+    /// Stable player name used in requests.
+    pub player: String,
+    /// Track title.
+    pub title: String,
+    /// Track artist.
+    pub artist: String,
+    /// Track album.
+    pub album: String,
+    /// Remote album art URL, empty when none.
+    pub album_art_url: String,
+    /// Track length in milliseconds.
+    pub length_ms: i64,
+    /// Last reported position in milliseconds.
+    pub position_ms: i64,
+    /// Volume percentage, 0-100.
+    pub volume: u8,
+    /// Whether the player is playing.
+    pub playing: bool,
+    /// Whether the player can seek.
+    pub can_seek: bool,
+    /// Whether the player can play.
+    pub can_play: bool,
+    /// Whether the player can pause.
+    pub can_pause: bool,
+    /// Whether the player can go to the previous track.
+    pub can_go_previous: bool,
+    /// Whether the player can go to the next track.
+    pub can_go_next: bool,
+    /// Whether the player can fast forward.
+    pub can_fast_forward: bool,
+    /// Whether the player can rewind.
+    pub can_rewind: bool,
+}
+
+/// One command configured on a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteCommand {
+    /// Stable command key used in requests.
+    pub key: String,
+    /// Display name.
+    pub name: String,
+    /// Command line the peer would run.
+    pub command: String,
+}
+
+/// One contact reported by a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Contact {
+    /// Stable contact identifier from the peer.
+    pub uid: String,
+    /// Display name.
+    pub name: String,
+    /// Phone numbers.
+    pub phones: Vec<String>,
+    /// Email addresses.
+    pub emails: Vec<String>,
+}
+
+/// One SMS message reported by a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsMessage {
+    /// Conversation thread identifier.
+    pub thread_id: i64,
+    /// Phone number.
+    pub address: String,
+    /// Message body.
+    pub body: String,
+    /// Message timestamp in milliseconds.
+    pub date: i64,
+    /// Android message type: 1 inbox, 2 sent.
+    pub kind: i32,
+    /// Whether the message is read.
+    pub read: bool,
+}
+
+/// One SFTP server a phone reported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SftpInfo {
+    /// TCP port the phone's SFTP server listens on.
+    pub port: u16,
+    /// User name the phone expects.
+    pub user: String,
+    /// One-session password the phone generated.
+    pub password: String,
+    /// Root path the phone exposes.
+    pub path: String,
+    /// Address the phone reported, when it sent one.
+    pub ip: Option<std::net::IpAddr>,
+}
+
+/// One directory entry on a phone's SFTP server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SftpEntry {
+    /// File or directory name.
+    pub name: String,
+    /// Whether the entry is a directory.
+    pub directory: bool,
+    /// Size in bytes.
+    pub size: u64,
+}
+
+/// One transport action sent to a peer player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteMediaAction {
+    /// Start playback.
+    Play,
+    /// Pause playback.
+    Pause,
+    /// Toggle between play and pause.
+    PlayPause,
+    /// Stop playback.
+    Stop,
+    /// Go to the next track.
+    Next,
+    /// Go to the previous track.
+    Previous,
+}
+
+impl RemoteMediaAction {
+    /// Wire name used in `kdeconnect.mpris.request`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Play => "Play",
+            Self::Pause => "Pause",
+            Self::PlayPause => "PlayPause",
+            Self::Stop => "Stop",
+            Self::Next => "Next",
+            Self::Previous => "Previous",
+        }
+    }
+}
 
 /// Battery state reported by a peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -37,6 +203,40 @@ pub enum PluginEvent {
     },
     /// Battery state changed.
     Battery(BatteryState),
+    /// A peer reported its audio sinks.
+    RemoteSinks {
+        /// Sinks in name order.
+        sinks: Vec<RemoteSink>,
+    },
+    /// A peer reported its media players.
+    RemotePlayers {
+        /// Players in name order.
+        players: Vec<RemotePlayer>,
+    },
+    /// A peer reported its configured commands.
+    RemoteCommands {
+        /// Commands in key order.
+        commands: Vec<RemoteCommand>,
+        /// Whether the peer lets the desktop add commands.
+        can_add: bool,
+    },
+    /// A peer reported its contacts.
+    Contacts {
+        /// Contacts in name order.
+        contacts: Vec<Contact>,
+    },
+    /// A peer reported SMS messages.
+    SmsMessages {
+        /// Messages in date order.
+        messages: Vec<SmsMessage>,
+    },
+    /// A peer started an SFTP server.
+    Sftp {
+        /// Connection details the peer reported.
+        info: SftpInfo,
+    },
+    /// A peer reports its SFTP server is not running.
+    SftpStopped,
     /// Clipboard text arrived.
     Clipboard {
         /// Text content.
@@ -129,6 +329,35 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sink_percent_rounds_to_the_nearest_point() {
+        let sink = RemoteSink {
+            name: "speakers".to_string(),
+            description: String::new(),
+            volume: 26214,
+            muted: false,
+            max_volume: 65536,
+            enabled: false,
+        };
+        assert_eq!(sink.percent(), 40);
+        assert_eq!(
+            RemoteSink {
+                max_volume: 0,
+                ..sink.clone()
+            }
+            .percent(),
+            0
+        );
+        assert_eq!(
+            RemoteSink {
+                volume: 65536,
+                ..sink
+            }
+            .percent(),
+            100
+        );
+    }
 
     #[test]
     fn share_events_construct_and_compare() {

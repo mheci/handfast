@@ -9,35 +9,68 @@
 pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
+pub mod contacts;
+pub mod digitizer;
+pub mod findmyphone;
 pub mod findthisdevice;
 pub mod lockdevice;
 pub mod mousepad;
 pub mod mpriscontrol;
+pub mod mprisremote;
 pub mod notifications;
 pub mod pausemusic;
 pub mod ping;
 pub mod presenter;
+pub mod remotecommands;
+pub mod remotecontrol;
+pub mod remotesystemvolume;
 pub mod roster;
+pub mod runcommand;
 pub mod screensaver_inhibit;
+pub mod sftp;
 pub mod share;
+pub mod shareinputdevicesremote;
+pub mod sms;
 pub mod systemvolume;
+pub mod telephony;
 
 use handfast_runtime::{PluginMeta, Registry};
 
 pub use battery::{BatteryFactory, BatteryPlugin};
 pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
+pub use contacts::{ContactsFactory, ContactsPlugin};
+pub use digitizer::{DigitizerFactory, DigitizerPlugin};
+pub use findmyphone::{findmyphone_packet, FindMyPhoneFactory, FindMyPhonePlugin};
 pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
 pub use lockdevice::{LockDeviceFactory, LockDevicePlugin};
 pub use mousepad::{MousepadFactory, MousepadPlugin};
 pub use mpriscontrol::{MprisControlFactory, MprisControlPlugin};
+pub use mprisremote::{valid_player_name, MprisRemoteFactory, MprisRemotePlugin};
 pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
 pub use presenter::{PresenterFactory, PresenterPlugin};
+pub use remotecommands::{valid_command_key, RemoteCommandsFactory, RemoteCommandsPlugin};
+pub use remotecontrol::{
+    click_request, key_request, move_request, scroll_request, special_key_request, RemoteClick,
+    RemoteControlFactory, RemoteControlPlugin, RemoteInputModifiers, RemoteKeyboardFactory,
+    RemoteKeyboardPlugin,
+};
+pub use remotesystemvolume::{
+    mute_request, valid_sink_name, volume_request, RemoteSystemVolumeFactory,
+    RemoteSystemVolumePlugin,
+};
+pub use runcommand::{RunCommandFactory, RunCommandPlugin};
 pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
+pub use sftp::{
+    start_request as sftp_start_request, SftpClient, SftpError, SftpFactory, SftpPlugin,
+};
 pub use share::{ShareFactory, SharePlugin};
+pub use shareinputdevicesremote::{ShareInputDevicesRemoteFactory, ShareInputDevicesRemotePlugin};
+pub use sms::{SmsFactory, SmsPlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
+pub use telephony::{TelephonyFactory, TelephonyPlugin};
 
 /// Build the registry of implemented plugins.
 #[must_use]
@@ -47,15 +80,29 @@ pub fn registry() -> Registry {
         Box::new(battery::BatteryFactory),
         Box::new(clipboard::ClipboardFactory),
         Box::new(connectivity_report::ConnectivityReportFactory),
+        Box::new(contacts::ContactsFactory),
+        Box::new(digitizer::DigitizerFactory),
         Box::new(pausemusic::PauseMusicFactory),
         Box::new(share::ShareFactory),
+        Box::new(shareinputdevicesremote::ShareInputDevicesRemoteFactory),
+        Box::new(sms::SmsFactory),
         Box::new(mpriscontrol::MprisControlFactory),
+        Box::new(mprisremote::MprisRemoteFactory),
         Box::new(notifications::NotificationsFactory),
         Box::new(findthisdevice::FindThisDeviceFactory),
+        Box::new(findmyphone::FindMyPhoneFactory),
         Box::new(systemvolume::SystemVolumeFactory),
+        Box::new(remotesystemvolume::RemoteSystemVolumeFactory),
+        Box::new(runcommand::RunCommandFactory),
+        Box::new(remotecommands::RemoteCommandsFactory),
+        Box::new(remotecontrol::RemoteControlFactory),
+        Box::new(remotecontrol::RemoteKeyboardFactory),
         Box::new(screensaver_inhibit::ScreensaverInhibitFactory),
+        Box::new(sftp::SftpFactory),
         Box::new(lockdevice::LockDeviceFactory),
         Box::new(presenter::PresenterFactory),
+        Box::new(mousepad::MousepadFactory),
+        Box::new(telephony::TelephonyFactory),
     ])
 }
 
@@ -67,7 +114,7 @@ pub fn metas() -> &'static [&'static PluginMeta] {
 
 #[cfg(test)]
 mod tests {
-    use handfast_desktop::MockDesktop;
+    use handfast_desktop::{Desktop, MockDesktop};
     use handfast_proto::{types, DeviceId, DeviceName, DeviceType};
     use handfast_runtime::{Device, DeviceHost};
 
@@ -79,6 +126,65 @@ mod tests {
             DeviceName::new("Test"),
             DeviceType::Desktop,
         )
+    }
+
+    #[test]
+    fn remote_system_volume_needs_no_desktop_adapter() {
+        let registry = registry();
+        let desktop = MockDesktop::new();
+        let capabilities = registry.capabilities(&desktop.desktop()).unwrap();
+
+        assert!(capabilities.accepts(types::SYSTEMVOLUME));
+        assert!(capabilities.accepts(types::SYSTEMVOLUME_REQUEST));
+        assert!(DeviceHost::new(device(), &registry, desktop.desktop())
+            .is_enabled("remotesystemvolume"));
+    }
+
+    #[test]
+    fn remote_commands_need_no_desktop_adapter() {
+        let registry = registry();
+        let desktop = MockDesktop::new();
+        let capabilities = registry.capabilities(&desktop.desktop()).unwrap();
+
+        assert!(capabilities.accepts(types::RUNCOMMAND));
+        assert!(capabilities.outgoing().contains(types::RUNCOMMAND_REQUEST));
+        assert!(
+            DeviceHost::new(device(), &registry, desktop.desktop()).is_enabled("remotecommands")
+        );
+    }
+
+    #[test]
+    fn digitizer_is_advertised_with_input_adapter() {
+        let registry = registry();
+
+        let with_input = MockDesktop::new();
+        let capabilities = registry.capabilities(&with_input.desktop()).unwrap();
+        assert!(capabilities.accepts(types::DIGITIZER));
+        assert!(capabilities.accepts(types::DIGITIZER_SESSION));
+        assert!(DeviceHost::new(device(), &registry, with_input.desktop()).is_enabled("digitizer"));
+
+        let without_input = Desktop::default();
+        let capabilities = registry.capabilities(&without_input).unwrap();
+        assert!(!capabilities.accepts(types::DIGITIZER));
+    }
+
+    #[test]
+    fn shareinputdevicesremote_is_advertised_with_input_adapter() {
+        let registry = registry();
+
+        let with_input = MockDesktop::new();
+        let capabilities = registry.capabilities(&with_input.desktop()).unwrap();
+        assert!(capabilities.accepts(types::SHAREINPUTDEVICES_REQUEST));
+        assert!(capabilities.accepts(types::SHAREINPUTDEVICES));
+        assert!(capabilities.outgoing().contains(types::SHAREINPUTDEVICES));
+        assert!(DeviceHost::new(device(), &registry, with_input.desktop())
+            .is_enabled("shareinputdevicesremote"));
+
+        let without_input = Desktop::default();
+        let capabilities = registry.capabilities(&without_input).unwrap();
+        assert!(!capabilities.accepts(types::SHAREINPUTDEVICES_REQUEST));
+        assert!(!DeviceHost::new(device(), &registry, Desktop::default())
+            .is_enabled("shareinputdevicesremote"));
     }
 
     #[test]

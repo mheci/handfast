@@ -39,12 +39,12 @@ pub enum DesktopRequirement {
     Lock,
     /// URL or file opening.
     Shell,
+    /// Locally configured commands.
+    Commands,
     /// User files or SFTP.
     Files,
     /// Telephony or SMS.
     Telephony,
-    /// Contacts storage.
-    Contacts,
     /// Virtual display output.
     Display,
 }
@@ -125,6 +125,12 @@ pub trait Plugin: Send + Sync {
         &mut self,
         _ctx: &mut PluginContext<'_>,
     ) -> Result<PluginOutput, PluginError> {
+        Ok(PluginOutput::new())
+    }
+
+    /// Called on the session timer so a plugin can originate packets from local
+    /// state that has no incoming packet.
+    async fn on_tick(&mut self, _ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
         Ok(PluginOutput::new())
     }
 
@@ -218,9 +224,8 @@ pub(crate) fn desktop_available(desktop: &Desktop, requirement: DesktopRequireme
         DesktopRequirement::Screensaver => desktop.screensaver.is_some(),
         DesktopRequirement::Lock => desktop.lock.is_some(),
         DesktopRequirement::Shell => desktop.shell.is_some(),
+        DesktopRequirement::Commands => desktop.commands.is_some(),
         DesktopRequirement::Files => desktop.files.is_some(),
-        DesktopRequirement::Telephony
-        | DesktopRequirement::Contacts
-        | DesktopRequirement::Display => false,
+        DesktopRequirement::Telephony | DesktopRequirement::Display => false,
     }
 }

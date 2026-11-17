@@ -82,12 +82,14 @@ impl Plugin for SystemVolumePlugin {
         &mut self,
         ctx: &mut PluginContext<'_>,
     ) -> Result<PluginOutput, PluginError> {
-        if ctx.desktop.volume.is_none() {
+        let Some(backend) = ctx.desktop.volume.as_ref() else {
             return Ok(warn("system volume adapter unavailable"));
-        }
-        let packet = Packet::new(types::SYSTEMVOLUME_REQUEST, json!({ "requestSinks": true }))
-            .map_err(|error| PluginError::InvalidPacket(error.to_string()))?;
-        Ok(PluginOutput::new().with_packet(packet))
+        };
+        let current = backend
+            .get()
+            .await
+            .map_err(|error| PluginError::Backend(error.to_string()))?;
+        Ok(PluginOutput::new().with_packet(sink_list_packet(current.percent, current.muted)?))
     }
 
     async fn on_packet(
@@ -260,6 +262,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn on_connect_pushes_the_current_sink() {
+        let mock = MockDesktop::new();
+        let volume = mock.desktop().volume.clone().unwrap();
+        volume.set(63, true).await.unwrap();
+        let desktop = mock.desktop();
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+
+        let output = SystemVolumePlugin::new()
+            .on_connect(&mut ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(output.packets.len(), 1);
+        assert_eq!(output.packets[0].ptype, types::SYSTEMVOLUME);
+        assert_eq!(output.packets[0].body["sinkList"][0]["volume"], 63);
+        assert_eq!(output.packets[0].body["sinkList"][0]["muted"], true);
+    }
+
+    #[tokio::test]
     async fn request_sinks_returns_the_current_sink() {
         let mock = MockDesktop::new();
         let volume = mock.desktop().volume.clone().unwrap();
@@ -367,25 +392,6 @@ mod tests {
                 ..
             }]
         ));
-    }
-
-    #[tokio::test]
-    async fn on_connect_requests_the_sink_list() {
-        let mock = MockDesktop::new();
-        let desktop = mock.desktop();
-        let device = device();
-        let mut ctx = PluginContext {
-            device: &device,
-            desktop: &desktop,
-        };
-        let output = SystemVolumePlugin::new()
-            .on_connect(&mut ctx)
-            .await
-            .unwrap();
-        assert_eq!(output.packets.len(), 1);
-        assert_eq!(output.packets[0].ptype, types::SYSTEMVOLUME_REQUEST);
-        assert_eq!(output.packets[0].body["requestSinks"], json!(true));
-        assert!(output.events.is_empty());
     }
 
     #[test]

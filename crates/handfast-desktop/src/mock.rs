@@ -8,17 +8,47 @@ use async_trait::async_trait;
 
 use crate::error::{DesktopError, Result};
 use crate::files::{FileLimits, Files, FilesError, LocalFiles};
-use crate::model::{KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, VolumeState};
+use crate::model::{
+    ButtonAction, KeyEvent, MediaAction, Notification, PenEvent, PlaybackState, PointerButton,
+    PointerEvent, VolumeState,
+};
 use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
 use crate::Desktop;
+
+/// The main display the mock reports, in pixels.
+const MOCK_DISPLAY: (i32, i32) = (1920, 1080);
 
 /// Recorded synthetic input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
     /// Pointer movement or scroll.
     Pointer(PointerEvent),
+    /// Pointer button.
+    Button(PointerButton, ButtonAction),
     /// Keyboard event.
     Key(KeyEvent),
+    /// A digitizer session opened.
+    PenStart {
+        /// Session width in device pixels.
+        width: i32,
+        /// Session height in device pixels.
+        height: i32,
+        /// Horizontal resolution in pixels per millimetre.
+        resolution_x: i32,
+        /// Vertical resolution in pixels per millimetre.
+        resolution_y: i32,
+    },
+    /// A digitizer session closed.
+    PenEnd,
+    /// One absolute pen event.
+    Pen(PenEvent),
+    /// An absolute pointer move on the main display.
+    AbsolutePointer {
+        /// Pixel column.
+        x: i32,
+        /// Pixel row.
+        y: i32,
+    },
 }
 
 /// Counts lock calls made through the mock desktop.
@@ -78,6 +108,8 @@ impl MockDesktop {
             input: Some(Arc::clone(&backend) as Arc<dyn Input>),
             screensaver: Some(Arc::clone(&backend) as Arc<dyn Screensaver>),
             shell: Some(Arc::clone(&backend) as Arc<dyn Shell>),
+            power: None,
+            commands: None,
             files: None,
             lock: Some(Arc::clone(&lock) as Arc<dyn Lock>),
         };
@@ -308,9 +340,51 @@ impl Input for MockBackend {
         Ok(())
     }
 
+    async fn button(&self, button: PointerButton, action: ButtonAction) -> Result<()> {
+        self.lock(&self.0.input)?
+            .push(InputEvent::Button(button, action));
+        Ok(())
+    }
+
     async fn key(&self, event: KeyEvent) -> Result<()> {
         self.lock(&self.0.input)?.push(InputEvent::Key(event));
         Ok(())
+    }
+
+    async fn start_pen_session(
+        &self,
+        width: i32,
+        height: i32,
+        resolution_x: i32,
+        resolution_y: i32,
+    ) -> Result<()> {
+        self.lock(&self.0.input)?.push(InputEvent::PenStart {
+            width,
+            height,
+            resolution_x,
+            resolution_y,
+        });
+        Ok(())
+    }
+
+    async fn end_pen_session(&self) -> Result<()> {
+        self.lock(&self.0.input)?.push(InputEvent::PenEnd);
+        Ok(())
+    }
+
+    async fn pen(&self, event: PenEvent) -> Result<()> {
+        self.lock(&self.0.input)?.push(InputEvent::Pen(event));
+        Ok(())
+    }
+
+    async fn absolute_pointer(&self, x: i32, y: i32) -> Result<()> {
+        self.lock(&self.0.input)?
+            .push(InputEvent::AbsolutePointer { x, y });
+        Ok(())
+    }
+
+    async fn main_display(&self) -> Result<(i32, i32)> {
+        Ok(MOCK_DISPLAY)
     }
 }
 
@@ -409,6 +483,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(desktop.input_events().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn pen_events_are_recorded() {
+        let desktop = MockDesktop::new();
+        let input = desktop.desktop().input.clone().unwrap();
+        input.start_pen_session(100, 200, 5, 6).await.unwrap();
+        input
+            .pen(crate::model::PenEvent {
+                x: 1,
+                y: 2,
+                pressure: 0.5,
+                touching: true,
+                tool: crate::model::PenTool::Pen,
+            })
+            .await
+            .unwrap();
+        input.end_pen_session().await.unwrap();
+        assert_eq!(
+            desktop.input_events(),
+            vec![
+                InputEvent::PenStart {
+                    width: 100,
+                    height: 200,
+                    resolution_x: 5,
+                    resolution_y: 6,
+                },
+                InputEvent::Pen(crate::model::PenEvent {
+                    x: 1,
+                    y: 2,
+                    pressure: 0.5,
+                    touching: true,
+                    tool: crate::model::PenTool::Pen,
+                }),
+                InputEvent::PenEnd,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn absolute_pointer_is_recorded_on_the_main_display() {
+        let desktop = MockDesktop::new();
+        let input = desktop.desktop().input.clone().unwrap();
+        assert_eq!(input.main_display().await.unwrap(), (1920, 1080));
+
+        input.absolute_pointer(10, 20).await.unwrap();
+
+        assert_eq!(
+            desktop.input_events(),
+            vec![InputEvent::AbsolutePointer { x: 10, y: 20 }]
+        );
     }
 
     #[tokio::test]

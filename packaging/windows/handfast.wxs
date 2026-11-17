@@ -18,11 +18,27 @@
                   DowngradeErrorMessage="A newer version of Handfast is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- A per-user install cannot add the firewall rule, which needs an
-         administrator. The daemon cannot discover peers until the rule exists,
-         so the Add or Remove Programs entry carries the command. -->
+    <Icon Id="HandfastIcon" Source="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="HandfastIcon" />
+
+    <!-- The installer adds one firewall rule per user. A deferred LocalSystem
+         action cannot resolve [LocalAppDataFolder], so the immediate action
+         captures the literal installed path and the rule name into the action
+         data. The name is the one `handfast service install` computes from the
+         same UserSID property, so an elevated manual install or uninstall
+         reuses this rule instead of adding a second one, and the name survives
+         upgrades. -->
     <Property Id="ARPCOMMENTS"
-              Value="Handfast needs a firewall rule for UDP 1716 and TCP 1716-1764. Run 'handfast service install' and follow the printed netsh command from an administrator prompt." />
+              Value="Handfast needs a firewall rule for UDP 1716 and TCP 1716-1764. The installer adds it. If it is missing, run 'handfast service install' from an administrator prompt." />
+
+    <CustomAction Id="SetAddFirewallData" Property="AddFirewallRule"
+                  Value="&quot;[SystemFolder]netsh.exe&quot; advfirewall firewall add rule name=&quot;Handfast-[UserSID]&quot; dir=in action=allow program=&quot;[INSTALLFOLDER]handfast.exe&quot; enable=yes" />
+    <CustomAction Id="AddFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="SetRemoveFirewallData" Property="RemoveFirewallRule"
+                  Value="&quot;[SystemFolder]netsh.exe&quot; advfirewall firewall delete rule name=&quot;Handfast-[UserSID]&quot;" />
+    <CustomAction Id="RemoveFirewallRule" BinaryKey="WixCA" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
 
     <!-- CloseApplication's parents are Product, Fragment and Module, not
          Component. It sends WM_CLOSE so an upgrade can replace a running exe. -->
@@ -36,8 +52,12 @@
     <CustomAction Id="ServiceUninstall" FileKey="HandfastExe" ExeCommand="service uninstall"
                   Execute="deferred" Impersonate="yes" Return="ignore" />
     <InstallExecuteSequence>
-      <Custom Action="ServiceInstall" After="InstallFiles">NOT Installed</Custom>
-      <Custom Action="ServiceUninstall" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="SetAddFirewallData" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="AddFirewallRule" After="SetAddFirewallData">NOT Installed</Custom>
+      <Custom Action="ServiceInstall" After="AddFirewallRule">NOT Installed</Custom>
+      <Custom Action="ServiceUninstall" Before="SetRemoveFirewallData">REMOVE="ALL"</Custom>
+      <Custom Action="SetRemoveFirewallData" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="RemoveFirewallRule" After="SetRemoveFirewallData">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>
 
     <Feature Id="ProductFeature" Title="Handfast" Level="1">
@@ -63,6 +83,7 @@
                Guid="B2A5B0A4-6E39-4F6B-9F0C-7A2C8B3D9E41">
       <Shortcut Id="HandfastShortcut" Name="Handfast"
                 Description="Open the Handfast window"
+                Icon="HandfastIcon"
                 Target="HandfastExe" Arguments="gui" WorkingDirectory="INSTALLFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\Handfast" Name="StartMenuShortcut"
                      Type="integer" Value="1" KeyPath="yes" />

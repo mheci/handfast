@@ -60,7 +60,6 @@ pub struct VolumeState {
     /// Whether output is muted.
     pub muted: bool,
 }
-
 impl Default for VolumeState {
     fn default() -> Self {
         Self {
@@ -68,6 +67,15 @@ impl Default for VolumeState {
             muted: false,
         }
     }
+}
+
+/// Host battery state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PowerState {
+    /// Charge percentage, 0-100.
+    pub percent: u8,
+    /// Whether the host is charging.
+    pub charging: bool,
 }
 
 /// Keyboard modifiers for an injected key event.
@@ -113,6 +121,58 @@ pub struct PointerEvent {
     pub scroll: bool,
 }
 
+/// A pointer button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PointerButton {
+    /// Primary button.
+    Left,
+    /// Secondary button.
+    Right,
+    /// Middle button.
+    Middle,
+}
+
+/// What a pointer button event does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ButtonAction {
+    /// One press and release.
+    Click,
+    /// Two presses and releases.
+    DoubleClick,
+    /// Press and hold.
+    Press,
+    /// Release a held button.
+    Release,
+}
+
+/// Which pen tool a digitizer event uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PenTool {
+    /// The drawing pen.
+    Pen,
+    /// The eraser end of the pen.
+    Rubber,
+}
+
+/// One absolute pen event from a digitizer session.
+///
+/// Every field carries the full tool state, so backends can emit the state as
+/// given. Position is in the session coordinate space announced by
+/// [`crate::Input::start_pen_session`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PenEvent {
+    /// Absolute X position in the session coordinate space.
+    pub x: i32,
+    /// Absolute Y position in the session coordinate space.
+    pub y: i32,
+    /// Pressure, 0-1. Backends that cannot inject pressure ignore it.
+    pub pressure: f64,
+    /// Whether the tool is touching the screen.
+    pub touching: bool,
+    /// The active tool.
+    pub tool: PenTool,
+}
+
 /// Transport action for an MPRIS player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaAction {
@@ -147,4 +207,33 @@ pub struct PlaybackState {
     pub length_ms: i64,
     /// Player volume, 0-100.
     pub volume: Option<u8>,
+}
+
+/// One locally configured command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandSpec {
+    /// Stable command key used in requests.
+    pub key: String,
+    /// Display name.
+    pub name: String,
+    /// Argument vector. The first element is the program.
+    pub argv: Vec<String>,
+}
+
+impl CommandSpec {
+    /// Render the argument vector for display.
+    #[must_use]
+    pub fn display(&self) -> String {
+        self.argv
+            .iter()
+            .map(|argument| {
+                if argument.contains(' ') || argument.contains('"') {
+                    format!("\"{}\"", argument.replace('"', "\\\""))
+                } else {
+                    argument.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }

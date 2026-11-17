@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Handfast
+GenericName=KDE Connect client
+Comment=Connect your phone and desktop
+Exec=handfast gui
+Icon=handfast
+Terminal=false
+Categories=Network;Utility;
+Keywords=phone;connect;kdeconnect;share;clipboard;
+StartupNotify=true
+StartupWMClass=Handfast

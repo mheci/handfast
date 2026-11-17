@@ -2,6 +2,22 @@
 
 Goal: make Handfast production ready, through P1 to P4 in `docs/ARCHITECTURE.md`.
 
+Current state, 2026-11-17: 26 of 31 roster plugins are implemented. The five
+planned plugins and their blockers are named in `docs/PARITY.md`. Branch
+`feat/parity`, PR #272. The manual P1 Android/desktop gate, GUI window check,
+signed 0.3.0 update and package installs still need the user.
+
+Delegation policy, 2026-11-17: every subagent runs on the Go provider at max
+effort, never the free variants. `~/.config/opencode/pstack-models.md` encodes
+`opencode-go/hy4#high`, `opencode-go/claude-haiku-5-5#max` and
+`opencode-go/glm-5.3-flash#max` per role. The earlier free-variant
+notifications worktree was stopped without a commit and is discarded.
+
+Three parallel tracks on `c04e675`: `sendnotifications` (GLM Go max, worktree
+`handfast-notifications-go`), `shareinputdevicesremote` (Haiku Go max,
+`handfast-remote-input`), and the `virtualmonitor` client half (Hy4 Go high,
+`handfast-virtualmonitor`).
+
 Hardening queue, 2026-11-14:
 
 - The shell runs on Windows PowerShell 5.1 after the OpenCode config was pointed at the absolute `powershell.exe` path. `pwsh` is not installed.
@@ -235,3 +251,157 @@ Design risks carried into implementation:
 - Pairing clock skew and Windows state-file and incoming-file ACLs remain open.
 - The unpaired idle timeout must not close a link inside the 30-second pairing window.
 - The testkit TLS peer duplicates handshake logic on purpose.
+
+Parity wave 1, 2026-11-16, branch `feat/parity`:
+
+- Branding: two interlocking rings, teal `#128C7E` over copper `#E8833A`, from `scripts/branding.py`. Exports: 16 to 1024 PNG, a 7-size ICO, 128 px RGBA for the window, color, mono and wordmark SVG. Wired into the GUI window, the MSI product and shortcut icon, the deb and Arch hicolor trees, `handfast.desktop`, and `docs/branding.md`. The SVG rendered in Chromium with both ring colors; the ICO loads in .NET.
+- Windows backends: clipboard (`clipboard-win`), notifications (toast through in-box PowerShell with tag close), media (SMTC through in-box PowerShell), volume (WASAPI through `volumecontrol-windows`), screensaver (`keepawake` on a dedicated thread), lock (`rundll32.exe`), shell (`explorer.exe`, http and https only), files (existing ACL path). Every tool is an absolute System32 path. No new unsafe. The daemon now installs these on Windows instead of only Files.
+- Real Windows evidence: clipboard round trip, volume read and rewrite (44%, unmuted), keep-awake hold and release, live SMTC player list and now playing, and a toast show and close all passed with `cargo test -p handfast-desktop -- --ignored`.
+- Outbound clipboard: `Plugin::on_tick` plus a 2 s session timer. The plugin sends `clipboard.connect` on connect and `clipboard` on a local change, caps the selection at 256 KiB, and never echoes an inbound write. Roster now advertises clipboard outgoing.
+- Roster truth: fixed the inverted remotecommands, sftp and shareinputdevices entries, added remotekeyboard echo and keyboardstate incoming, removed sms.messages from SMS outgoing.
+- Docs: `docs/ARCHITECTURE.md` now lists Linux and Windows adapters; `docs/PARITY.md` has the Windows table and the named gaps (no Windows input, no player volume read, 2 s clipboard poll, toast AUMID follow-up).
+- Local checks: desktop 133 pass plus 5 ignored real tests, daemon 129 pass, plugins 132 pass, runtime 11 pass, fmt and clippy clean on the changed crates. The release `handfast.exe` builds at 10.99 MB. WiX is not installed locally, so the MSI build is unverified until CI or a release run.
+- Pending: comment review, commit and PR. Then findmyphone, remotesystemvolume, telephony, MPRIS both ways, sendnotifications, runcommand, input, contacts, SMS, sftp, virtualmonitor.
+
+Parity wave 2, 2026-11-16, same branch:
+
+- `findmyphone` is implemented and registered: empty `kdeconnect.findmyphone.request` body, control request `Ring`, `handfast ring <device-id>`, and a Ring button on each connected device in the window.
+- The roster test now accepts an implemented plugin with either an incoming or an outgoing contract; screensaver stays exempt because it is connection-driven.
+- Evidence: plugins 133 pass, daemon lib 131 pass (including a ring-to-an-offline-device error test), bin 4 pass, fmt and clippy clean. The Unix ring CLI test compiles here and runs in CI.
+- PR #272 CI first run: fmt, test, msrv, deny, docs, windows, testkit and fuzz passed; clippy and gui failed on an unused `FileLimits` import that was only used by a Windows test. Fixed by moving the import into the test module.
+
+Parity wave 3, 2026-11-16, same branch:
+
+- `mpriscontrol` now sends `kdeconnect.mpris` state to the phone: one packet per player on connect, on `requestPlayerList`, and on `requestNowPlaying`, with `player`, `playerList`, `title`, `artist`, `length`, `pos`, `isPlaying` and `volume`. The roster advertises `kdeconnect.mpris` outgoing.
+- Evidence: plugins 137 pass, including connect, player-list and now-playing state tests; clippy clean.
+- Still missing for full MPRIS parity: `Seek`, `SetPosition`, `requestVolume` and `albumArtUrl` handling, and the separate `mprisremote` plugin for phone media.
+
+Parity wave 4, 2026-11-16, same branch:
+
+- `telephony` is implemented and registered: ringing, missed and talking calls become desktop notifications with a stable per-number ID; `isCancel` closes the notification; the old `sms` event is left to the SMS plugin. The roster now requires `Notifications`, not the unimplemented `Telephony` capability.
+- Evidence: plugins 147 pass, daemon 132 pass, clippy clean. The phone-side mute action is still missing and is named in `docs/PARITY.md`.
+- MPRIS `requestVolume` is handled by sending the player state, which includes the volume.
+- CI on `3754865` is fully green: all 10 checks pass. The MPRIS and telephony commits will trigger one more run.
+
+Parity wave 5, 2026-11-16, same branch:
+
+- `battery` is now bidirectional: it sends `battery.request` on connect, reports the host battery, and pushes a change every 60 s. Linux reads `/sys/class/power_supply`; Windows reads `Win32_Battery` through in-box PowerShell. A host with no battery reports `currentCharge: -1`.
+- Evidence: plugins 153 pass, daemon 132 pass, clippy clean. The new `Power` trait has sysfs tests and a PowerShell fake-runner test.
+- CI on `a23c338` failed `test` and `gui` because `kdeconnect.telephony` is now advertised by the telephony plugin with a notifier, not only by pausemusic with playerctl. Fixed by removing TELEPHONY from the playerctl probe case and adding `telephony_requires_a_notifier`.
+
+Parity wave 6, 2026-11-16, same branch:
+
+- `systemvolume` now pushes its sink list on connect instead of sending `requestSinks`, which is the remotesystemvolume direction. The roster outgoing drops `SYSTEMVOLUME_REQUEST`; the plugin still answers a peer's `requestSinks` and applies volume and mute requests.
+- Evidence: plugins 153 pass, clippy clean. The old `on_connect_requests_the_sink_list` test was replaced by `on_connect_pushes_the_current_sink`.
+
+Parity wave 7, 2026-11-16, same branch:
+
+- Input is implemented on both platforms. Linux/Wayland uses `ydotool` for pointer movement, wheel and buttons and `wtype` for keys; Windows uses `enigo`. The `Input` trait now carries pointer buttons with click, double-click, press and release.
+- `mousepad` is registered and enabled; `presenter` becomes active on hosts with an input adapter. The special-key table matches the KDE Connect desktop mapping 1-32.
+- The daemon installs the Linux input adapter only when `WAYLAND_DISPLAY` is set and both `ydotool` and `wtype` are on `PATH`. Windows installs `enigo` unconditionally and creates the connection on first use.
+- Evidence: desktop 154 pass (input argv tests and enigo key mapping), plugins 156 pass, daemon 132 pass, clippy clean. The real injection needs the manual phone touchpad/keyboard check.
+- The real Windows enigo connection initialized in `the_real_input_backend_initializes` without injecting input. The first CI run on the input wave failed on a Linux-only test compile because the input probe used `registry` as a function; fixed by building the registry in the test.
+- Still open for full input parity: absolute pointer and pressure for `digitizer`, input capture for `shareinputdevices`, and `singlehold`/`singlerelease` on Linux use the ydotool down/up masks.
+
+Parity wave 8, 2026-11-16, same branch:
+
+- `remotesystemvolume` is implemented and registered. The plugin keeps a per-device sink model from `kdeconnect.systemvolume` `sinkList` packets and deltas, capped at 64 sinks, and emits `PluginEvent::RemoteSinks` to the daemon. Invalid sink entries are skipped; out-of-range volumes and unknown sinks are warnings.
+- The control channel has `RemoteVolume { device_id, sink, percent, muted }` with exactly one of percent and muted. The daemon scales percent to the sink's `maxVolume`, validates the sink against the model, and sends `{name, volume}` or `{name, muted}`. `handfast volume <device-id>` lists sinks; `--sink NAME --percent N`, `--mute` and `--unmute` change one. The window shows a slider and mute checkbox per reported sink.
+- The `RemoteSink` model lives in `handfast-runtime`, carries `volume`/`maxVolume` raw units, and rounds `percent()` to the nearest point so 40% of 65536 reads back as 40.
+- Evidence: plugins 166 pass, runtime 12 pass, daemon lib 134 pass (including the unknown-device and percent-scaling tests), bin 4 pass, clippy and fmt clean. `volume_cli.rs` type-checks and runs on Unix in CI.
+- Android note: the official Android SystemVolume plugin is a controller, not a sink provider, so `remotesystemvolume` has no Android counterpart. It is exercised between two desktops.
+
+Parity wave 9, 2026-11-16, same branch:
+
+- `mprisremote` is implemented and registered. The plugin keeps a per-device player model from `kdeconnect.mpris` `playerList` packets and incremental player state, requests the list on connect, requests status for new players, and emits `PluginEvent::RemotePlayers` to the daemon.
+- The control channel has `Media` with `RequestList`, `RequestStatus`, `Action`, `SetVolume`, `Seek` and `SetPosition`. The daemon checks the player against the reported model, builds `kdeconnect.mpris.request`, and sends it over the reliable session path. `Seek` is microseconds; `SetPosition` is milliseconds.
+- `handfast media <device-id>` lists players; `--list`, `--status`, `--action play|pause|toggle|stop|next|previous`, `--volume N`, `--seek US` and `--position MS` cover the actions. The window has a player selector, now-playing text, transport buttons, volume slider and position slider.
+- Android provides phone media through `MprisReceiverPlugin`, so this direction is Android-compatible. Album art URLs are modelled; album art payloads are not fetched yet.
+- Evidence: plugins 179 pass (11 new mprisremote tests), daemon lib 137 pass (media command and status model tests), runtime 12 pass, bin 4 pass, clippy and fmt clean, docs with `-D warnings` clean. The seven `media_cli` end-to-end tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- The status snapshot caps remote sinks and players at 4 devices with 3 entries each and 64-character text, and sets `truncated` when anything is dropped. The full-status frame test now carries the maximum remote data and stays under the 64 KiB control frame.
+
+Parity wave 10, 2026-11-16, same branch:
+
+- Windows firewall at install: `handfast service install` probes elevation with `net session`. When elevated it deletes and re-adds one rule named `Handfast-<user SID>` for the installed exe, so two users never share a name and repeated installs do not accumulate rules. When not elevated it keeps the printed admin command. `handfast service uninstall` removes the rule when elevated.
+- The MSI adds a per-install rule through `WixQuietExec` deferred as LocalSystem: an immediate action captures `[INSTALLFOLDER]handfast.exe` into the action data, the add runs before `ServiceInstall`, and a matching delete runs on uninstall. The rule name is `Handfast-[UserSID]`, the same name the daemon computes from the current user. `xtask` already passes `WixUtilExtension`.
+- Evidence: the service tests pass in an isolated worktree at `3108cc1` (35 passed), including the elevation probe, idempotent delete/add, non-elevated fallback, path-hash stability and uninstall cleanup. The WiX file parses and the sequence is add-firewall, service-install, service-uninstall, delete-firewall. WiX is not installed locally, so the MSI build is unverified.
+- The MSI and `service install` now use the same `Handfast-<user SID>` name, so an elevated manual install replaces the installer's rule instead of adding a second one.
+
+Parity wave 11, 2026-11-16, same branch:
+
+- `remotecommands` is implemented and registered. The plugin parses the peer's `commandList` JSON string from `kdeconnect.runcommand`, caps it at 64 entries, skips malformed entries with a warning, and emits `PluginEvent::RemoteCommands { commands, can_add }`. It requests the list on connect.
+- The control channel has `RemoteCommand { List, Run { key }, Setup, Stop }`. The daemon stores the model per device, checks `Run` keys against the full model, and sends `{requestCommandList: true}`, `{key}`, `{setup: true}` or `{stop: true}`. `handfast remote-command <device-id>` lists cached commands and supports `--list`, `--run KEY`, `--setup` and `--stop`.
+- The status snapshot caps remote commands at 4 per device with 64-character text. The full-frame test now uses 128 pending pairings plus every remote section at its production cap and still fits the 64 KiB control frame. `--run KEY` still works for any key in the 64-entry model, not only the four shown in the snapshot.
+- Evidence: plugins 189 pass (9 remotecommands tests), daemon lib 142 pass (command model, status, offline device, frame bound and firewall tests), runtime 12 pass, bin 4 pass, clippy/fmt/docs clean. The five `remotecommand_cli` end-to-end tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: no GUI surface yet; `addCommand` is not implemented (`can_add` is surfaced but `--setup` only opens the peer editor); `.runcommand.output` is not fetched, so trigger results are not shown; the status lists at most four commands per device.
+
+Parity wave 12, 2026-11-16, same branch:
+
+- `runcommand` is implemented and registered. Commands live in the redb `commands_v1` table behind a new `Commands` desktop trait and `StoreCommands` adapter. The peer can request the list and trigger a key; the plugin runs the argv array without a shell, streams stdout and stderr back through `kdeconnect.runcommand.output`, and reports the exit code.
+- Limits: 64 stored commands, 1-16 argv entries of at most 1024 bytes, keys at most 256 bytes, no control characters, 30 s timeout, 64 KiB per stream, 200 lines per stream, 4 concurrent commands. `on_disconnect` and a peer `stop` kill running children.
+- Control: `CommandConfig { List, Add { key, name, argv }, Remove { key } }`, `ControlResponse::Commands`, and `handfast command list|add|remove`. `add` generates a UUID key and prints it; `remove` reports whether the key existed. The peer cannot add commands; `canAddCommand` is always false.
+- Evidence: store 23 pass (command round-trip), plugins 195 pass (6 runcommand tests), daemon lib 147 pass (CommandConfig round-trip and missing-adapter error), runtime 12 pass, desktop 143 pass, bin 4 pass, clippy/fmt/docs clean. The six `command_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: no GUI surface; `.runcommand.output` is not consumed by `remotecommands` yet.
+
+
+Parity wave 13, 2026-11-16, same branch:
+
+- `remotecontrol` and `remotekeyboard` are implemented and registered. Both are stateless; the desktop sends `kdeconnect.mousepad.request` and the phone injects the input. No local input is injected.
+- Packet builders: relative move, scroll, six click fields, text keys with modifiers, and special key codes 1-32. `handfast remote-input <device-id>` exposes them with `--move DX DY`, `--scroll DX DY`, `--click left|double|middle|right|hold|release`, `--key TEXT`, `--special CODE` and `--alt/--ctrl/--shift/--sup`.
+- Validation: deltas are limited to +/-10000, key text to 64 bytes with no control characters, special codes to 1-32, and exactly one operation per request. Modifiers require `--key` or `--special`.
+- Evidence: plugins 201 pass (6 remotecontrol tests), daemon lib 148 pass (RemoteInput round-trip and offline device), bin 4 pass, clippy/fmt/docs clean. The seven `remoteinput_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: no GUI surface; the phone must enable its remote control and remote keyboard plugins; special key codes are numeric only.
+
+
+Parity wave 14, 2026-11-16, same branch:
+
+- `contacts` is implemented and registered. The plugin asks the phone for every UID and timestamp on connect, requests the vCards by UID, parses them, and emits `PluginEvent::Contacts` in name order. The daemon keeps the list per device and clears it on disconnect.
+- vCard parsing: folded lines are joined, `FN` wins over `N`, `TEL` and `EMAIL` are collected, vCard escapes are decoded. Caps: 1024 contacts, 16 KiB per vCard, 256-byte UID and name, 16 fields of 128 bytes each. Malformed entries are skipped with one warning.
+- Control: `Contacts { device_id, refresh }` and `ControlResponse::Contacts`. `handfast contacts <device-id>` prints name, phones and emails; `--refresh` asks the phone for a fresh sync.
+- Evidence: runtime 12 pass, plugins 210 pass (9 contacts tests), daemon lib 150 pass (model and offline device), bin 4 pass, clippy/fmt/docs clean. The five `contacts_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: the cache is in memory and is re-requested on every connect; no GUI surface; vCard photos, addresses and groups are not stored.
+
+
+Parity wave 15, 2026-11-16, same branch:
+
+- `sms` is implemented and registered. On connect the plugin requests the conversation list. `kdeconnect.sms.messages` is parsed into `SmsMessage` values from `addresses[0].address`, `body`, `date`, `type` and the integer `read` field, with a 512-message cap, 64-byte address, 2000-byte body, and control-character rejection. The daemon caches messages per device, dedupes by thread/date/address/body, derives conversations from the latest message per thread, and clears the cache on disconnect.
+- Control: `SmsAction { Conversations, Refresh, Thread { thread_id }, RefreshThread { thread_id }, Send { address, body } }`. `handfast sms <device-id>` lists cached conversations; `--refresh` requests them; `--thread ID` lists cached messages; `--thread ID --refresh-thread` requests the thread; `--send ADDRESS --body TEXT` sends a plain-text SMS using `messageBody` and `addresses: [{address}]`, matching the Android client.
+- Validation: thread IDs must be non-negative, addresses must be 1-64 bytes without control characters, and send bodies must be non-empty and valid. Replies are capped at 64 conversations and 128 messages per thread.
+- Evidence: runtime 12 pass, plugins 215 pass (5 SMS tests), daemon lib 152 pass (SMS model, dedupe, conversations, thread, offline device), bin 4 pass, clippy/fmt/docs clean. The nine `sms_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Test harness: the session tests' link channel was raised from 8 to 32 because the added on-connect packets filled it and blocked the incoming-share tests. Production uses the daemon's 256-slot link queue.
+- Gaps: attachments and MMS are not implemented; the cache is in memory and re-requested on connect; no GUI surface.
+
+
+Parity wave 16, 2026-11-16, same branch:
+
+- The telephony mute action is implemented. `handfast telephony <device-id> --mute` sends `kdeconnect.telephony.request_mute` and the Android app mutes its ringer (verified in `TelephonyPlugin.kt`).
+- The roster now advertises the mute packet as outgoing. Control: `TelephonyMute { device_id }`; the daemon requires a connected session and replies with the send result.
+- Evidence: plugins 216 pass (telephony mute builder), daemon lib 153 pass (offline device), bin 4 pass, clippy/fmt/docs clean. The four `telephony_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: no GUI mute button; the CLI is the only surface.
+
+
+Parity wave 17, 2026-11-16, same branch:
+
+- `sftp` is implemented in the protocol's real direction: the phone runs the SFTP server, the desktop is the client. Verified against kdeconnect-android `SftpPlugin.kt` and kdeconnect-kde `sftpplugin.cpp`: the desktop sends `kdeconnect.sftp.request {startBrowsing: true}` and the phone replies with `kdeconnect.sftp` containing the port, user, one-session password, path, optional ip, multiPaths and pathNames.
+- `handfast sftp <device-id> --start` sends the request. `--list PATH`, `--download REMOTE LOCAL` and `--upload LOCAL REMOTE` connect with `russh`/`russh-sftp` using the reported ip (falling back to the control link address) and copy through the phone's server. The phone enforces its own storage roots; the desktop accesses the paths the phone exposes.
+- The reply parser accepts a numeric or string port, caps user/password/path lengths, and ignores an invalid ip. The daemon caches the details per device, clears them on disconnect or on a `serverRunning: false` packet, and requires a connected session for every operation. Downloads and uploads are capped at 512 MiB and stream in 64 KiB chunks.
+- New dependencies: `russh` 0.65 with the `ring` and `rsa` features (no aws-lc), `russh-sftp` 3.0, `rand` 0.10 as a dev-dependency, and `thiserror` (already a workspace dep). The phone reuses its TLS key as the SSH host key (`RsaHelper`), so the client pins the SSH public key to the peer certificate's RSA modulus/exponent. The test fixture uses an ECDSA key and certificate and also proves that a certificate for another key is refused. No unsafe code.
+- Evidence: plugins 226 pass (10 sftp tests, including a real `russh` SFTP client against a real SFTP server fixture listing, downloading and uploading), daemon lib 155 pass (cache and offline device), control round-trip, bins 4 pass, clippy/fmt/docs clean. The seven `sftp_cli` tests pass on Windows when temporarily enabled and stay Unix-gated in CI.
+- Gaps: no GUI file browser; the phone must enable its SFTP plugin and grant storage permissions; `multiPaths` is parsed only as the single `path`; no resume or partial-transfer support.
+
+
+Feasibility, 2026-11-16, remaining plugins:
+
+- `sendnotifications`: Linux can observe freedesktop notifications with a `gdbus monitor` parser, fully testable with canned lines. Windows WinRT `UserNotificationListener` needs a consent prompt and package identity; unpackaged Win32 processes get empty lists or fail `NotificationChanged`. Recommendation: Linux-only unless the user allows the prompt and packaging work.
+- `digitizer`: Wayland can inject absolute position and pressure through the safe `evdev` uinput API; Windows has safe absolute pointer via `enigo` but no pressure without unsafe or a driver. Recommendation: implement the contract and both pointer paths, name the Windows pressure gap.
+- `shareinputdevicesremote`: mostly `mousepad` plus absolute entry positioning; implementable now. `shareinputdevices` capture is Wayland/libei only (`reis`), and Windows capture needs a hook backend. Leave capture planned.
+- `virtualmonitor`: KDE shells out to `krdpserver` and opens `rdp://`. Linux server partial is possible; Windows needs an IddCx driver. Android has no counterpart. Leave planned.
+- `mmtelephony`: safe ModemManager DBus with `zbus` is feasible but needs modem hardware and upstream mute is a stub. Leave planned.
+
+
+Parity wave 18, 2026-11-17, same branch:
+
+- `digitizer` is implemented. The plugin opens a session from `kdeconnect.digitizer.session`, injects absolute pen events from `kdeconnect.digitizer`, clamps positions into the session space, and forces touching/pressure off on `active:false` or a lift.
+- Wayland creates an `evdev` uinput virtual tablet with `ABS_X`, `ABS_Y`, `ABS_PRESSURE` (0-1023), `BTN_TOUCH`, `BTN_TOOL_PEN` and `BTN_TOOL_RUBBER`, so pressure is real. Windows uses `enigo` `Coordinate::Abs` scaled from the session to the main display, maps Pen to the left button and Rubber to the right, and ignores pressure once per session as a named gap. The session closes on disconnect and releases a held button.
+- Evidence: desktop 148 pass (6 ignored), plugins 244 pass (18 digitizer tests), daemon lib 156 pass, bins 4 pass, clippy/fmt/docs clean. The Linux uinput path compiles against `x86_64-unknown-linux-gnu` and its event mapping is unit-tested; real tablet injection and Windows pen input remain manual.
+- Gaps: Windows pressure and tilt; real Wayland tablet injection and Windows pen input need a device/session check.

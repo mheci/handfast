@@ -36,6 +36,58 @@ fn log_plugin_event(device_id: &DeviceId, event: &PluginEvent) {
                 "plugin event"
             );
         }
+        PluginEvent::RemoteSinks { sinks } => {
+            tracing::info!(
+                %device_id,
+                event = "RemoteSinks",
+                sinks = sinks.len(),
+                "plugin event"
+            );
+        }
+        PluginEvent::RemotePlayers { players } => {
+            tracing::info!(
+                %device_id,
+                event = "RemotePlayers",
+                players = players.len(),
+                "plugin event"
+            );
+        }
+        PluginEvent::RemoteCommands { commands, can_add } => {
+            tracing::info!(
+                %device_id,
+                event = "RemoteCommands",
+                commands = commands.len(),
+                can_add = *can_add,
+                "plugin event"
+            );
+        }
+        PluginEvent::Contacts { contacts } => {
+            tracing::info!(
+                %device_id,
+                event = "Contacts",
+                contacts = contacts.len(),
+                "plugin event"
+            );
+        }
+        PluginEvent::SmsMessages { messages } => {
+            tracing::info!(
+                %device_id,
+                event = "SmsMessages",
+                messages = messages.len(),
+                "plugin event"
+            );
+        }
+        PluginEvent::Sftp { info } => {
+            tracing::info!(
+                %device_id,
+                event = "Sftp",
+                port = info.port,
+                "plugin event"
+            );
+        }
+        PluginEvent::SftpStopped => {
+            tracing::info!(%device_id, event = "SftpStopped", "plugin event");
+        }
         PluginEvent::Clipboard { text, .. } => {
             tracing::info!(
                 %device_id,

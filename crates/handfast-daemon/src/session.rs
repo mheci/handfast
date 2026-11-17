@@ -41,6 +41,8 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 /// Byte step that also releases a progress event.
 const PROGRESS_BYTES: u64 = 4 * 1024 * 1024;
 
+const PLUGIN_TICK: Duration = Duration::from_secs(2);
+
 /// An event from a session or a pairing task back to the daemon.
 #[derive(Debug)]
 pub enum DaemonEvent {
@@ -76,6 +78,12 @@ pub struct SessionLimits {
     pub max_queued_receives: usize,
 }
 
+pub struct SessionSetup {
+    pub remote_addr: SocketAddr,
+    pub limits: SessionLimits,
+    pub certificate: Vec<u8>,
+}
+
 impl Default for SessionLimits {
     fn default() -> Self {
         Self {
@@ -101,6 +109,15 @@ pub struct TransferSetup {
 pub struct DeviceSession {
     task: JoinHandle<()>,
     handle: SessionHandle,
+    remote_addr: SocketAddr,
+    certificate: Vec<u8>,
+}
+
+struct SessionConfig {
+    remote_addr: SocketAddr,
+    limits: SessionLimits,
+    certificate: Vec<u8>,
+    deps: Option<TransferDeps>,
 }
 
 impl DeviceSession {
@@ -111,9 +128,21 @@ impl DeviceSession {
         registry: Arc<Registry>,
         desktop: Desktop,
         events: mpsc::Sender<DaemonEvent>,
-        limits: SessionLimits,
+        setup: SessionSetup,
     ) -> Self {
-        Self::start_inner(peer, link, registry, desktop, events, limits, None)
+        Self::start_inner(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            SessionConfig {
+                remote_addr: setup.remote_addr,
+                limits: setup.limits,
+                certificate: setup.certificate,
+                deps: None,
+            },
+        )
     }
 
     /// Start a session with the share transfer runner.
@@ -129,6 +158,7 @@ impl DeviceSession {
         events: mpsc::Sender<DaemonEvent>,
         setup: TransferSetup,
     ) -> Self {
+        let certificate = setup.certificate.der().to_vec();
         let deps = desktop.files.clone().map(|files| TransferDeps {
             peer: PayloadPeer {
                 device_id: peer.device_id.clone(),
@@ -141,7 +171,19 @@ impl DeviceSession {
             #[cfg(test)]
             connects: Arc::new(AtomicUsize::new(0)),
         });
-        Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps)
+        Self::start_inner(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            SessionConfig {
+                remote_addr: setup.remote_addr,
+                limits: setup.limits,
+                certificate,
+                deps,
+            },
+        )
     }
 
     /// Start a session and return the connect-completion probe. Test only.
@@ -155,6 +197,7 @@ impl DeviceSession {
         setup: TransferSetup,
     ) -> (Self, Arc<AtomicUsize>) {
         let connects = Arc::new(AtomicUsize::new(0));
+        let certificate = setup.certificate.der().to_vec();
         let deps = desktop.files.clone().map(|files| TransferDeps {
             peer: PayloadPeer {
                 device_id: peer.device_id.clone(),
@@ -167,7 +210,19 @@ impl DeviceSession {
             connects: Arc::clone(&connects),
         });
         (
-            Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps),
+            Self::start_inner(
+                peer,
+                link,
+                registry,
+                desktop,
+                events,
+                SessionConfig {
+                    remote_addr: setup.remote_addr,
+                    limits: setup.limits,
+                    certificate,
+                    deps,
+                },
+            ),
             connects,
         )
     }
@@ -178,15 +233,14 @@ impl DeviceSession {
         registry: Arc<Registry>,
         desktop: Desktop,
         events: mpsc::Sender<DaemonEvent>,
-        limits: SessionLimits,
-        deps: Option<TransferDeps>,
+        config: SessionConfig,
     ) -> Self {
         let (tx, rx) = mpsc::channel(SESSION_QUEUE);
         let (stop_tx, stop_rx) = watch::channel(None);
         let handle = SessionHandle {
             tx,
             stop_tx,
-            delivery_timeout: limits.delivery_timeout,
+            delivery_timeout: config.limits.delivery_timeout,
             drops: Arc::new(AtomicU64::new(0)),
         };
         let task = tokio::spawn(run(
@@ -199,9 +253,26 @@ impl DeviceSession {
                 input: rx,
                 stop: stop_rx,
             },
-            deps,
+            config.deps,
         ));
-        Self { task, handle }
+        Self {
+            task,
+            handle,
+            remote_addr: config.remote_addr,
+            certificate: config.certificate,
+        }
+    }
+
+    /// The peer address the control link authenticated.
+    #[must_use]
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.remote_addr
+    }
+
+    /// The peer's DER certificate.
+    #[must_use]
+    pub fn certificate(&self) -> &[u8] {
+        &self.certificate
     }
 
     /// Deliver one packet to the session.
@@ -278,6 +349,25 @@ impl SessionHandle {
         match tokio::time::timeout(
             self.delivery_timeout,
             self.tx.send(SessionInput::Share(packet)),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(SessionError::Closed),
+            Err(_) => Err(SessionError::Full),
+        }
+    }
+
+    /// Queue one outbound packet and wait for room in the session queue.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::Full`] when the queue stays full for the
+    /// delivery timeout, and [`SessionError::Closed`] when the session stopped.
+    pub async fn send_packet(&self, packet: Packet) -> Result<(), SessionError> {
+        match tokio::time::timeout(
+            self.delivery_timeout,
+            self.tx.send(SessionInput::SendControl(packet)),
         )
         .await
         {
@@ -420,6 +510,7 @@ pub enum SessionInput {
     Packet(Packet),
     /// One share packet on the reliable path.
     Share(Packet),
+    SendControl(Packet),
     /// One outbound file share. The session replies exactly once.
     ShareFile {
         /// Local source file.
@@ -704,6 +795,7 @@ impl TransferRunner {
 enum SessionStep {
     Input(Option<SessionInput>),
     Stop(String),
+    Tick,
     Receive(Option<Result<(), JoinError>>),
     Connect(Option<ConnectJoin>),
     Send(Option<Result<(), JoinError>>),
@@ -755,6 +847,9 @@ async fn run(
         runner.enqueue_all(transfers).await;
     }
 
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + PLUGIN_TICK, PLUGIN_TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let reason = loop {
         if let Some(runner) = runner.as_mut() {
             runner.start_front();
@@ -783,6 +878,7 @@ async fn run(
                     joined = runner.sends.join_next(), if sends_open => {
                         SessionStep::Send(joined)
                     }
+                    _ = tick.tick() => SessionStep::Tick,
                 }
             }
             None => {
@@ -790,6 +886,7 @@ async fn run(
                     biased;
                     reason = next_stop(&mut stop) => SessionStep::Stop(reason),
                     input = input.recv() => SessionStep::Input(input),
+                    _ = tick.tick() => SessionStep::Tick,
                 }
             }
         };
@@ -802,6 +899,13 @@ async fn run(
                     break reason;
                 }
                 handle_input(input, &mut host, &mut runner, &link, &events, &device_id).await;
+            }
+            SessionStep::Tick => {
+                let dispatch = host.tick().await;
+                let transfers = send_dispatch(&link, &events, &device_id, dispatch).await;
+                if let Some(runner) = runner.as_mut() {
+                    runner.enqueue_all(transfers).await;
+                }
             }
             SessionStep::Receive(joined) => {
                 if let Some(runner) = runner.as_mut() {
@@ -843,6 +947,11 @@ async fn handle_input(
             let transfers = send_dispatch(link, events, device_id, dispatch).await;
             if let Some(runner) = runner.as_mut() {
                 runner.enqueue_all(transfers).await;
+            }
+        }
+        SessionInput::SendControl(packet) => {
+            if let Err(error) = link.send(packet).await {
+                tracing::warn!(%error, "failed to send a control packet");
             }
         }
         SessionInput::ShareFile { path, reply } => match runner.as_mut() {
@@ -1160,6 +1269,9 @@ mod tests {
 
     static PORTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    /// Holds every on-connect plugin packet until a test drains the link.
+    const TEST_LINK_QUEUE: usize = 32;
+
     async fn ports() -> tokio::sync::MutexGuard<'static, ()> {
         PORTS.lock().await
     }
@@ -1260,7 +1372,7 @@ mod tests {
     fn share_packets(
         mut link_rx: mpsc::Receiver<Packet>,
     ) -> (mpsc::Receiver<Packet>, JoinHandle<()>) {
-        let (share_tx, share_rx) = mpsc::channel(8);
+        let (share_tx, share_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let task = tokio::spawn(async move {
             while let Some(packet) = link_rx.recv().await {
                 if packet.ptype != types::SHARE_REQUEST {
@@ -1322,7 +1434,7 @@ mod tests {
         mpsc::Receiver<Packet>,
     ) {
         let (events, events_rx) = mpsc::channel(64);
-        let (link_tx, link_rx) = mpsc::channel(8);
+        let (link_tx, link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let session = DeviceSession::start_with_transfers(
             peer_identity(),
             LinkHandle::from_channel(peer_id(), link_tx),
@@ -1351,7 +1463,7 @@ mod tests {
         Arc<AtomicUsize>,
     ) {
         let (events, events_rx) = mpsc::channel(64);
-        let (link_tx, link_rx) = mpsc::channel(8);
+        let (link_tx, link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let (session, probe) = DeviceSession::start_with_probe(
             peer_identity(),
             LinkHandle::from_channel(peer_id(), link_tx),
@@ -1540,6 +1652,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_control_packet_reaches_the_link() {
+        let peer = peer_identity();
+        let device_id = peer.device_id.clone();
+        let (link_tx, mut link_rx) = mpsc::channel(TEST_LINK_QUEUE);
+        let link = LinkHandle::from_channel(device_id, link_tx);
+        let (events_tx, _events_rx) = mpsc::channel(TEST_LINK_QUEUE);
+        let session = DeviceSession::start(
+            peer,
+            link,
+            Arc::new(registry()),
+            Desktop::default(),
+            events_tx,
+            SessionSetup {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
+                limits: SessionLimits::default(),
+                certificate: Vec::new(),
+            },
+        );
+
+        session
+            .handle()
+            .send_packet(Packet::empty(types::FINDMYPHONE_REQUEST).expect("a valid packet"))
+            .await
+            .expect("the session queues the packet");
+
+        let packet = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(packet) = link_rx.recv().await {
+                if packet.ptype == types::FINDMYPHONE_REQUEST {
+                    return packet;
+                }
+            }
+            panic!("the link closed before the ring packet");
+        })
+        .await
+        .expect("the ring reaches the link");
+        assert_eq!(packet.ptype, types::FINDMYPHONE_REQUEST);
+
+        session.handle().stop("test done".to_string());
+        let _ = tokio::time::timeout(Duration::from_secs(5), session.into_task()).await;
+    }
+
+    #[tokio::test]
     async fn disconnect_runs_on_disconnect_and_forwards_its_output() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let registry = Arc::new(Registry::new(vec![Box::new(RecordingFactory {
@@ -1547,16 +1701,20 @@ mod tests {
         })]));
         let peer = peer_identity();
         let device_id = peer.device_id.clone();
-        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let (link_tx, mut link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let link = LinkHandle::from_channel(device_id.clone(), link_tx);
-        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let (events_tx, mut events_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let session = DeviceSession::start(
             peer,
             link,
             registry,
             Desktop::default(),
             events_tx,
-            SessionLimits::default(),
+            SessionSetup {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
+                limits: SessionLimits::default(),
+                certificate: Vec::new(),
+            },
         );
 
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1614,16 +1772,20 @@ mod tests {
             gate: Arc::clone(&gate),
             disconnects: Arc::clone(&disconnects),
         })]));
-        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let (link_tx, mut link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let drain = tokio::spawn(async move { while link_rx.recv().await.is_some() {} });
-        let (events, _events_rx) = mpsc::channel(8);
+        let (events, _events_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let session = DeviceSession::start(
             peer_identity(),
             LinkHandle::from_channel(peer_id(), link_tx),
             registry,
             Desktop::default(),
             events,
-            SessionLimits::default(),
+            SessionSetup {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
+                limits: SessionLimits::default(),
+                certificate: Vec::new(),
+            },
         );
 
         session
@@ -2401,8 +2563,8 @@ mod tests {
 
     #[tokio::test]
     async fn share_file_without_a_files_adapter_is_unavailable() {
-        let (events, _events_rx) = mpsc::channel(8);
-        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let (events, _events_rx) = mpsc::channel(TEST_LINK_QUEUE);
+        let (link_tx, mut link_rx) = mpsc::channel(TEST_LINK_QUEUE);
         let drain = tokio::spawn(async move { while link_rx.recv().await.is_some() {} });
         let session = DeviceSession::start(
             peer_identity(),
@@ -2410,7 +2572,11 @@ mod tests {
             Arc::new(registry()),
             Desktop::default(),
             events,
-            SessionLimits::default(),
+            SessionSetup {
+                remote_addr: SocketAddr::from(([127, 0, 0, 1], 1716)),
+                limits: SessionLimits::default(),
+                certificate: Vec::new(),
+            },
         );
 
         let error = session

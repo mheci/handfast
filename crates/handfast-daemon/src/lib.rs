@@ -2,6 +2,7 @@
 //!
 //! [`run`] is the daemon composition root.
 
+mod commands;
 pub mod control;
 #[cfg(feature = "gui")]
 pub mod gui;
