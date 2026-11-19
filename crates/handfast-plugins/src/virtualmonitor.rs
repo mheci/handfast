@@ -47,8 +47,9 @@ impl RequestedDisplay {
     pub fn from_body(body: &Value) -> Option<Self> {
         let width = body.get("width")?.as_u64()?;
         let height = body.get("height")?.as_u64()?;
-        if width == 0 || height == 0 || width > u64::from(MAX_DIMENSION) || height > u64::from(MAX_DIMENSION)
-        {
+        let too_large =
+            width > u64::from(MAX_DIMENSION) || height > u64::from(MAX_DIMENSION);
+        if width == 0 || height == 0 || too_large {
             return None;
         }
         let scale = body

@@ -154,10 +154,9 @@ pub async fn run(
     // no backend, so it answers start requests with a reason instead of
     // silently advertising a server it cannot start.
     let sftp = if backends::sftp_available() {
-        Some(
-            Arc::new(handfast_plugins::DesktopSftpServer::new(backends::sftp_server()))
-                as Arc<dyn handfast_plugins::SftpServer>,
-        )
+        Some(Arc::new(handfast_plugins::DesktopSftpServer::new(
+            backends::sftp_server(),
+        )) as Arc<dyn handfast_plugins::SftpServer>)
     } else {
         None
     };

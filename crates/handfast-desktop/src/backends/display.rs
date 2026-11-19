@@ -188,15 +188,17 @@ impl Display for HeadlessDisplay {
         }
         let args = self.backend.args(display);
         let program = self.backend.program();
-        let handle = self
-            .spawner
-            .spawn(program, &args)
-            .map_err(|error| match error.kind() {
-                io::ErrorKind::NotFound => {
-                    DesktopError::Unsupported(&format!("{program} is not installed"))
+        let handle = self.spawner.spawn(program, &args).map_err(|error| {
+            match error.kind() {
+                // `Unsupported` holds a `&'static str`, so the message is
+                // spelled out per program rather than formatted.
+                io::ErrorKind::NotFound if program == "wlay" => {
+                    DesktopError::Unsupported("wlay is not installed")
                 }
+                io::ErrorKind::NotFound => DesktopError::Unsupported("weston is not installed"),
                 _ => DesktopError::Backend(format!("{program}: {error}")),
-            })?;
+            }
+        })?;
         if let Ok(mut slot) = self.running.lock() {
             *slot = Some(handle);
         }
@@ -265,7 +267,8 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             handles: Mutex::new(Vec::new()),
         });
-        let display = HeadlessDisplay::with_spawner(backend, Arc::clone(&spawner) as Arc<dyn Spawner>);
+        let display =
+            HeadlessDisplay::with_spawner(backend, Arc::clone(&spawner) as Arc<dyn Spawner>);
         (display, spawner)
     }
 

@@ -261,7 +261,10 @@ mod tests {
         }
     }
 
-    async fn tick(plugin: &mut TelephonyPlugin, desktop: &handfast_desktop::Desktop) -> PluginOutput {
+    async fn tick(
+        plugin: &mut TelephonyPlugin,
+        desktop: &handfast_desktop::Desktop,
+    ) -> PluginOutput {
         let device = device();
         let mut ctx = PluginContext {
             device: &device,

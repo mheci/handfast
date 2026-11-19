@@ -179,15 +179,16 @@ impl Default for MmTelephony {
 impl Telephony for MmTelephony {
     async fn poll(&self) -> Result<Vec<CallEvent>> {
         let runner = Arc::clone(&self.runner);
-        let text = tokio::task::spawn_blocking(move || {
-            runner.run(PROGRAM, &["--voice-list-calls"])
-        })
-        .await
-        .map_err(|error| DesktopError::Backend(error.to_string()))?
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => DesktopError::Unsupported("mmcli is not installed"),
-            _ => DesktopError::Backend(error.to_string()),
-        })?;
+        let text =
+            tokio::task::spawn_blocking(move || runner.run(PROGRAM, &["--voice-list-calls"]))
+                .await
+                .map_err(|error| DesktopError::Backend(error.to_string()))?
+                .map_err(|error| match error.kind() {
+                    io::ErrorKind::NotFound => {
+                        DesktopError::Unsupported("mmcli is not installed")
+                    }
+                    _ => DesktopError::Backend(error.to_string()),
+                })?;
         Ok(parse_calls(&text))
     }
 }
@@ -297,10 +298,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             runner.calls.lock().unwrap().clone(),
-            vec![(
-                "mmcli".to_string(),
-                vec!["--voice-list-calls".to_string()]
-            )]
+            vec![("mmcli".to_string(), vec!["--voice-list-calls".to_string()])]
         );
     }
 

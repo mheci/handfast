@@ -123,9 +123,20 @@ pub trait SftpServerBackend: Send + Sync {
 }
 
 /// An [`SftpServerBackend`] backed by `sshd`.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct SshdSftp {
     running: Mutex<Option<Running>>,
+}
+
+impl std::fmt::Debug for SshdSftp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let running = self
+            .running
+            .lock()
+            .map(|slot| slot.is_some())
+            .unwrap_or(false);
+        f.debug_struct("SshdSftp").field("running", &running).finish()
+    }
 }
 
 impl SshdSftp {
@@ -204,10 +215,7 @@ impl SftpServerBackend for SshdSftp {
             })?;
 
         if let Ok(mut guard) = self.running.lock() {
-            *guard = Some(Running {
-                child,
-                config_path,
-            });
+            *guard = Some(Running { child, config_path });
         }
         Ok(port)
     }

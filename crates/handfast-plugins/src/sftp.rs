@@ -259,7 +259,9 @@ impl std::fmt::Debug for DesktopSftpServer {
 impl DesktopSftpServer {
     /// Wrap a backend.
     #[must_use]
-    pub fn new(backend: std::sync::Arc<dyn handfast_desktop::backends::sftp::SftpServerBackend>) -> Self {
+    pub fn new(
+        backend: std::sync::Arc<dyn handfast_desktop::backends::sftp::SftpServerBackend>,
+    ) -> Self {
         Self { backend }
     }
 }

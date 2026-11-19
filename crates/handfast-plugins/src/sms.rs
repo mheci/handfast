@@ -3,12 +3,12 @@
 //! The most request-heavy plugin in the roster: upstream defines four request
 //! types and two reply types, and every one of them is mirrored here.
 //!
-//! | in                                                        | out                              |
-//! |-----------------------------------------------------------|----------------------------------|
-//! | `kdeconnect.sms.request_conversations`                     | `kdeconnect.sms.messages`        |
-//! | `kdeconnect.sms.request_conversation`                      | `kdeconnect.sms.messages`        |
-//! | `kdeconnect.sms.request`                                   | `kdeconnect.sms.messages`        |
-//! | `kdeconnect.sms.request_attachment`                        | `kdeconnect.sms.attachment_file` |
+//! | in                                    | out                     |
+//! |---------------------------------------|-------------------------|
+//! | `kdeconnect.sms.request_conversations`| `kdeconnect.sms.messages`|
+//! | `kdeconnect.sms.request_conversation` | `kdeconnect.sms.messages`|
+//! | `kdeconnect.sms.request`              | `kdeconnect.sms.messages`|
+//! | `kdeconnect.sms.request_attachment`   | `.sms.attachment_file`  |
 //!
 //! Handfast has no SMS store of its own — a Linux desktop has no messages to
 //! read — so this plugin runs in the reverse direction from the phone's: it

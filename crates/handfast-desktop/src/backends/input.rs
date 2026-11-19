@@ -287,9 +287,9 @@ impl XdotoolInput {
                 std::io::ErrorKind::NotFound => {
                     DesktopError::Unsupported("xdotool is not installed")
                 }
-                io::ErrorKind::Unsupported => DesktopError::Unsupported(
-                    "this backend cannot read the screen geometry",
-                ),
+                io::ErrorKind::Unsupported => {
+                    DesktopError::Unsupported("this backend cannot read the screen geometry")
+                }
                 _ => DesktopError::Backend(error.to_string()),
             })?;
         let mut parts = text.split_whitespace();

@@ -12,12 +12,11 @@
 //! an external editor that rewrites a card is noticed.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
 
-use crate::error::{DesktopError, Result};
+use crate::error::Result;
 use crate::model::ContactRecord;
 use crate::traits::Contacts;
 
@@ -192,13 +191,21 @@ mod tests {
     async fn an_absent_directory_reports_no_contacts() {
         let directory = VcardDirectory::new("/nonexistent/handfast/addressbook");
         assert!(directory.list().await.unwrap().is_empty());
-        assert!(directory.vcards(&["alice".to_string()]).await.unwrap().is_empty());
+        assert!(directory
+            .vcards(&["alice".to_string()])
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
     async fn only_requested_vcards_are_returned() {
         let (temp, directory) = book();
-        write(temp.path(), "alice.vcf", "BEGIN:VCARD\nFN:Alice\nEND:VCARD\n");
+        write(
+            temp.path(),
+            "alice.vcf",
+            "BEGIN:VCARD\nFN:Alice\nEND:VCARD\n",
+        );
         write(temp.path(), "bob.vcf", "BEGIN:VCARD\nFN:Bob\nEND:VCARD\n");
 
         let records = directory

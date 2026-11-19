@@ -588,7 +588,9 @@ mod tests {
 
     #[test]
     fn the_config_parser_handles_both_entry_shapes() {
-        let commands = parse_commands("lock:loginctl lock-session, music:Play music:playerctl play-pause");
+        let commands = parse_commands(
+            "lock:loginctl lock-session, music:Play music:playerctl play-pause",
+        );
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].key, "lock");
         assert_eq!(commands[0].name, "lock");

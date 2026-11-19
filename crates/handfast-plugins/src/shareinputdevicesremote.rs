@@ -270,7 +270,8 @@ mod tests {
             desktop: &desktop,
             config: PluginConfig::empty(),
         };
-        let packet = Packet::from_body(types::SHAREINPUTDEVICES, &json!({ "share": share })).unwrap();
+        let packet =
+            Packet::from_body(types::SHAREINPUTDEVICES, &json!({ "share": share })).unwrap();
         plugin.on_packet(&mut ctx, &packet).await.unwrap()
     }
 
