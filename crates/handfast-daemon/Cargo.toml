@@ -52,6 +52,7 @@ windows-sys = { workspace = true, features = [
 handfast-net = { path = "../handfast-net", version = "0.3.0", features = ["test-support"] }
 handfast-testkit = { path = "../handfast-testkit", version = "0.3.0" }
 redb.workspace = true
+socket2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-rustls.workspace = true

@@ -401,6 +401,43 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
+    #[test]
+    fn sftp_longname_preserves_utc_timestamp_format() {
+        for (timestamp, expected) in [
+            (0, "Jan 01 1970 00:00"),
+            (1_582_934_400, "Feb 29 2020 00:00"),
+            (u32::MAX, "Feb 07 2106 06:28"),
+        ] {
+            let attrs = russh_sftp::protocol::FileAttributes {
+                mtime: Some(timestamp),
+                ..Default::default()
+            };
+            let entry = russh_sftp::protocol::File::new("sample.txt", attrs);
+            assert!(entry.longname.contains(expected), "{}", entry.longname);
+        }
+    }
+
+    #[test]
+    fn sftp_metadata_preserves_unix_timestamp() {
+        let file = tempfile::tempfile().unwrap();
+        let timestamp = std::time::UNIX_EPOCH + Duration::from_secs(1_582_934_400);
+        file.set_times(std::fs::FileTimes::new().set_modified(timestamp))
+            .unwrap();
+        let attrs = russh_sftp::protocol::FileAttributes::from(&file.metadata().unwrap());
+        assert_eq!(attrs.mtime, Some(1_582_934_400));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sftp_pre_epoch_fractional_timestamp_rounds_down() {
+        let file = tempfile::tempfile().unwrap();
+        let timestamp = std::time::UNIX_EPOCH - Duration::from_millis(250);
+        file.set_times(std::fs::FileTimes::new().set_modified(timestamp))
+            .unwrap();
+        let attrs = russh_sftp::protocol::FileAttributes::from(&file.metadata().unwrap());
+        assert_eq!(attrs.mtime, Some(u32::MAX));
+    }
+
     struct TestServer {
         info: SftpInfo,
         certificate: Vec<u8>,

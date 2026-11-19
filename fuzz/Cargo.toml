@@ -50,3 +50,8 @@ test = false
 doc = false
 
 [workspace]
+
+# Fuzz is a separate workspace, so it must apply the same dependency patches.
+[patch.crates-io]
+russh-sftp = { path = "../vendor/russh-sftp" }
+russh-util = { path = "../vendor/russh-util" }
