@@ -146,7 +146,11 @@ pub const NOTIFICATIONS: PluginMeta = PluginMeta {
     title: "Receive notifications",
     status: IMPLEMENTED,
     incoming: &[types::NOTIFICATION],
-    outgoing: &[types::NOTIFICATION_ACTION, types::NOTIFICATION_REPLY, types::NOTIFICATION_REQUEST],
+    outgoing: &[
+        types::NOTIFICATION_ACTION,
+        types::NOTIFICATION_REPLY,
+        types::NOTIFICATION_REQUEST,
+    ],
     desktop: DesktopRequirement::Notifications,
 };
 

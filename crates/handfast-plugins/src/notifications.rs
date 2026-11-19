@@ -161,9 +161,10 @@ impl NotificationsPlugin {
         if !valid_key(id) {
             return Err(ControlError::InvalidId);
         }
-        self.pending
-            .push(Packet::new(types::NOTIFICATION_REQUEST, json!({ "cancel": raw_id(id) }))
-                .map_err(|_| ControlError::InvalidId)?);
+        self.pending.push(
+            Packet::new(types::NOTIFICATION_REQUEST, json!({ "cancel": raw_id(id) }))
+                .map_err(|_| ControlError::InvalidId)?,
+        );
         Ok(())
     }
 
@@ -174,9 +175,10 @@ impl NotificationsPlugin {
     /// Fails only if the packet cannot be built, which cannot happen for a
     /// constant type and an object body.
     pub fn request_active(&mut self) -> Result<(), ControlError> {
-        self.pending
-            .push(Packet::new(types::NOTIFICATION_REQUEST, json!({ "request": true }))
-                .map_err(|_| ControlError::InvalidId)?);
+        self.pending.push(
+            Packet::new(types::NOTIFICATION_REQUEST, json!({ "request": true }))
+                .map_err(|_| ControlError::InvalidId)?,
+        );
         Ok(())
     }
 
@@ -497,10 +499,7 @@ mod tests {
     fn an_empty_control_field_is_rejected() {
         let mut plugin = NotificationsPlugin::new();
         assert_eq!(plugin.dismiss(""), Err(ControlError::InvalidId));
-        assert_eq!(
-            plugin.reply("id", ""),
-            Err(ControlError::InvalidMessage)
-        );
+        assert_eq!(plugin.reply("id", ""), Err(ControlError::InvalidMessage));
         assert_eq!(plugin.action("id", ""), Err(ControlError::InvalidMessage));
         assert_eq!(plugin.pending(), 0, "nothing was queued");
     }

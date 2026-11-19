@@ -195,7 +195,10 @@ mod tests {
         let output = run(&mock.desktop(), json!({"dx": 25.0})).await;
         assert!(matches!(
             output.events.as_slice(),
-            [PluginEvent::Log { level: LogLevel::Warn, .. }]
+            [PluginEvent::Log {
+                level: LogLevel::Warn,
+                ..
+            }]
         ));
         assert!(mock.presentations().is_empty());
     }
@@ -206,7 +209,10 @@ mod tests {
         let output = run(&mock.desktop(), json!({})).await;
         assert!(matches!(
             output.events.as_slice(),
-            [PluginEvent::Log { level: LogLevel::Warn, .. }]
+            [PluginEvent::Log {
+                level: LogLevel::Warn,
+                ..
+            }]
         ));
     }
 

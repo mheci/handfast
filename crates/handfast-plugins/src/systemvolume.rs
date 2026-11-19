@@ -163,11 +163,7 @@ impl Plugin for SystemVolumePlugin {
         }
         let control = match parse(packet) {
             Ok(Some(control)) => control,
-            Ok(None) => {
-                return Ok(warn(
-                    "discarding system volume packet without a sink name",
-                ))
-            }
+            Ok(None) => return Ok(warn("discarding system volume packet without a sink name")),
             Err(reason) => return Ok(warn(&format!("discarding system volume packet: {reason}"))),
         };
         if control.enabled.is_some() {
