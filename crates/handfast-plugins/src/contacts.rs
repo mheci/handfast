@@ -58,7 +58,7 @@ impl ContactsPlugin {
     /// because the phone client has used both shapes. The list is bounded and
     /// filtered here rather than at the adapter, so a hostile request cannot
     /// turn into an unbounded amount of file I/O.
-    fn requested_uids(body: &Value) -> Vec<String> {
+    fn requested_uids(body: &serde_json::Map<String, Value>) -> Vec<String> {
         let valid = |uid: &&str| !uid.is_empty() && uid.len() <= MAX_UID_BYTES;
         let uids: Vec<String> = match body.get("uids") {
             Some(Value::Array(items)) => items
@@ -339,7 +339,7 @@ mod tests {
     fn the_uid_batch_is_bounded() {
         let uids: Vec<String> = (0..1000).map(|index| format!("uid{index}")).collect();
         let body = json!({ "uids": uids });
-        let requested = ContactsPlugin::requested_uids(&body);
+        let requested = ContactsPlugin::requested_uids(body.as_object().unwrap());
         assert_eq!(requested.len(), MAX_UIDS_PER_REQUEST);
     }
 }

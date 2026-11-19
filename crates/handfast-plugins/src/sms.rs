@@ -158,7 +158,7 @@ impl SmsPlugin {
     }
 
     /// Merge a conversation list into the cache.
-    fn merge_conversations(&mut self, body: &Value) {
+    fn merge_conversations(&mut self, body: &serde_json::Map<String, Value>) {
         let Some(list) = body.get("conversations").and_then(Value::as_array) else {
             return;
         };
@@ -177,7 +177,7 @@ impl SmsPlugin {
     }
 
     /// Merge a message list into the cache, newest id winning.
-    fn merge_messages(&mut self, body: &Value) {
+    fn merge_messages(&mut self, body: &serde_json::Map<String, Value>) {
         let Some(list) = body.get("messages").and_then(Value::as_array) else {
             return;
         };

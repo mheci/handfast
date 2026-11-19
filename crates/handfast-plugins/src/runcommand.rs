@@ -27,7 +27,6 @@
 
 use std::collections::BTreeMap;
 use std::process::Stdio;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use handfast_proto::{types, Packet};
@@ -558,21 +557,54 @@ mod tests {
             }
         }
 
-        fn ctx(&self) -> PluginContext<'_> {
-            PluginContext {
-                device: &self.device,
-                desktop: &self.desktop,
-                config: &self.config,
-            }
+        /// Run `body` through the plugin with a context borrowed from `self`.
+        ///
+        /// The destructure keeps the context borrow distinct from the mutable
+        /// borrow of `plugin` that `on_packet` needs.
+        async fn send(&mut self, body: Value) -> PluginOutput {
+            let Self {
+                plugin,
+                desktop,
+                device,
+                config,
+            } = self;
+            let packet = Packet::from_body(types::RUNCOMMAND_REQUEST, &body).unwrap();
+            let mut ctx = PluginContext {
+                device,
+                desktop,
+                config,
+            };
+            plugin.on_packet(&mut ctx, &packet).await.unwrap()
+        }
+
+        async fn tick(&mut self) -> PluginOutput {
+            let Self {
+                plugin,
+                desktop,
+                device,
+                config,
+            } = self;
+            let mut ctx = PluginContext {
+                device,
+                desktop,
+                config,
+            };
+            plugin.on_tick(&mut ctx).await.unwrap()
         }
 
         async fn connect(&mut self) -> PluginOutput {
-            self.plugin.on_connect(&mut self.ctx()).await.unwrap()
-        }
-
-        async fn send(&mut self, body: Value) -> PluginOutput {
-            let packet = Packet::from_body(types::RUNCOMMAND_REQUEST, &body).unwrap();
-            self.plugin.on_packet(&mut self.ctx(), &packet).await.unwrap()
+            let Self {
+                plugin,
+                desktop,
+                device,
+                config,
+            } = self;
+            let mut ctx = PluginContext {
+                device,
+                desktop,
+                config,
+            };
+            plugin.on_connect(&mut ctx).await.unwrap()
         }
     }
 
@@ -588,9 +620,8 @@ mod tests {
 
     #[test]
     fn the_config_parser_handles_both_entry_shapes() {
-        let commands = parse_commands(
-            "lock:loginctl lock-session, music:Play music:playerctl play-pause",
-        );
+        let commands =
+            parse_commands("lock:loginctl lock-session, music:Play music:playerctl play-pause");
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].key, "lock");
         assert_eq!(commands[0].name, "lock");
@@ -617,7 +648,11 @@ mod tests {
         assert!(harness.plugin.allowed_keys().is_empty());
         let list = &output.packets[0];
         assert_eq!(list.ptype, types::RUNCOMMAND);
-        let command_list = list.body.get("commandList").and_then(Value::as_str).unwrap();
+        let command_list = list
+            .body
+            .get("commandList")
+            .and_then(Value::as_str)
+            .unwrap();
         assert_eq!(command_list, "{}");
         // The desktop cannot accept new commands from the phone.
         assert_eq!(list.body.get("canAddCommand"), Some(&json!(false)));
@@ -666,10 +701,7 @@ mod tests {
 
         // Let the child exit, then the tick reports the exit code.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let tick = {
-            let mut ctx = harness.ctx();
-            harness.plugin.on_tick(&mut ctx).await.unwrap()
-        };
+        let tick = harness.tick().await;
         let finished: Vec<&Packet> = tick
             .packets
             .iter()

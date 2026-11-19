@@ -44,7 +44,7 @@ impl RequestedDisplay {
     /// produces a display the phone did not ask for, which is worse than a
     /// clean failure.
     #[must_use]
-    pub fn from_body(body: &Value) -> Option<Self> {
+    pub fn from_body(body: &serde_json::Map<String, Value>) -> Option<Self> {
         let width = body.get("width")?.as_u64()?;
         let height = body.get("height")?.as_u64()?;
         let too_large =
@@ -338,18 +338,29 @@ mod tests {
     #[test]
     fn scale_is_validated_but_optional() {
         assert_eq!(
-            RequestedDisplay::from_body(&json!({ "width": 100, "height": 100, "scale": 200 }))
+            RequestedDisplay::from_body(
+                json!({ "width": 100, "height": 100, "scale": 200 })
+                    .as_object()
+                    .unwrap()
+            )
                 .unwrap()
                 .scale,
             200
         );
         // Out-of-range scale falls back rather than refusing the request.
         assert_eq!(
-            RequestedDisplay::from_body(&json!({ "width": 100, "height": 100, "scale": 900 }))
+            RequestedDisplay::from_body(
+                json!({ "width": 100, "height": 100, "scale": 900 })
+                    .as_object()
+                    .unwrap()
+            )
                 .unwrap()
                 .scale,
             100
         );
-        assert!(RequestedDisplay::from_body(&json!({ "width": 100 })).is_none());
+        assert!(RequestedDisplay::from_body(
+            json!({ "width": 100 }).as_object().unwrap()
+        )
+        .is_none());
     }
 }

@@ -92,9 +92,9 @@ impl SendNotificationsPlugin {
     /// direction: a phone in a pocket should not receive a desktop's password
     /// manager popups because a config file was never written.
     fn allows(&mut self, ctx: &PluginContext<'_>, app_name: &str) -> bool {
-        let allowed = self.allowed.get_or_insert_with(|| {
-            ctx.config.get_list(roster::SENDNOTIFICATIONS.name, "apps")
-        });
+        let allowed = self
+            .allowed
+            .get_or_insert_with(|| ctx.config.get_list(roster::SENDNOTIFICATIONS.name, "apps"));
         allowed.contains(app_name)
     }
 
@@ -252,6 +252,7 @@ mod tests {
             }
         }
 
+
         fn ctx(&self) -> PluginContext<'_> {
             PluginContext {
                 device: &self.device,
@@ -261,7 +262,18 @@ mod tests {
         }
 
         async fn tick(&mut self) -> PluginOutput {
-            self.plugin.on_tick(&mut self.ctx()).await.unwrap()
+            let Self {
+                plugin,
+                desktop,
+                device,
+                config,
+            } = self;
+            let mut ctx = PluginContext {
+                device,
+                desktop,
+                config,
+            };
+            plugin.on_tick(&mut ctx).await.unwrap()
         }
     }
 
@@ -314,7 +326,10 @@ mod tests {
         assert_eq!(body.get("title"), Some(&json!("Download done")));
         assert_eq!(body.get("text"), Some(&json!("report.pdf")));
         // ticker is "title: text" upstream.
-        assert_eq!(body.get("ticker"), Some(&json!("Download done: report.pdf")));
+        assert_eq!(
+            body.get("ticker"),
+            Some(&json!("Download done: report.pdf"))
+        );
         assert_eq!(body.get("silent"), Some(&json!(false)));
         assert_eq!(body.get("isClearable"), Some(&json!(true)));
         let id = body.get("id").and_then(Value::as_str).unwrap();
@@ -388,13 +403,20 @@ mod tests {
     #[tokio::test]
     async fn a_list_request_is_acknowledged_in_the_log() {
         let mut harness = Harness::new(configured("firefox"));
-        let packet = Packet::from_body(types::NOTIFICATION_REQUEST, &json!({ "request": true }))
-            .unwrap();
-        let output = harness
-            .plugin
-            .on_packet(&mut harness.ctx(), &packet)
-            .await
-            .unwrap();
+        let packet =
+            Packet::from_body(types::NOTIFICATION_REQUEST, &json!({ "request": true })).unwrap();
+        let Harness {
+            plugin,
+            desktop,
+            device,
+            config,
+        } = &mut harness;
+        let mut ctx = PluginContext {
+            device,
+            desktop,
+            config,
+        };
+        let output = plugin.on_packet(&mut ctx, &packet).await.unwrap();
         assert!(output.packets.is_empty());
         assert_eq!(output.events.len(), 1);
     }

@@ -75,7 +75,7 @@ impl DigitizerSession {
     /// newer phone naming a tool Handfast does not model should still be able
     /// to draw.
     #[must_use]
-    pub fn from_body(body: &Value) -> Self {
+    pub fn from_body(body: &serde_json::Map<String, Value>) -> Self {
         let tool = body
             .get("tool")
             .and_then(Value::as_str)
@@ -131,7 +131,7 @@ pub struct Sample {
 impl Sample {
     /// Read a sample packet.
     #[must_use]
-    pub fn from_body(body: &Value) -> Option<Self> {
+    pub fn from_body(body: &serde_json::Map<String, Value>) -> Option<Self> {
         let x = body.get("x").and_then(Value::as_f64)?;
         let y = body.get("y").and_then(Value::as_f64)?;
         if !x.is_finite() || !y.is_finite() {
@@ -467,12 +467,12 @@ mod tests {
 
     #[test]
     fn malformed_samples_are_rejected() {
-        assert!(Sample::from_body(&serde_json::json!({ "y": 1.0 })).is_none());
-        assert!(Sample::from_body(&serde_json::json!({ "x": 1.0 })).is_none());
-        let sample = Sample::from_body(&serde_json::json!({
-            "x": 1.0, "y": 2.0, "pressure": 9.0
-        }))
-        .unwrap();
+        let missing_y = serde_json::json!({ "y": 1.0 });
+        assert!(Sample::from_body(missing_y.as_object().unwrap()).is_none());
+        let missing_x = serde_json::json!({ "x": 1.0 });
+        assert!(Sample::from_body(missing_x.as_object().unwrap()).is_none());
+        let clamped = serde_json::json!({ "x": 1.0, "y": 2.0, "pressure": 9.0 });
+        let sample = Sample::from_body(clamped.as_object().unwrap()).unwrap();
         assert!((sample.pressure - 1.0).abs() < 1e-6);
     }
 }

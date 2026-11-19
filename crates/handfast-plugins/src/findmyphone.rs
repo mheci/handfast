@@ -53,6 +53,16 @@ impl Plugin for FindMyPhonePlugin {
         &roster::FINDMYPHONE
     }
 
+    async fn on_packet(
+        &mut self,
+        _ctx: &mut PluginContext<'_>,
+        _packet: &Packet,
+    ) -> Result<PluginOutput, PluginError> {
+        // Outbound only: the desktop side of a ring request lives in
+        // [`crate::findthisdevice`], which owns the notification adapter.
+        Ok(PluginOutput::new())
+    }
+
     async fn on_tick(&mut self, _ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
         if self.pending == 0 {
             return Ok(PluginOutput::new());

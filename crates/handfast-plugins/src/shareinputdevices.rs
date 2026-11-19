@@ -90,7 +90,7 @@ impl ShareInputDevicesPlugin {
     }
 
     /// Convert a mousepad pointer body into a desktop pointer event.
-    fn pointer_event(body: &Value) -> Option<PointerEvent> {
+    fn pointer_event(body: &serde_json::Map<String, Value>) -> Option<PointerEvent> {
         if let Some(button) = CLICK_FIELDS
             .iter()
             .find(|(field, _)| body.get(*field).and_then(Value::as_bool).unwrap_or(false))
