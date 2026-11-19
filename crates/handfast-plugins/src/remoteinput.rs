@@ -19,8 +19,10 @@
 use async_trait::async_trait;
 use handfast_desktop::{Modifiers, PointerAction, PointerButton, PointerEvent};
 use handfast_proto::{types, Packet};
-use handfast_runtime::{LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
-    PluginOutput};
+use handfast_runtime::{
+    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput,
+};
 use serde_json::{json, Map, Value};
 
 use crate::roster;

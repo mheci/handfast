@@ -135,7 +135,9 @@ impl std::fmt::Debug for SshdSftp {
             .lock()
             .map(|slot| slot.is_some())
             .unwrap_or(false);
-        f.debug_struct("SshdSftp").field("running", &running).finish()
+        f.debug_struct("SshdSftp")
+            .field("running", &running)
+            .finish()
     }
 }
 

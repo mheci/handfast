@@ -99,14 +99,8 @@ impl DigitizerSession {
                 .and_then(Value::as_f64)
                 .filter(|height| (0.0..=MAX_EXTENT).contains(height))
                 .unwrap_or(0.0),
-            resolution_x: body
-                .get("resolutionX")
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
-            resolution_y: body
-                .get("resolutionY")
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
+            resolution_x: body.get("resolutionX").and_then(Value::as_i64).unwrap_or(0),
+            resolution_y: body.get("resolutionY").and_then(Value::as_i64).unwrap_or(0),
         }
     }
 

@@ -9,8 +9,10 @@ use std::collections::{HashSet, VecDeque};
 use async_trait::async_trait;
 use handfast_proto::share::ShareRequest;
 use handfast_proto::{types, Packet};
-use handfast_runtime::{LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
-    PluginOutput, Transfer};
+use handfast_runtime::{
+    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput, Transfer,
+};
 
 use crate::roster;
 

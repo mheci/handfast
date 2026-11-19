@@ -184,9 +184,7 @@ impl Telephony for MmTelephony {
                 .await
                 .map_err(|error| DesktopError::Backend(error.to_string()))?
                 .map_err(|error| match error.kind() {
-                    io::ErrorKind::NotFound => {
-                        DesktopError::Unsupported("mmcli is not installed")
-                    }
+                    io::ErrorKind::NotFound => DesktopError::Unsupported("mmcli is not installed"),
                     _ => DesktopError::Backend(error.to_string()),
                 })?;
         Ok(parse_calls(&text))
@@ -304,8 +302,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_tool_is_unsupported() {
-        let (telephony, _) =
-            adapter(Err(io::Error::new(io::ErrorKind::NotFound, "not found")));
+        let (telephony, _) = adapter(Err(io::Error::new(io::ErrorKind::NotFound, "not found")));
         let error = telephony.poll().await.unwrap_err();
         assert!(
             matches!(&error, DesktopError::Unsupported(message) if message.contains("mmcli")),

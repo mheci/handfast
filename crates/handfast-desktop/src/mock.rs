@@ -27,7 +27,14 @@ pub enum InputEvent {
     Key(KeyEvent),
     /// Absolute pointer position, as a screen fraction, and whether the
     /// primary button was down for the sample.
-    Absolute { x: f64, y: f64, pressed: bool },
+    Absolute {
+        /// Horizontal position, 0.0-1.0 of the screen width.
+        x: f64,
+        /// Vertical position, 0.0-1.0 of the screen height.
+        y: f64,
+        /// Whether the primary button was held for this sample.
+        pressed: bool,
+    },
 }
 
 /// Counts lock calls made through the mock desktop.

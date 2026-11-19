@@ -125,10 +125,7 @@ impl Plugin for ContactsPlugin {
                 body.insert("uids".to_string(), Value::Object(timestamps));
                 Ok(PluginOutput::new()
                     .with_packet(
-                        Packet::new(
-                            types::CONTACTS_RESPONSE_UIDS_TIMESTAMPS,
-                            Value::Object(body),
-                        )
+                        Packet::new(types::CONTACTS_RESPONSE_UIDS_TIMESTAMPS, Value::Object(body))
                             .map_err(|error| PluginError::InvalidPacket(error.to_string()))?,
                     )
                     .with_event(PluginEvent::Log {
