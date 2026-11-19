@@ -74,6 +74,32 @@ fn modifier_args(modifiers: crate::model::Modifiers) -> Vec<String> {
     args
 }
 
+/// The `xdotool` command line that types `text` with `modifiers` held.
+///
+/// The desktop client presses the modifiers, injects every character and
+/// releases them again. `xdotool` chains the same steps in one invocation, so
+/// a failure cannot leave a modifier stuck down. `type` is used rather than
+/// `key` because it handles arbitrary text, and `--` keeps text that starts
+/// with a dash from reading as an option.
+pub fn text_command(text: &str, modifiers: crate::model::Modifiers) -> Vec<String> {
+    let held = modifier_args(modifiers);
+    let mut args = Vec::new();
+    for modifier in &held {
+        args.push("keydown".to_string());
+        args.push(modifier.clone());
+    }
+    args.push("type".to_string());
+    if text.starts_with('-') {
+        args.push("--".to_string());
+    }
+    args.push(text.to_string());
+    for modifier in held.iter().rev() {
+        args.push("keyup".to_string());
+        args.push(modifier.clone());
+    }
+    args
+}
+
 /// The `xdotool key` name for a KDE Connect special-key code.
 ///
 /// The table is the desktop client's `SpecialKeysMap`: index 0 is unused, 1-32
@@ -116,7 +142,10 @@ pub fn special_key_name(code: u8) -> Option<&'static str> {
         "F11",
         "F12",
     ];
-    NAMES.get(usize::from(code)).copied().filter(|name| !name.is_empty())
+    NAMES
+        .get(usize::from(code))
+        .copied()
+        .filter(|name| !name.is_empty())
 }
 
 fn button_number(button: PointerButton) -> &'static str {
@@ -143,9 +172,12 @@ pub fn pointer_command(event: PointerEvent) -> Vec<String> {
             // One wheel notch per unit of scroll, as both clients send them.
             let notches = event.dy.abs().round().max(1.0) as u32;
             let button = if event.dy < 0.0 { "5" } else { "4" };
-            let mut args = vec!["click".to_string(), "--repeat".to_string(), notches.to_string()];
-            args.push(button.to_string());
-            args
+            vec![
+                "click".to_string(),
+                "--repeat".to_string(),
+                notches.to_string(),
+                button.to_string(),
+            ]
         }
         PointerAction::Click { button, count } => vec![
             "click".to_string(),
@@ -206,7 +238,6 @@ impl Input for XdotoolInput {
     }
 
     async fn key(&self, event: KeyEvent) -> Result<()> {
-        let mut args = vec!["key".to_string()];
         match event {
             KeyEvent::Text { text, modifiers } => {
                 if text.is_empty() {
@@ -214,15 +245,7 @@ impl Input for XdotoolInput {
                         "refusing to type an empty string".to_string(),
                     ));
                 }
-                let mut combination = modifier_args(modifiers);
-                combination.push("--".to_string());
-                // `--` keeps a leading dash in the text from reading as an option.
-                let mut combination: Vec<String> = combination
-                    .into_iter()
-                    .map(|modifier| format!("{modifier}+"))
-                    .collect();
-                combination.push(text);
-                args.extend(combination);
+                self.run(text_command(&text, modifiers))
             }
             KeyEvent::Special { code, modifiers } => {
                 let name = special_key_name(code).ok_or_else(|| {
@@ -230,10 +253,9 @@ impl Input for XdotoolInput {
                 })?;
                 let mut combination = modifier_args(modifiers);
                 combination.push(name.to_string());
-                args.push(combination.join("+"));
+                self.run(vec!["key".to_string(), combination.join("+")])
             }
         }
-        self.run(args)
     }
 }
 
@@ -277,8 +299,14 @@ mod tests {
     #[tokio::test]
     async fn movement_uses_a_relative_move() {
         let (input, runner) = input();
-        input.pointer(PointerEvent::movement(3.4, -2.6)).await.unwrap();
-        assert_eq!(runner.calls(), vec![args(&["mousemove_relative", "--", "3", "-3"])]);
+        input
+            .pointer(PointerEvent::movement(3.4, -2.6))
+            .await
+            .unwrap();
+        assert_eq!(
+            runner.calls(),
+            vec![args(&["mousemove_relative", "--", "3", "-3"])]
+        );
     }
 
     #[tokio::test]
@@ -288,7 +316,10 @@ mod tests {
             .pointer(PointerEvent::click(PointerButton::Right, 2))
             .await
             .unwrap();
-        assert_eq!(runner.calls(), vec![args(&["click", "--repeat", "2", "3"])]);
+        assert_eq!(
+            runner.calls(),
+            vec![args(&["click", "--repeat", "2", "3"])]
+        );
     }
 
     #[tokio::test]
@@ -311,7 +342,10 @@ mod tests {
     #[tokio::test]
     async fn scrolling_down_uses_button_five() {
         let (input, runner) = input();
-        input.pointer(PointerEvent::scroll(0.0, -3.0)).await.unwrap();
+        input
+            .pointer(PointerEvent::scroll(0.0, -3.0))
+            .await
+            .unwrap();
         assert_eq!(runner.calls(), vec![args(&["click", "--repeat", "3", "5"])]);
     }
 
@@ -344,7 +378,37 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(runner.calls(), vec![args(&["key", "ctrl+", "--", "-s"])]);
+        assert_eq!(
+            runner.calls(),
+            vec![args(&["keydown", "ctrl", "type", "--", "-s", "keyup", "ctrl"])]
+        );
+    }
+
+    #[test]
+    fn plain_text_is_typed_without_modifiers() {
+        assert_eq!(
+            text_command("hello", Modifiers::default()),
+            args(&["type", "hello"])
+        );
+    }
+
+    #[test]
+    fn several_modifiers_are_released_in_reverse() {
+        assert_eq!(
+            text_command(
+                "a",
+                Modifiers {
+                    ctrl: true,
+                    alt: true,
+                    shift: true,
+                    sup: true,
+                }
+            ),
+            args(&[
+                "keydown", "ctrl", "keydown", "alt", "keydown", "shift", "keydown", "super", "type",
+                "a", "keyup", "super", "keyup", "shift", "keyup", "alt", "keyup", "ctrl",
+            ])
+        );
     }
 
     #[tokio::test]
