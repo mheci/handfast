@@ -82,7 +82,9 @@ fn dummy_peer() -> PayloadPeer {
 
 fn free_port() -> u16 {
     for port in 1739..=1764 {
-        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+        // Production senders bind all interfaces. A loopback-only probe can
+        // succeed while a wildcard bind is still blocked by TIME_WAIT.
+        if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", port)) {
             drop(listener);
             return port;
         }

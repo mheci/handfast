@@ -217,12 +217,17 @@ impl Notifier for CommandNotifier {
     }
 
     async fn close(&self, id: &str) -> Result<()> {
-        let mut ids = self.ids.lock().await;
-        let Some(backend_id) = ids.get(id).copied() else {
+        let Some(backend_id) = self.ids.lock().await.get(id).copied() else {
             return Ok(());
         };
+        // Never hold the shared map lock while waiting on a desktop service.
+        // A concurrent replacement may install a new backend ID during close;
+        // remove only the exact mapping we closed.
         self.close_backend(backend_id).await?;
-        ids.remove(id);
+        let mut ids = self.ids.lock().await;
+        if ids.get(id) == Some(&backend_id) {
+            ids.remove(id);
+        }
         Ok(())
     }
 }
@@ -525,6 +530,31 @@ mod tests {
             Some("2"),
             "the replacement must stay closable after the racing close"
         );
+    }
+
+    #[tokio::test]
+    async fn hung_close_does_not_block_another_notification() {
+        let (notifier, runner) = notifier(FakeOutcome::printing("1"));
+        notifier.notify(&posted(Some("peer-1"))).await.unwrap();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        runner.gate_next_gdbus(gate);
+        let closing = tokio::spawn({
+            let notifier = notifier.clone();
+            async move { notifier.close("peer-1").await }
+        });
+        runner.wait_for_calls(2).await;
+        runner.set_notify(FakeOutcome::printing("2"));
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            notifier.notify(&posted(Some("peer-2"))),
+        )
+        .await
+        .expect("another ID must not wait on a hung close")
+        .unwrap();
+        release.send(()).unwrap();
+        closing.await.unwrap().unwrap();
+        notifier.close("peer-2").await.unwrap();
+        assert_eq!(runner.calls().last().unwrap().1.last().unwrap(), "2");
     }
 
     #[tokio::test]
