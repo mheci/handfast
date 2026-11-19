@@ -3,7 +3,7 @@
 //! Upstream stores per-plugin settings in a KConfig file and lets each plugin
 //! read its own keys. Handfast keeps the same model but one object: the daemon
 //! loads it once at start, and every plugin instance reads it through
-//! [`PluginContext::config`].
+//! [`PluginContext`](crate::PluginContext) with the `config` field.
 //!
 //! The config is deliberately explicit rather than permissive. A plugin that
 //! needs a list — `runcommand`'s allowed commands, `sendnotifications`'s
