@@ -1,0 +1,9 @@
+{
+  "id": 0,
+  "type": "kdeconnect.systemvolume",
+  "body": {
+    "sinkList": [
+      {"name": "speaker", "description": "Speakers", "volume": 40, "muted": false, "enabled": true}
+    ]
+  }
+}

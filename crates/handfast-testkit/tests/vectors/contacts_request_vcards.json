@@ -1,0 +1,7 @@
+{
+  "id": 0,
+  "type": "kdeconnect.contacts.request_vcards_by_uid",
+  "body": {
+    "uids": ["alice"]
+  }
+}

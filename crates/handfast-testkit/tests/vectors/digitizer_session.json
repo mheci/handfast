@@ -1,0 +1,13 @@
+{
+  "id": 0,
+  "type": "kdeconnect.digitizer.session",
+  "body": {
+    "active": true,
+    "touching": false,
+    "tool": "pen",
+    "width": 1000.0,
+    "height": 500.0,
+    "resolutionX": 100,
+    "resolutionY": 100
+  }
+}

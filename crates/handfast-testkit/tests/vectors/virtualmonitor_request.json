@@ -1,0 +1,10 @@
+{
+  "id": 0,
+  "type": "kdeconnect.virtualmonitor.request",
+  "body": {
+    "start": true,
+    "width": 1280,
+    "height": 720,
+    "scale": 100
+  }
+}

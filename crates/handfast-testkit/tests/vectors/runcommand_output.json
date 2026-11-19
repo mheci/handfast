@@ -1,0 +1,10 @@
+{
+  "id": 0,
+  "type": "kdeconnect.runcommand.output",
+  "body": {
+    "commandOutput": true,
+    "stdout": ["line one", "line two"],
+    "stderr": [],
+    "id": 1
+  }
+}

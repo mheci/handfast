@@ -1,0 +1,12 @@
+{
+  "id": 0,
+  "type": "kdeconnect.sftp",
+  "body": {
+    "serverRunning": true,
+    "user": "alice",
+    "port": 1740,
+    "path": "/home/alice/Public",
+    "multiPaths": ["/home/alice/Public"],
+    "pathNames": ["Handfast"]
+  }
+}

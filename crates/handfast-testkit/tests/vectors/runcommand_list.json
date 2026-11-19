@@ -1,0 +1,8 @@
+{
+  "id": 0,
+  "type": "kdeconnect.runcommand",
+  "body": {
+    "commandList": "{\"lock\":{\"name\":\"Lock screen\",\"command\":\"loginctl lock-session\"}}",
+    "canAddCommand": false
+  }
+}

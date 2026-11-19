@@ -1,0 +1,8 @@
+{
+  "id": 0,
+  "type": "kdeconnect.contacts.response_vcards",
+  "body": {
+    "uid": "alice",
+    "vcard": "BEGIN:VCARD\nFN:Alice\nEND:VCARD\n"
+  }
+}
