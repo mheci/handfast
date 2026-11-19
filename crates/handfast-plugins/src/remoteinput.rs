@@ -50,6 +50,8 @@ pub enum RemoteInputError {
     InvalidSpecialKey,
     /// The text was empty or longer than 1024 bytes.
     InvalidText,
+    /// A drag with a button the mousepad receiver has no field for.
+    UnsupportedButton,
 }
 
 impl std::fmt::Display for RemoteInputError {
@@ -58,6 +60,7 @@ impl std::fmt::Display for RemoteInputError {
             Self::InvalidDelta => f.write_str("pointer delta out of range"),
             Self::InvalidSpecialKey => f.write_str("special key out of range"),
             Self::InvalidText => f.write_str("key text out of range"),
+            Self::UnsupportedButton => f.write_str("only the left button can be held"),
             Self::Packet => f.write_str("packet body could not be built"),
         }
     }
@@ -74,8 +77,7 @@ fn insert_modifiers(body: &mut Map<String, Value>, modifiers: Modifiers) {
 }
 
 fn wrap(body: Map<String, Value>) -> Result<Packet, RemoteInputError> {
-    Packet::new(types::MOUSEPAD_REQUEST, Value::Object(body))
-        .map_err(|_| RemoteInputError::Packet)
+    Packet::new(types::MOUSEPAD_REQUEST, Value::Object(body)).map_err(|_| RemoteInputError::Packet)
 }
 
 /// Build the request for a relative pointer movement.
@@ -125,15 +127,20 @@ pub fn pointer_packet(event: &PointerEvent) -> Result<Packet, RemoteInputError> 
             body.insert(field.to_string(), Value::Bool(true));
             wrap(body)
         }
-        PointerAction::Press => {
+        // The mousepad receiver only knows the left-button hold and release
+        // pair; a drag with any other button cannot be expressed.
+        PointerAction::Press(PointerButton::Left) => {
             let mut body = Map::new();
             body.insert("singlehold".to_string(), Value::Bool(true));
             wrap(body)
         }
-        PointerAction::Release => {
+        PointerAction::Release(PointerButton::Left) => {
             let mut body = Map::new();
             body.insert("singlerelease".to_string(), Value::Bool(true));
             wrap(body)
+        }
+        PointerAction::Press(_) | PointerAction::Release(_) => {
+            Err(RemoteInputError::UnsupportedButton)
         }
     }
 }
@@ -310,7 +317,8 @@ impl RemoteKeyboardPlugin {
     ///
     /// Fails when the text is empty or oversized.
     pub fn type_text(&mut self, text: &str, modifiers: Modifiers) -> Result<(), RemoteInputError> {
-        self.pending.push(key_packet(Some(text), None, modifiers, true)?);
+        self.pending
+            .push(key_packet(Some(text), None, modifiers, true)?);
         Ok(())
     }
 
@@ -482,7 +490,10 @@ mod tests {
 
     #[test]
     fn a_movement_of_nothing_or_a_non_finite_delta_is_rejected() {
-        assert_eq!(movement_packet(0.0, 0.0), Err(RemoteInputError::InvalidDelta));
+        assert_eq!(
+            movement_packet(0.0, 0.0),
+            Err(RemoteInputError::InvalidDelta)
+        );
         assert_eq!(
             movement_packet(f64::NAN, 1.0),
             Err(RemoteInputError::InvalidDelta)
@@ -551,6 +562,20 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_with_a_non_left_button_is_rejected() {
+        let middle_hold = PointerEvent::button(PointerButton::Middle, true);
+        assert_eq!(
+            pointer_packet(&middle_hold),
+            Err(RemoteInputError::UnsupportedButton)
+        );
+        let right_release = PointerEvent::button(PointerButton::Right, false);
+        assert_eq!(
+            pointer_packet(&right_release),
+            Err(RemoteInputError::UnsupportedButton)
+        );
+    }
+
+    #[test]
     fn bad_or_missing_text_is_rejected() {
         assert_eq!(
             key_packet(Some(""), None, modifiers(false), true),
@@ -596,8 +621,7 @@ mod tests {
     #[tokio::test]
     async fn the_control_plugin_ignores_inbound_packets() {
         let mut plugin = RemoteControlPlugin::new();
-        let packet =
-            Packet::from_body(types::MOUSEPAD_REQUEST, &json!({ "dx": 1.0 })).unwrap();
+        let packet = Packet::from_body(types::MOUSEPAD_REQUEST, &json!({ "dx": 1.0 })).unwrap();
         assert!(feed(&mut plugin, &packet).await.packets.is_empty());
         assert_eq!(plugin.pending(), 0);
     }
@@ -620,11 +644,8 @@ mod tests {
         let mut plugin = RemoteKeyboardPlugin::new();
         assert!(!plugin.ready());
 
-        let ack = Packet::from_body(
-            types::MOUSEPAD_ECHO,
-            &json!({ "isAck": true, "key": "a" }),
-        )
-        .unwrap();
+        let ack =
+            Packet::from_body(types::MOUSEPAD_ECHO, &json!({ "isAck": true, "key": "a" })).unwrap();
         feed(&mut plugin, &ack).await;
         assert!(plugin.ready());
     }
@@ -657,8 +678,8 @@ mod tests {
         let mut plugin = RemoteKeyboardPlugin::new();
         assert_eq!(plugin.keyboard_state(), None);
 
-        let available = Packet::from_body(types::MOUSEPAD_KEYBOARDSTATE, &json!({ "state": true }))
-            .unwrap();
+        let available =
+            Packet::from_body(types::MOUSEPAD_KEYBOARDSTATE, &json!({ "state": true })).unwrap();
         let output = feed(&mut plugin, &available).await;
         assert_eq!(plugin.keyboard_state(), Some(true));
         assert_eq!(output.events.len(), 1);
@@ -667,8 +688,8 @@ mod tests {
         let output = feed(&mut plugin, &available).await;
         assert!(output.events.is_empty());
 
-        let gone = Packet::from_body(types::MOUSEPAD_KEYBOARDSTATE, &json!({ "state": false }))
-            .unwrap();
+        let gone =
+            Packet::from_body(types::MOUSEPAD_KEYBOARDSTATE, &json!({ "state": false })).unwrap();
         feed(&mut plugin, &gone).await;
         assert_eq!(plugin.keyboard_state(), Some(false));
     }
