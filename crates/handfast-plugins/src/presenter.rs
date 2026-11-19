@@ -6,7 +6,7 @@
 //! the view and a 500 ms timer closes it when the packets stop, so a
 //! presentation remote can drive a slide show without taking over the mouse.
 //!
-//! Handfast follows that behaviour through the [`Presenter`] desktop adapter.
+//! Handfast follows that behaviour through the `Presenter` desktop adapter.
 
 use async_trait::async_trait;
 use handfast_proto::{types, Packet};

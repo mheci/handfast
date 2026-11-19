@@ -129,7 +129,9 @@ impl std::fmt::Display for ControlError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidId => formatter.write_str("notification id is empty or too long"),
-            Self::InvalidMessage => formatter.write_str("notification message is empty or too long"),
+            Self::InvalidMessage => {
+                formatter.write_str("notification message is empty or too long")
+            }
         }
     }
 }

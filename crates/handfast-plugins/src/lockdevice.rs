@@ -212,7 +212,10 @@ mod tests {
         assert_eq!(output.packets[1].body["isLocked"], json!(false));
         assert!(matches!(
             output.events.as_slice(),
-            [PluginEvent::Log { level: LogLevel::Warn, .. }]
+            [PluginEvent::Log {
+                level: LogLevel::Warn,
+                ..
+            }]
         ));
     }
 
@@ -248,7 +251,10 @@ mod tests {
         assert_eq!(mock.lock_calls(), 0);
         assert!(matches!(
             output.events.as_slice(),
-            [PluginEvent::Log { level: LogLevel::Warn, .. }]
+            [PluginEvent::Log {
+                level: LogLevel::Warn,
+                ..
+            }]
         ));
     }
 

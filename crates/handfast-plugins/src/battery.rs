@@ -203,9 +203,11 @@ mod tests {
     async fn a_peer_report_becomes_a_typed_event() {
         let mock = MockDesktop::new();
         let desktop = mock.desktop();
-        let packet =
-            Packet::from_body(types::BATTERY, &json!({"currentCharge": 55, "isCharging": true}))
-                .unwrap();
+        let packet = Packet::from_body(
+            types::BATTERY,
+            &json!({"currentCharge": 55, "isCharging": true}),
+        )
+        .unwrap();
         let output = run(&desktop, packet).await;
         assert_eq!(
             output.events,
@@ -310,7 +312,10 @@ mod tests {
         let first = plugin.on_tick(&mut ctx).await.unwrap();
         assert_eq!(first.packets.len(), 1);
         let second = plugin.on_tick(&mut ctx).await.unwrap();
-        assert!(second.packets.is_empty(), "an unchanged state is not re-sent");
+        assert!(
+            second.packets.is_empty(),
+            "an unchanged state is not re-sent"
+        );
         mock.set_battery(BatteryStatus {
             charge: 60,
             charging: true,
@@ -337,10 +342,7 @@ mod tests {
                 ..
             }]
         ));
-        let output = BatteryPlugin::new()
-            .on_tick(&mut ctx)
-            .await
-            .unwrap();
+        let output = BatteryPlugin::new().on_tick(&mut ctx).await.unwrap();
         assert!(output.packets.is_empty());
     }
 }

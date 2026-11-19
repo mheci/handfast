@@ -80,10 +80,7 @@ impl ClipboardPlugin {
     }
 
     /// Read the local clipboard and build a publishable packet, if any.
-    async fn poll(
-        &mut self,
-        ctx: &mut PluginContext<'_>,
-    ) -> Result<Option<Packet>, PluginError> {
+    async fn poll(&mut self, ctx: &mut PluginContext<'_>) -> Result<Option<Packet>, PluginError> {
         let Some(clipboard) = ctx.desktop.clipboard.as_ref() else {
             return Ok(None);
         };
@@ -96,9 +93,9 @@ impl ClipboardPlugin {
         }
         let text = text.unwrap_or_default();
         self.last_sent = Some(text.clone());
-        Ok(Some(
-            clipboard_packet(&text).map_err(|error| PluginError::InvalidPacket(error.to_string()))?,
-        ))
+        Ok(Some(clipboard_packet(&text).map_err(|error| {
+            PluginError::InvalidPacket(error.to_string())
+        })?))
     }
 
     /// Last applied peer timestamp in milliseconds.
@@ -408,10 +405,7 @@ mod tests {
             device: &device,
             desktop: &desktop,
         };
-        let output = ClipboardPlugin::new()
-            .on_connect(&mut ctx)
-            .await
-            .unwrap();
+        let output = ClipboardPlugin::new().on_connect(&mut ctx).await.unwrap();
         assert_eq!(output.packets.len(), 1);
         assert_eq!(output.packets[0].ptype, types::CLIPBOARD_CONNECT);
         assert_eq!(output.packets[0].body["content"], json!("local"));
@@ -444,7 +438,10 @@ mod tests {
         assert_eq!(sent.packets[0].body["content"], json!("local"));
 
         let repeat = plugin.on_tick(&mut ctx).await.unwrap();
-        assert!(repeat.packets.is_empty(), "an unchanged clipboard is not resent");
+        assert!(
+            repeat.packets.is_empty(),
+            "an unchanged clipboard is not resent"
+        );
     }
 
     #[tokio::test]
