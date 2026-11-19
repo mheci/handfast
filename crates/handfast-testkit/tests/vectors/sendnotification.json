@@ -1,0 +1,13 @@
+{
+  "id": 0,
+  "type": "kdeconnect.notification",
+  "body": {
+    "id": "device|1",
+    "appName": "firefox",
+    "ticker": "Download done: report.pdf",
+    "isClearable": true,
+    "title": "Download done",
+    "silent": false,
+    "text": "report.pdf"
+  }
+}

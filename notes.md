@@ -235,3 +235,156 @@ Design risks carried into implementation:
 - Pairing clock skew and Windows state-file and incoming-file ACLs remain open.
 - The unpaired idle timeout must not close a link inside the 30-second pairing window.
 - The testkit TLS peer duplicates handshake logic on purpose.
+
+## Wave 19 — capability parity and the input plugin (PR #275)
+
+The roster was written from memory rather than from upstream
+`plugins/*/kdeconnect_*.json`. A scripted comparison found 17 of 31 plugins
+advertising the wrong direction or a type no peer sends; the worst was
+`kdeconnect.battery.request`, which does not exist. Every plugin now matches its
+upstream capability JSON, with one deliberate exception: `share` keeps
+`kdeconnect.share.request.update` in its incoming set because Android receives
+it even though the desktop client only sends it.
+
+Plugins that were declared implemented but inert now do their work: battery
+publishes the host charge on connect and on change, clipboard pushes local text
+without echoing the peer, lockdevice runs the request/result state machine and
+refuses remote unlock, mpriscontrol answers `requestPlayerList` and
+`requestNowPlaying`, notifications gained request/action/reply, presenter drives
+a real presentation view, and systemvolume became a sink provider.
+
+New runtime and desktop work: `Plugin::on_tick`, driven by the session every two
+seconds so polled plugins can originate packets; `Battery` and `Presenter`
+adapters; a sysfs battery backend, per-sink `wpctl` enumeration and `set_sink`,
+and an `xdotool` input backend with the upstream special-key table. `mousepad`
+is registered for the first time, and its clicks and drags now inject.
+
+CI note: this environment cannot read job logs, so a temporary
+`compile-report` workflow republished rustfmt, clippy, rustdoc and test output
+as check-run annotations. It was removed once the branch was green; the whole
+matrix (fmt, clippy, docs, gui, msrv, test, windows, fuzz, deny, testkit) passes.
+
+## Wave 20 — the phone's media player, from the desktop (PR #275)
+
+`mprisremote` was the last media plugin still marked planned, and it was the one
+direction the desktop could not use at all: `mpriscontrol` let the phone drive
+the desktop's players, but nothing let the desktop touch the phone's. The
+plugin now caches what the phone reports and sends the four requests the
+Android receiver implements.
+
+The wire shapes come from `MprisReceiverPlugin.kt`, which is more specific than
+the desktop client: `requestPlayerList`, `requestNowPlaying` with
+`requestVolume`, `action` (Play, Pause, PlayPause, Stop, Next, Previous,
+FastForward, Rewind), `setVolume` 0-100 and `Seek` with a signed millisecond
+offset. `kdeconnect.mpris` bodies merge field by field into a per-player cache,
+so a partial update does not erase a title; a `playerList` is authoritative and
+drops players the phone no longer has.
+
+Requests queue from any thread and leave on the next tick, the same shape the
+notifications plugin already used for desktop-initiated packets, so no new
+runtime surface was needed. Player names are capped, checked for control
+characters and validated against a fixed action table before anything queues.
+
+Two CI findings along the way were worth the delay. The desktop-side plugin
+started from `LogLevel::Debug`, which does not exist in this runtime, and the
+`two_queued_files_arrive_in_order` daemon test read the log once after both
+files were on disk, so it raced the daemon's own completion line. Both are
+fixed; the second now waits for two `event="ShareCompleted"` lines before
+checking their order.
+
+Note for the next wave: `remotecontrol` and `remotekeyboard` are still planned.
+They are the mirror of `mousepad` — the desktop sends `mousepad.request` to a
+phone that already implements it — so the packet builder and the pointer
+encoding in `handfast-desktop` can be reused instead of written again.
+
+## Wave 21 — sending input to the phone (PR #275)
+
+`remotecontrol` and `remotekeyboard` were the last two input plugins marked
+planned, and they are the mirror of `mousepad`: instead of injecting what a
+phone sends us, they send `kdeconnect.mousepad.request` to a phone that already
+knows how to receive it. Both live in one module, because they share a single
+packet and the receiver decides by presence of `key` or `specialKey`.
+
+Readiness is the interesting part. `remotekeyboard` sets `sendAck` on every key
+event, and the receiver echoes a handled event back as `kdeconnect.mousepad.echo`
+with `isAck: true`. Upstream refuses an echo that lacks either field, so this
+does too, and only then reports the peer as ready. `mousepad.keyboardstate` is
+tracked separately, because it says whether the peer's keyboard is up rather
+than whether a keypress landed. `remotecontrol` never acks: the Android mouse
+receiver has no echo path, so a probe there would wait forever.
+
+Two constraints came out of reading the Android receiver rather than guessing.
+Its hold/release fields exist only for the left button, so a drag with the
+middle or right button is rejected up front instead of being silently encoded as
+a left drag. And movement of exactly zero is rejected: the receiver treats a
+packet with no coordinates as "hide the pointer", which is not what a caller
+asking to move by nothing wants.
+
+The roster test needed a wider rule. It asserted every implemented plugin has a
+non-empty incoming set, which was true until `remotecontrol` — a plugin that
+only sends. It now requires an incoming or an outgoing set, so the outbound-only
+case is covered honestly instead of skipped.
+
+Remaining in the input family: `shareinputdevices` and `shareinputdevicesremote`
+(libei capture and forwarding between two desktops). Those need a Wayland input
+capture backend that does not exist yet; the packet side is already in the
+roster.
+
+## Wave 22: the rest of the roster
+
+Every plugin in the 31-row roster is now implemented. PR #275 carries the wave.
+
+The wave needed a configuration surface first. `runcommand`, `sftp`,
+`sendnotifications` and `contacts` cannot work without settings — an allowlist
+of executable commands, a directory to serve, an app filter, an address book
+path — and there was nowhere to put them. `PluginConfig` is a small TOML
+document loaded once by the daemon and borrowed read-only by every plugin:
+
+- `plugins.toml` next to the daemon state, overridable with `--config-file`;
+- absent file = empty config, which is the safe default in every case;
+- malformed file = a hard start error with a line number, because silently
+  ignoring a typo in an allowlist is how a command runs that the user did not
+  intend;
+- absent list key = empty set, so `runcommand` executes nothing until the user
+  writes the key.
+
+`runcommand` is the only plugin that can change the host by running a program,
+so its defaults carry the design. Commands come only from the allowlist, are
+split on whitespace and executed directly — never through a shell — so a
+mis-written entry cannot become an injection. The phone's own "add command" UI
+is advertised as unavailable rather than half-working, because the allowlist is
+a file the user edits.
+
+New desktop adapters, because five plugins were blocked on them:
+
+- `Telephony` reads calls from `mmcli`. The parser keys off field names, not
+  column positions: `mmcli`'s table layout has changed between versions.
+- `Contacts` serves a directory of `.vcf` files. The plugin answers the
+  two-step `request_all_uids_timestamps` / `request_vcards_by_uid` handshake,
+  because sending every vCard on every reconnect is one packet per contact.
+- `Display` drives `wlay` or a headless `weston`. A client cannot create an
+  output on Wayland; a headless compositor is what a virtual monitor is.
+- `Input::pointer_absolute` was added for `digitizer`. A tablet sample names a
+  position on a surface, and the existing relative pointer API would have
+  drifted away from the stroke. The default trait method reports `Unsupported`
+  so a backend that cannot do it says so once instead of failing every sample.
+- `SftpServerBackend` runs a one-shot `sshd` chrooted to the configured root on
+  loopback, keys only. Writing an SFTP server was not worth it.
+
+Two structural decisions worth recording:
+
+- **`telephony` and `mmtelephony` are separate plugins**, as upstream has them.
+  `telephony` shows the phone's calls as desktop notifications and sends
+  nothing; `mmtelephony` reads a local modem and reports to the phone. An early
+  draft merged them, which gave the roster one name for two behaviours.
+- **Backend failures are logged and counted, never returned as `PluginError`.**
+  That error disables the plugin for the whole session, which is the wrong
+  response to a temporarily unreadable address book or one failed injection.
+
+`shareinputdevices` gates injection on an explicit share request from the peer.
+`mousepad` accepts input whenever it is enabled; here nothing is injected until
+the phone asks, so a stray packet cannot type into a desktop.
+
+SFTP, `shareinputdevices` and `digitizer` remain the least exercised: their
+tests use a fake backend or the mock desktop, and no real client has driven
+them. No `E2E` cell is `yes`.

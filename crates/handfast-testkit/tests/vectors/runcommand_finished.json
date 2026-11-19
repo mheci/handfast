@@ -1,0 +1,10 @@
+{
+  "id": 0,
+  "type": "kdeconnect.runcommand.output",
+  "body": {
+    "commandFinished": true,
+    "success": true,
+    "exitCode": 0,
+    "id": 1
+  }
+}

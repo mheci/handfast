@@ -1,0 +1,9 @@
+{
+  "id": 0,
+  "type": "kdeconnect.digitizer",
+  "body": {
+    "x": 500.0,
+    "y": 250.0,
+    "pressure": 0.5
+  }
+}

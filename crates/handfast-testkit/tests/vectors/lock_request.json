@@ -1,0 +1,7 @@
+{
+  "id": 0,
+  "type": "kdeconnect.lock.request",
+  "body": {
+    "setLocked": true
+  }
+}

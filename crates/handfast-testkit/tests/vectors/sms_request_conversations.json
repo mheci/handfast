@@ -1,0 +1,5 @@
+{
+  "id": 0,
+  "type": "kdeconnect.sms.request_conversations",
+  "body": {}
+}

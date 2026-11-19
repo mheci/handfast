@@ -1,7 +1,7 @@
 //! Mousepad plugin.
 
 use async_trait::async_trait;
-use handfast_desktop::{KeyEvent, Modifiers, PointerEvent};
+use handfast_desktop::{KeyEvent, Modifiers, PointerButton, PointerEvent};
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
     LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
@@ -36,7 +36,6 @@ impl MousepadPlugin {
 enum Action {
     Pointer(PointerEvent),
     Key { event: KeyEvent, ack: bool },
-    Button(&'static str),
 }
 
 fn warn(message: &str) -> PluginOutput {
@@ -93,23 +92,44 @@ fn special_key(body: &Map<String, Value>) -> Result<Option<u8>, &'static str> {
     Ok(Some(code))
 }
 
+/// The click, hold and release flags, in the order the desktop client tests
+/// them. The first one set wins, as it does upstream.
+fn button_action(body: &Map<String, Value>) -> Result<Option<PointerEvent>, &'static str> {
+    let left = PointerButton::Left;
+    let right = PointerButton::Right;
+    let middle = PointerButton::Middle;
+    for field in CLICK_FIELDS {
+        if bool_field(body, field)? != Some(true) {
+            continue;
+        }
+        let event = match field {
+            "singleclick" => PointerEvent::click(left, 1),
+            "doubleclick" => PointerEvent::click(left, 2),
+            "middleclick" => PointerEvent::click(middle, 1),
+            "rightclick" => PointerEvent::click(right, 1),
+            "singlehold" => PointerEvent::button(left, true),
+            "singlerelease" => PointerEvent::button(left, false),
+            _ => return Ok(None),
+        };
+        return Ok(Some(event));
+    }
+    Ok(None)
+}
+
 fn parse(packet: &Packet) -> Result<Action, &'static str> {
     let body = &packet.body;
     let scroll = bool_field(body, "scroll")?.unwrap_or(false);
     let modifiers = parse_modifiers(body)?;
 
-    for field in CLICK_FIELDS {
-        if bool_field(body, field)? == Some(true) {
-            return Ok(Action::Button(field));
-        }
+    if let Some(event) = button_action(body)? {
+        return Ok(Action::Pointer(event));
     }
 
     if scroll {
-        return Ok(Action::Pointer(PointerEvent {
-            dx: number_field(body, "dx")?.unwrap_or(0.0),
-            dy: number_field(body, "dy")?.unwrap_or(0.0),
-            scroll: true,
-        }));
+        return Ok(Action::Pointer(PointerEvent::scroll(
+            number_field(body, "dx")?.unwrap_or(0.0),
+            number_field(body, "dy")?.unwrap_or(0.0),
+        )));
     }
 
     let special = special_key(body)?;
@@ -140,11 +160,7 @@ fn parse(packet: &Packet) -> Result<Action, &'static str> {
     let dx = number_field(body, "dx")?;
     let dy = number_field(body, "dy")?;
     match (dx, dy) {
-        (Some(dx), Some(dy)) => Ok(Action::Pointer(PointerEvent {
-            dx,
-            dy,
-            scroll: false,
-        })),
+        (Some(dx), Some(dy)) => Ok(Action::Pointer(PointerEvent::movement(dx, dy))),
         _ => Err("mousepad packet has no action"),
     }
 }
@@ -227,9 +243,6 @@ impl Plugin for MousepadPlugin {
                     PluginOutput::new().with_packet(packet)
                 }))
             }
-            Action::Button(name) => Ok(warn(&format!(
-                "input adapter cannot inject pointer button: {name}"
-            ))),
         }
     }
 }
@@ -254,7 +267,7 @@ mod tests {
     use handfast_desktop::mock::InputEvent;
     use handfast_desktop::{Desktop, MockDesktop};
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::Device;
+    use handfast_runtime::{Device, PluginConfig};
 
     fn device() -> Device {
         Device::new(
@@ -269,6 +282,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         MousepadPlugin::new()
             .on_packet(&mut ctx, &packet)
@@ -281,6 +295,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         MousepadPlugin::new().on_connect(&mut ctx).await.unwrap()
     }
@@ -295,11 +310,7 @@ mod tests {
         let output = run(&mock.desktop(), request(json!({"dx": 3.0, "dy": -2.0}))).await;
         assert_eq!(
             mock.input_events(),
-            vec![InputEvent::Pointer(PointerEvent {
-                dx: 3.0,
-                dy: -2.0,
-                scroll: false,
-            })]
+            vec![InputEvent::Pointer(PointerEvent::movement(3.0, -2.0))]
         );
         assert!(output.events.is_empty());
     }
@@ -314,11 +325,7 @@ mod tests {
         .await;
         assert_eq!(
             mock.input_events(),
-            vec![InputEvent::Pointer(PointerEvent {
-                dx: 0.0,
-                dy: -1.5,
-                scroll: true,
-            })]
+            vec![InputEvent::Pointer(PointerEvent::scroll(0.0, -1.5))]
         );
     }
 
@@ -406,17 +413,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pointer_button_is_a_warning() {
+    async fn a_single_click_is_injected() {
         let mock = MockDesktop::new();
-        let output = run(&mock.desktop(), request(json!({"singleclick": true}))).await;
-        assert!(mock.input_events().is_empty());
-        assert!(matches!(
-            output.events.as_slice(),
-            [PluginEvent::Log {
-                level: LogLevel::Warn,
-                ..
-            }]
-        ));
+        run(&mock.desktop(), request(json!({"singleclick": true}))).await;
+        assert_eq!(
+            mock.input_events(),
+            vec![InputEvent::Pointer(PointerEvent::click(
+                PointerButton::Left,
+                1
+            ))]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_double_click_is_injected() {
+        let mock = MockDesktop::new();
+        run(&mock.desktop(), request(json!({"doubleclick": true}))).await;
+        assert_eq!(
+            mock.input_events(),
+            vec![InputEvent::Pointer(PointerEvent::click(
+                PointerButton::Left,
+                2
+            ))]
+        );
+    }
+
+    #[tokio::test]
+    async fn right_and_middle_clicks_use_their_buttons() {
+        let mock = MockDesktop::new();
+        run(&mock.desktop(), request(json!({"rightclick": true}))).await;
+        run(&mock.desktop(), request(json!({"middleclick": true}))).await;
+        assert_eq!(
+            mock.input_events(),
+            vec![
+                InputEvent::Pointer(PointerEvent::click(PointerButton::Right, 1)),
+                InputEvent::Pointer(PointerEvent::click(PointerButton::Middle, 1)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_drag_holds_and_releases_the_button() {
+        let mock = MockDesktop::new();
+        run(&mock.desktop(), request(json!({"singlehold": true}))).await;
+        run(&mock.desktop(), request(json!({"singlerelease": true}))).await;
+        assert_eq!(
+            mock.input_events(),
+            vec![
+                InputEvent::Pointer(PointerEvent::button(PointerButton::Left, true)),
+                InputEvent::Pointer(PointerEvent::button(PointerButton::Left, false)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_click_takes_precedence_over_a_delta() {
+        let mock = MockDesktop::new();
+        run(
+            &mock.desktop(),
+            request(json!({"singleclick": true, "dx": 4.0, "dy": 4.0})),
+        )
+        .await;
+        assert_eq!(
+            mock.input_events(),
+            vec![InputEvent::Pointer(PointerEvent::click(
+                PointerButton::Left,
+                1
+            ))],
+            "the desktop client treats a click packet as a click"
+        );
     }
 
     #[tokio::test]

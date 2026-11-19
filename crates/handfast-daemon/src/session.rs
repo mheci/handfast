@@ -20,7 +20,9 @@ use handfast_net::{
 use handfast_proto::{
     file_request, DeviceId, Identity, Packet, PayloadSize, ProtoError, ShareFile,
 };
-use handfast_runtime::{Device, DeviceHost, Dispatch, PluginEvent, Registry, Transfer};
+use handfast_runtime::{
+    Device, DeviceHost, Dispatch, PluginConfig, PluginEvent, Registry, Transfer,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 
@@ -40,6 +42,12 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Byte step that also releases a progress event.
 const PROGRESS_BYTES: u64 = 4 * 1024 * 1024;
+
+/// How often every enabled plugin gets a tick.
+///
+/// The interval bounds how long a polled plugin's state can lag. Plugins that
+/// have nothing to say return an empty output, so this is a cheap wakeup.
+const PLUGIN_TICK_INTERVAL: Duration = Duration::from_secs(2);
 
 /// An event from a session or a pairing task back to the daemon.
 #[derive(Debug)]
@@ -105,6 +113,10 @@ pub struct DeviceSession {
 
 impl DeviceSession {
     /// Start a session for an authenticated, paired link without transfers.
+    ///
+    /// Convenience wrapper used by the session tests, which have no config to
+    /// pass. The daemon always uses [`DeviceSession::start_with_config`].
+    #[cfg(test)]
     pub fn start(
         peer: Identity,
         link: LinkHandle,
@@ -113,7 +125,31 @@ impl DeviceSession {
         events: mpsc::Sender<DaemonEvent>,
         limits: SessionLimits,
     ) -> Self {
-        Self::start_inner(peer, link, registry, desktop, events, limits, None)
+        Self::start_with_config(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            limits,
+            Arc::new(PluginConfig::new()),
+        )
+    }
+
+    /// Start a session with explicit plugin settings.
+    ///
+    /// The config is host-wide, so the daemon loads it once and every session
+    /// shares the same read-only view.
+    pub fn start_with_config(
+        peer: Identity,
+        link: LinkHandle,
+        registry: Arc<Registry>,
+        desktop: Desktop,
+        events: mpsc::Sender<DaemonEvent>,
+        limits: SessionLimits,
+        config: Arc<PluginConfig>,
+    ) -> Self {
+        Self::start_inner(peer, link, registry, desktop, events, limits, None, config)
     }
 
     /// Start a session with the share transfer runner.
@@ -121,6 +157,10 @@ impl DeviceSession {
     /// The runner exists only when the desktop has a Files adapter. Without one
     /// the share plugin is disabled, so no transfer intent can arrive and an
     /// outbound share is unavailable.
+    ///
+    /// Test-only, like [`DeviceSession::start`]: the daemon passes its config
+    /// through `start_with_transfers_config`.
+    #[cfg(test)]
     pub fn start_with_transfers(
         peer: Identity,
         link: LinkHandle,
@@ -141,7 +181,51 @@ impl DeviceSession {
             #[cfg(test)]
             connects: Arc::new(AtomicUsize::new(0)),
         });
-        Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps)
+        Self::start_inner(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            setup.limits,
+            deps,
+            Arc::new(PluginConfig::new()),
+        )
+    }
+
+    /// Start a session with the share transfer runner and explicit plugin
+    /// settings.
+    pub fn start_with_transfers_config(
+        peer: Identity,
+        link: LinkHandle,
+        registry: Arc<Registry>,
+        desktop: Desktop,
+        events: mpsc::Sender<DaemonEvent>,
+        setup: TransferSetup,
+        config: Arc<PluginConfig>,
+    ) -> Self {
+        let deps = desktop.files.clone().map(|files| TransferDeps {
+            peer: PayloadPeer {
+                device_id: peer.device_id.clone(),
+                address: setup.remote_addr,
+                certificate: setup.certificate,
+            },
+            files,
+            payloads: setup.payloads,
+            max_queued_receives: setup.limits.max_queued_receives,
+            #[cfg(test)]
+            connects: Arc::new(AtomicUsize::new(0)),
+        });
+        Self::start_inner(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            setup.limits,
+            deps,
+            config,
+        )
     }
 
     /// Start a session and return the connect-completion probe. Test only.
@@ -167,11 +251,21 @@ impl DeviceSession {
             connects: Arc::clone(&connects),
         });
         (
-            Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps),
+            Self::start_inner(
+                peer,
+                link,
+                registry,
+                desktop,
+                events,
+                setup.limits,
+                deps,
+                Arc::new(PluginConfig::new()),
+            ),
             connects,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_inner(
         peer: Identity,
         link: LinkHandle,
@@ -180,6 +274,7 @@ impl DeviceSession {
         events: mpsc::Sender<DaemonEvent>,
         limits: SessionLimits,
         deps: Option<TransferDeps>,
+        config: Arc<PluginConfig>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(SESSION_QUEUE);
         let (stop_tx, stop_rx) = watch::channel(None);
@@ -200,6 +295,7 @@ impl DeviceSession {
                 stop: stop_rx,
             },
             deps,
+            config,
         ));
         Self { task, handle }
     }
@@ -703,6 +799,7 @@ impl TransferRunner {
 /// One step of the session loop.
 enum SessionStep {
     Input(Option<SessionInput>),
+    Tick,
     Stop(String),
     Receive(Option<Result<(), JoinError>>),
     Connect(Option<ConnectJoin>),
@@ -725,6 +822,7 @@ struct SessionChannels {
     stop: watch::Receiver<Option<String>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     peer: Identity,
     link: LinkHandle,
@@ -733,6 +831,7 @@ async fn run(
     events: mpsc::Sender<DaemonEvent>,
     channels: SessionChannels,
     deps: Option<TransferDeps>,
+    config: Arc<PluginConfig>,
 ) {
     let SessionChannels {
         mut input,
@@ -746,7 +845,7 @@ async fn run(
         paired: true,
         connected: true,
     };
-    let mut host = DeviceHost::new(device, registry.as_ref(), desktop);
+    let mut host = DeviceHost::with_config(device, registry.as_ref(), desktop, config);
     let mut runner = deps.map(|deps| TransferRunner::new(deps, events.clone()));
 
     let dispatch = host.on_connect().await;
@@ -754,6 +853,9 @@ async fn run(
     if let Some(runner) = runner.as_mut() {
         runner.enqueue_all(transfers).await;
     }
+
+    let mut ticker = tokio::time::interval(PLUGIN_TICK_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let reason = loop {
         if let Some(runner) = runner.as_mut() {
@@ -774,6 +876,7 @@ async fn run(
                     biased;
                     reason = next_stop(&mut stop) => SessionStep::Stop(reason),
                     input = input.recv() => SessionStep::Input(input),
+                    _ = ticker.tick() => SessionStep::Tick,
                     joined = runner.receives.join_next(), if receives_open => {
                         SessionStep::Receive(joined)
                     }
@@ -790,6 +893,7 @@ async fn run(
                     biased;
                     reason = next_stop(&mut stop) => SessionStep::Stop(reason),
                     input = input.recv() => SessionStep::Input(input),
+                    _ = ticker.tick() => SessionStep::Tick,
                 }
             }
         };
@@ -802,6 +906,13 @@ async fn run(
                     break reason;
                 }
                 handle_input(input, &mut host, &mut runner, &link, &events, &device_id).await;
+            }
+            SessionStep::Tick => {
+                let dispatch = host.on_tick().await;
+                let transfers = send_dispatch(&link, &events, &device_id, dispatch).await;
+                if let Some(runner) = runner.as_mut() {
+                    runner.enqueue_all(transfers).await;
+                }
             }
             SessionStep::Receive(joined) => {
                 if let Some(runner) = runner.as_mut() {
@@ -1144,7 +1255,7 @@ mod tests {
         name: "recording",
         title: "Recording",
         status: PluginStatus::Implemented,
-        incoming: &[],
+        incoming: &[types::PING],
         outgoing: &[],
         desktop: DesktopRequirement::None,
     };
@@ -1430,6 +1541,7 @@ mod tests {
 
     struct RecordingPlugin {
         calls: Arc<Mutex<Vec<&'static str>>>,
+        ticks: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -1454,6 +1566,14 @@ mod tests {
             Ok(PluginOutput::new())
         }
 
+        async fn on_tick(
+            &mut self,
+            _ctx: &mut PluginContext<'_>,
+        ) -> Result<PluginOutput, PluginError> {
+            self.ticks.fetch_add(1, Ordering::SeqCst);
+            Ok(PluginOutput::new())
+        }
+
         async fn on_disconnect(
             &mut self,
             _ctx: &mut PluginContext<'_>,
@@ -1470,6 +1590,7 @@ mod tests {
 
     struct RecordingFactory {
         calls: Arc<Mutex<Vec<&'static str>>>,
+        ticks: Arc<AtomicUsize>,
     }
 
     impl PluginFactory for RecordingFactory {
@@ -1480,6 +1601,7 @@ mod tests {
         fn create(&self) -> Box<dyn Plugin> {
             Box::new(RecordingPlugin {
                 calls: Arc::clone(&self.calls),
+                ticks: Arc::clone(&self.ticks),
             })
         }
     }
@@ -1542,8 +1664,10 @@ mod tests {
     #[tokio::test]
     async fn disconnect_runs_on_disconnect_and_forwards_its_output() {
         let calls = Arc::new(Mutex::new(Vec::new()));
+        let ticks = Arc::new(AtomicUsize::new(0));
         let registry = Arc::new(Registry::new(vec![Box::new(RecordingFactory {
             calls: Arc::clone(&calls),
+            ticks: Arc::clone(&ticks),
         })]));
         let peer = peer_identity();
         let device_id = peer.device_id.clone();
@@ -1600,6 +1724,38 @@ mod tests {
             }
             _ => panic!("expected plugin events"),
         }
+    }
+
+    #[tokio::test]
+    async fn every_plugin_gets_periodic_ticks() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(Registry::new(vec![Box::new(RecordingFactory {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            ticks: Arc::clone(&ticks),
+        })]));
+        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let drain = tokio::spawn(async move { while link_rx.recv().await.is_some() {} });
+        let desktop = MockDesktop::new().desktop();
+        let (events_tx, _events_rx) = mpsc::channel(8);
+        let session = DeviceSession::start(
+            peer_identity(),
+            LinkHandle::from_channel(peer_id(), link_tx),
+            registry,
+            desktop,
+            events_tx,
+            SessionLimits::default(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while ticks.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the session ticks its plugins");
+
+        stop_session(session).await;
+        drain.abort();
     }
 
     #[tokio::test]
@@ -1863,11 +2019,28 @@ mod tests {
         })
         .await
         .expect("both eager connects complete");
-        let early = tokio::time::timeout(Duration::from_millis(100), events.recv()).await;
-        assert!(
-            early.is_err(),
-            "the first file is still active when the second connects"
-        );
+        // Plugins log on connect, so "no event at all" is no longer the
+        // signal here. What must not happen is a completion: the first file is
+        // still active when the second connects.
+        let deadline = Instant::now() + Duration::from_millis(100);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let Ok(Some(DaemonEvent::PluginEvents { events: batch, .. })) =
+                tokio::time::timeout(remaining, events.recv()).await
+            else {
+                break;
+            };
+            assert!(
+                !batch.iter().any(|event| matches!(
+                    event,
+                    PluginEvent::ShareCompleted { .. } | PluginEvent::ShareFailed { .. }
+                )),
+                "a transfer finished while the first file was still active: {batch:?}"
+            );
+        }
 
         let first = sender.accept_and_send(b"aaaa");
         let second = sender.accept_and_send(b"bbbb");

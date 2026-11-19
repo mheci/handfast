@@ -1,13 +1,13 @@
 //! MPRIS control plugin.
 
 use async_trait::async_trait;
-use handfast_desktop::{Media, MediaAction};
+use handfast_desktop::{Media, MediaAction, PlaybackState};
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
     LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
     PluginOutput,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::roster;
 
@@ -26,6 +26,8 @@ struct Request<'a> {
     player: Option<&'a str>,
     action: Option<(&'static str, MediaAction)>,
     volume: Option<u8>,
+    /// The peer asked for player or playback state instead of an action.
+    wants_state: bool,
 }
 
 fn parse(packet: &Packet) -> Result<Request<'_>, String> {
@@ -63,13 +65,29 @@ fn parse(packet: &Packet) -> Result<Request<'_>, String> {
             Some(value.clamp(0, 100) as u8)
         }
     };
-    if action.is_none() && volume.is_none() {
+    let wants_state = packet
+        .body
+        .get("requestNowPlaying")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || packet
+            .body
+            .get("requestPlayerList")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || packet
+            .body
+            .get("requestVolume")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    if action.is_none() && volume.is_none() && !wants_state {
         return Err("no supported action".to_string());
     }
     Ok(Request {
         player,
         action,
         volume,
+        wants_state,
     })
 }
 
@@ -100,6 +118,54 @@ async fn apply(media: &dyn Media, player: &str, request: &Request<'_>) -> Result
     Ok(())
 }
 
+/// Build the `kdeconnect.mpris` player list packet.
+fn player_list_packet(players: &[String]) -> Result<Packet, PluginError> {
+    Packet::new(
+        types::MPRIS,
+        json!({
+            "playerList": players,
+            "supportAlbumArtPayload": false,
+        }),
+    )
+    .map_err(|error| PluginError::InvalidPacket(error.to_string()))
+}
+
+/// Build the `kdeconnect.mpris` now-playing packet for one player.
+///
+/// Field names and units match the desktop client: `pos` and `length` are
+/// milliseconds, `volume` is 0-100 and the capability flags are booleans.
+fn now_playing_packet(player: &str, state: Option<&PlaybackState>) -> Result<Packet, PluginError> {
+    let mut body = serde_json::Map::new();
+    body.insert("player".to_string(), json!(player));
+    match state {
+        Some(state) => {
+            body.insert("isPlaying".to_string(), json!(state.playing));
+            body.insert("pos".to_string(), json!(state.position_ms));
+            body.insert("length".to_string(), json!(state.length_ms));
+            if let Some(title) = &state.title {
+                body.insert("title".to_string(), json!(title));
+            }
+            if let Some(artist) = &state.artist {
+                body.insert("artist".to_string(), json!(artist));
+            }
+            if let Some(volume) = state.volume {
+                body.insert("volume".to_string(), json!(volume));
+            }
+            body.insert("canPlay".to_string(), json!(true));
+            body.insert("canPause".to_string(), json!(true));
+            body.insert("canGoNext".to_string(), json!(true));
+            body.insert("canGoPrevious".to_string(), json!(true));
+        }
+        None => {
+            body.insert("isPlaying".to_string(), json!(false));
+            body.insert("canPlay".to_string(), json!(false));
+            body.insert("canPause".to_string(), json!(false));
+        }
+    }
+    Packet::new(types::MPRIS, Value::Object(body))
+        .map_err(|error| PluginError::InvalidPacket(error.to_string()))
+}
+
 /// Applies MPRIS transport and volume requests to desktop players.
 #[derive(Debug, Default)]
 pub struct MprisControlPlugin;
@@ -116,6 +182,21 @@ impl MprisControlPlugin {
 impl Plugin for MprisControlPlugin {
     fn meta(&self) -> &'static PluginMeta {
         &roster::MPRISCONTROL
+    }
+
+    async fn on_connect(
+        &mut self,
+        ctx: &mut PluginContext<'_>,
+    ) -> Result<PluginOutput, PluginError> {
+        let Some(media) = ctx.desktop.media.as_ref() else {
+            return Ok(PluginOutput::new());
+        };
+        let players = media
+            .players()
+            .await
+            .map_err(|error| PluginError::Backend(error.to_string()))?;
+        let packet = player_list_packet(&players)?;
+        Ok(PluginOutput::new().with_packet(packet))
     }
 
     async fn on_packet(
@@ -138,6 +219,9 @@ impl Plugin for MprisControlPlugin {
         let Some(media) = ctx.desktop.media.as_ref() else {
             return Err(PluginError::UnsupportedDesktop("media"));
         };
+        if request.wants_state {
+            return state_output(media.as_ref(), request.player).await;
+        }
         let targets = match request.player {
             Some(player) => vec![player.to_string()],
             None => media
@@ -183,6 +267,40 @@ impl Plugin for MprisControlPlugin {
     }
 }
 
+/// Answer a state request with the player list and/or the now-playing body.
+async fn state_output(
+    media: &dyn Media,
+    player: Option<&str>,
+) -> Result<PluginOutput, PluginError> {
+    let mut output = PluginOutput::new();
+    let players = media
+        .players()
+        .await
+        .map_err(|error| PluginError::Backend(error.to_string()))?;
+    if player.is_none() {
+        output = output.with_packet(player_list_packet(&players)?);
+    }
+    match player {
+        Some(player) => {
+            let state = media
+                .playback(player)
+                .await
+                .map_err(|error| PluginError::Backend(error.to_string()))?;
+            output = output.with_packet(now_playing_packet(player, state.as_ref())?);
+        }
+        None => {
+            for player in &players {
+                let state = media
+                    .playback(player)
+                    .await
+                    .map_err(|error| PluginError::Backend(error.to_string()))?;
+                output = output.with_packet(now_playing_packet(player, state.as_ref())?);
+            }
+        }
+    }
+    Ok(output)
+}
+
 /// Builds MPRIS control plugin instances.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MprisControlFactory;
@@ -202,10 +320,9 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    use handfast_desktop::{Desktop, MockDesktop, PlaybackState, Result as DesktopResult};
+    use handfast_desktop::{Desktop, MockDesktop, Result as DesktopResult};
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::{Device, PluginStatus};
-    use serde_json::json;
+    use handfast_runtime::{Device, PluginConfig, PluginStatus};
 
     struct RecordingMedia {
         players: Vec<String>,
@@ -285,6 +402,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         MprisControlPlugin::new().on_packet(&mut ctx, packet).await
     }

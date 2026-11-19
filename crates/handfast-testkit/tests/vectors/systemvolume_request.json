@@ -1,0 +1,8 @@
+{
+  "id": 0,
+  "type": "kdeconnect.systemvolume.request",
+  "body": {
+    "name": "speaker",
+    "volume": 55
+  }
+}

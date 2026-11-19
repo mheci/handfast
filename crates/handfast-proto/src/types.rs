@@ -12,9 +12,10 @@ pub const IDENTITY: &str = "kdeconnect.identity";
 pub const PAIR: &str = "kdeconnect.pair";
 
 /// Battery status report.
+///
+/// The type is symmetric and has no request form: a peer pushes its state and
+/// the other side records it.
 pub const BATTERY: &str = "kdeconnect.battery";
-/// Battery status request.
-pub const BATTERY_REQUEST: &str = "kdeconnect.battery.request";
 
 /// Clipboard text update.
 pub const CLIPBOARD: &str = "kdeconnect.clipboard";
@@ -136,7 +137,6 @@ pub const ALL: &[&str] = &[
     IDENTITY,
     PAIR,
     BATTERY,
-    BATTERY_REQUEST,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
     CLIPBOARD_FILE,

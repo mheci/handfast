@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,11 +20,10 @@ use handfast_net::{
     LinkManagerHandle, LocalEndpoint, PayloadService, PeerCertificate, PendingLink, ShareEvent,
     TrustTable,
 };
-use handfast_plugins::registry;
 use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
-use handfast_runtime::{PluginEvent, Registry};
+use handfast_runtime::{PluginConfig, PluginEvent, Registry};
 use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -96,6 +95,13 @@ pub struct DaemonArgs {
     /// Print this device's identity packet and exit.
     #[arg(long)]
     pub print_identity: bool,
+
+    /// Plugin settings file. Defaults to `plugins.toml` in the state directory.
+    ///
+    /// An absent file means every plugin runs with its safe defaults, which is
+    /// to say no command is executable and nothing is forwarded.
+    #[arg(long)]
+    pub config_file: Option<PathBuf>,
 }
 
 impl Default for DaemonArgs {
@@ -107,6 +113,7 @@ impl Default for DaemonArgs {
             discovery_port: handfast_net::DISCOVERY_PORT,
             log_file: None,
             print_identity: false,
+            config_file: None,
         }
     }
 }
@@ -136,8 +143,24 @@ pub async fn run(
     identity::ensure_owned_state_path(&state_path)?;
     let device_id = identity::load_or_create_device_id(&store)?;
 
+    let config_path = args
+        .config_file
+        .clone()
+        .unwrap_or_else(|| data_dir.join("plugins.toml"));
+    let plugin_config = Arc::new(load_plugin_config(&config_path)?);
+
     let desktop = Desktop::default();
-    let registry = Arc::new(registry());
+    // An SFTP server needs `sshd`; without it the plugin is registered but has
+    // no backend, so it answers start requests with a reason instead of
+    // silently advertising a server it cannot start.
+    let sftp = if backends::sftp_available() {
+        Some(Arc::new(handfast_plugins::DesktopSftpServer::new(
+            backends::sftp_server(),
+        )) as Arc<dyn handfast_plugins::SftpServer>)
+    } else {
+        None
+    };
+    let registry = Arc::new(handfast_plugins::registry_with_sftp(sftp));
     let capabilities = registry.capabilities(&desktop)?;
     let name = device_name();
 
@@ -189,6 +212,7 @@ pub async fn run(
         std::env::var_os("WAYLAND_DISPLAY").is_some(),
         backends::program_available,
     );
+    let desktop = install_config_backends(desktop, &plugin_config);
     let capabilities = registry.capabilities(&desktop)?;
     tracing::info!(
         capabilities = ?desktop.capabilities(),
@@ -308,6 +332,7 @@ pub async fn run(
     let mut daemon = Daemon {
         store,
         registry,
+        plugin_config,
         desktop,
         links,
         payloads,
@@ -392,9 +417,34 @@ pub async fn run(
     Ok(())
 }
 
+/// Load plugin settings, treating an absent file as an empty config.
+///
+/// A file that exists but cannot be parsed is a hard error: silently falling
+/// back to "no commands allowed" would look identical to a typo'd allowlist
+/// and would be very hard to notice.
+fn load_plugin_config(path: &Path) -> Result<PluginConfig, Box<dyn Error + Send + Sync>> {
+    match PluginConfig::load(path) {
+        Ok(config) => {
+            let sections: Vec<&str> = config.sections().collect();
+            tracing::info!(path = %path.display(), sections = ?sections, "plugin config loaded");
+            Ok(config)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!(
+                path = %path.display(),
+                "no plugin config; plugins run with their safe defaults"
+            );
+            Ok(PluginConfig::new())
+        }
+        Err(error) => Err(format!("plugin config {}: {error}", path.display()).into()),
+    }
+}
+
 struct Daemon {
     store: Arc<Store>,
     registry: Arc<Registry>,
+    /// Host-wide plugin settings, shared by every session.
+    plugin_config: Arc<PluginConfig>,
     desktop: Desktop,
     links: LinkManagerHandle,
     payloads: Arc<PayloadService>,
@@ -437,7 +487,7 @@ impl Daemon {
             max_queued_receives: self.limits.max_queued_receives,
         };
         if self.desktop.files.is_some() {
-            DeviceSession::start_with_transfers(
+            DeviceSession::start_with_transfers_config(
                 peer,
                 link,
                 Arc::clone(&self.registry),
@@ -449,15 +499,17 @@ impl Daemon {
                     payloads: Arc::clone(&self.payloads),
                     limits: session_limits,
                 },
+                Arc::clone(&self.plugin_config),
             )
         } else {
-            DeviceSession::start(
+            DeviceSession::start_with_config(
                 peer,
                 link,
                 Arc::clone(&self.registry),
                 self.desktop.clone(),
                 self.events.clone(),
                 session_limits,
+                Arc::clone(&self.plugin_config),
             )
         }
     }
@@ -1089,6 +1141,30 @@ fn device_name() -> String {
         .unwrap_or_else(|_| "Handfast desktop".to_string())
 }
 
+/// Install the backends whose presence is a *configuration* decision rather
+/// than a program lookup.
+///
+/// Address book and virtual display are different from the rest: a machine can
+/// have `mmcli` installed and still have no modem, and a machine can have
+/// `wlay` installed without the user wanting a second monitor. These are only
+/// installed when the user asked for them in `plugins.toml`, so an
+/// unconfigured host does not advertise a capability it cannot honour.
+fn install_config_backends(mut desktop: Desktop, config: &PluginConfig) -> Desktop {
+    if let Some(directory) = config.get("contacts", "directory") {
+        if !directory.trim().is_empty() {
+            desktop.contacts = Some(backends::contacts(directory));
+        }
+    }
+    // A virtual display needs either backend program; the adapter picks.
+    if backends::display_available() {
+        desktop.display = Some(backends::display());
+    }
+    if backends::telephony_available() {
+        desktop.telephony = Some(backends::telephony());
+    }
+    desktop
+}
+
 fn install_backends(
     mut desktop: Desktop,
     wayland: bool,
@@ -1120,6 +1196,17 @@ fn install_backends(
     if available("loginctl") {
         desktop.lock = Some(backends::lock());
     }
+    // Remote input needs an X display: xdotool speaks XTest to Xwayland on a
+    // Wayland session, and to the X server directly otherwise.
+    if available("xdotool") {
+        desktop.input = Some(backends::input());
+    }
+    // Battery and the presentation view need no external tool: sysfs is read
+    // directly and the view is drawn in process. Both are advertised always,
+    // exactly as the desktop client does, and a host without a battery reports
+    // charge -1 rather than hiding the plugin.
+    desktop.battery = Some(backends::battery());
+    desktop.presenter = Some(backends::presenter());
     desktop
 }
 
@@ -1145,8 +1232,16 @@ mod tests {
 
     #[test]
     fn available_tools_select_their_backends() {
+        // Battery and presenter are tool-independent, so even a bare host has
+        // them; every other adapter follows its program.
+        let bare = DesktopCapabilities {
+            battery: true,
+            presenter: true,
+            ..DesktopCapabilities::default()
+        };
+
         let none = install_backends(Desktop::default(), false, |_| false);
-        assert_eq!(none.capabilities(), DesktopCapabilities::default());
+        assert_eq!(none.capabilities(), bare);
 
         let all = install_backends(Desktop::default(), false, |_| true);
         assert_eq!(
@@ -1156,11 +1251,16 @@ mod tests {
                 notifications: true,
                 media: true,
                 volume: true,
-                input: false,
+                input: true,
                 screensaver: true,
                 lock: true,
                 shell: true,
                 files: false,
+                battery: true,
+                presenter: true,
+                telephony: false,
+                contacts: false,
+                display: false,
             }
         );
 
@@ -1183,26 +1283,24 @@ mod tests {
 
     #[test]
     fn capabilities_follow_the_installed_adapters() {
-        let registry = registry();
+        let registry = handfast_plugins::registry();
         let packets = [
             ("xclip", &[types::CLIPBOARD, types::CLIPBOARD_CONNECT][..]),
             (
                 "notify-send",
-                &[
-                    types::NOTIFICATION,
-                    types::FINDMYPHONE_REQUEST,
-                    types::FINDTHISDEVICE_PRIVATE,
-                ][..],
+                &[types::NOTIFICATION, types::FINDMYPHONE_REQUEST][..],
             ),
-            ("playerctl", &[types::MPRIS_REQUEST, types::TELEPHONY][..]),
-            (
-                "wpctl",
-                &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST][..],
-            ),
-            ("loginctl", &[types::LOCK_REQUEST][..]),
+            ("playerctl", &[types::MPRIS_REQUEST][..]),
+            // `accepts` asks about incomingCapabilities, so only the types the
+            // plugin receives belong here: systemvolume sends the sink list.
+            ("wpctl", &[types::SYSTEMVOLUME_REQUEST][..]),
+            ("loginctl", &[types::LOCK_REQUEST, types::LOCK][..]),
+            ("xdotool", &[types::MOUSEPAD_REQUEST][..]),
         ];
 
         for (tool, accepted) in packets {
+            // The tool-independent adapters are present either way; the loop
+            // only exercises the ones that follow a program.
             let without = install_backends(Desktop::default(), false, |program| program != tool);
             let capabilities = registry.capabilities(&without).unwrap();
             for packet in accepted {
@@ -1222,7 +1320,7 @@ mod tests {
 
     #[test]
     fn shell_and_screensaver_adapters_add_no_packets() {
-        let registry = registry();
+        let registry = handfast_plugins::registry();
         let desktop = install_backends(Desktop::default(), false, |program| {
             program == "xdg-open" || program == "systemd-inhibit"
         });
@@ -1230,7 +1328,11 @@ mod tests {
         assert!(desktop.capabilities().screensaver);
 
         let capabilities = registry.capabilities(&desktop).unwrap();
-        assert!(!capabilities.accepts(types::RUNCOMMAND_REQUEST));
+        // `runcommand` runs a configured command and needs no desktop adapter,
+        // so it is advertised regardless of which tools are installed. The
+        // allowlist, not the capability list, is what keeps it inert.
+        assert!(capabilities.accepts(types::RUNCOMMAND_REQUEST));
+        // `lockdevice` follows `loginctl`, which is not installed here.
         assert!(!capabilities.accepts(types::LOCK_REQUEST));
     }
 
@@ -1434,7 +1536,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("create the test state directory");
         let store =
             Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
-        let registry = Arc::new(registry());
+        let registry = Arc::new(handfast_plugins::registry());
         let mock = MockDesktop::with_files().expect("build the mock desktop");
         let desktop = mock.desktop();
 
@@ -1485,6 +1587,7 @@ mod tests {
         let mut daemon = Daemon {
             store,
             registry,
+            plugin_config: Arc::new(PluginConfig::new()),
             desktop,
             links: links.clone(),
             payloads,
@@ -1693,7 +1796,8 @@ mod tests {
         let (shutdown, _shutdown_rx) = oneshot::channel();
         let daemon = Daemon {
             store,
-            registry: Arc::new(registry()),
+            registry: Arc::new(handfast_plugins::registry()),
+            plugin_config: Arc::new(PluginConfig::new()),
             desktop: Desktop::default(),
             links: links.clone(),
             payloads: Arc::new(PayloadService::new(

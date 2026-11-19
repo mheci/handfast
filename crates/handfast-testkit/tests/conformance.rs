@@ -28,6 +28,41 @@ fn production_codec_decodes_every_golden_vector() {
 }
 
 #[test]
+fn every_implemented_plugin_has_at_least_one_golden_vector() {
+    // The parity doc requires a golden vector per plugin. This ties the
+    // requirement to the roster so a new plugin cannot be added without one.
+    let vectors = load_dir(vector_dir()).unwrap();
+    let covered: std::collections::HashSet<&str> = vectors
+        .iter()
+        .filter_map(|vector| vector.packet.get("type")?.as_str())
+        .collect();
+
+    let mut missing = Vec::new();
+    for meta in handfast_plugins::metas()
+        .iter()
+        .filter(|meta| meta.status == handfast_runtime::PluginStatus::Implemented)
+    {
+        let packets: Vec<&str> = meta
+            .incoming
+            .iter()
+            .chain(meta.outgoing.iter())
+            .copied()
+            .collect();
+        // A connection-driven plugin (screensaver_inhibit) speaks no packets.
+        if packets.is_empty() {
+            continue;
+        }
+        if !packets.iter().any(|packet| covered.contains(packet)) {
+            missing.push(meta.name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "plugins with no golden vector: {missing:?}"
+    );
+}
+
+#[test]
 fn independent_and_production_frames_agree() {
     let wire = WirePacket {
         id: 0,

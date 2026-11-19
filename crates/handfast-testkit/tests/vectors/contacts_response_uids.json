@@ -1,0 +1,7 @@
+{
+  "id": 0,
+  "type": "kdeconnect.contacts.response_uids_timestamps",
+  "body": {
+    "uids": {"alice": 1700000000000}
+  }
+}

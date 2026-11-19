@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -9,6 +10,7 @@ use futures_util::FutureExt;
 use handfast_desktop::Desktop;
 use handfast_proto::Packet;
 
+use crate::config::PluginConfig;
 use crate::device::Device;
 use crate::error::{PluginError, RuntimeError};
 use crate::event::PluginEvent;
@@ -46,20 +48,27 @@ enum Call<'a> {
     Connect,
     Packet(&'a Packet),
     Disconnect,
+    Tick,
 }
 
 async fn invoke(
     plugin: &mut dyn Plugin,
     device: &Device,
     desktop: &Desktop,
+    config: &PluginConfig,
     call: Call<'_>,
 ) -> Result<PluginOutput, RuntimeError> {
     let meta = plugin.meta();
-    let mut ctx = PluginContext { device, desktop };
+    let mut ctx = PluginContext {
+        device,
+        desktop,
+        config,
+    };
     let future: BoxFuture<'_, Result<PluginOutput, PluginError>> = match call {
         Call::Connect => Box::pin(plugin.on_connect(&mut ctx)),
         Call::Packet(packet) => Box::pin(plugin.on_packet(&mut ctx, packet)),
         Call::Disconnect => Box::pin(plugin.on_disconnect(&mut ctx)),
+        Call::Tick => Box::pin(plugin.on_tick(&mut ctx)),
     };
     match tokio::time::timeout(PLUGIN_TIMEOUT, AssertUnwindSafe(future).catch_unwind()).await {
         Ok(Ok(Ok(output))) => Ok(output),
@@ -76,6 +85,7 @@ async fn invoke(
 pub struct DeviceHost {
     device: Device,
     desktop: Desktop,
+    config: Arc<PluginConfig>,
     plugins: Vec<Box<dyn Plugin>>,
     enabled: HashSet<&'static str>,
     failed: HashSet<&'static str>,
@@ -85,6 +95,17 @@ impl DeviceHost {
     /// Build a host from a registry.
     #[must_use]
     pub fn new(device: Device, registry: &Registry, desktop: Desktop) -> Self {
+        Self::with_config(device, registry, desktop, Arc::new(PluginConfig::new()))
+    }
+
+    /// Build a host from a registry with explicit plugin settings.
+    #[must_use]
+    pub fn with_config(
+        device: Device,
+        registry: &Registry,
+        desktop: Desktop,
+        config: Arc<PluginConfig>,
+    ) -> Self {
         let plugins = registry.create_all();
         let enabled = plugins
             .iter()
@@ -97,6 +118,7 @@ impl DeviceHost {
         Self {
             device,
             desktop,
+            config,
             plugins,
             enabled,
             failed: HashSet::new(),
@@ -139,6 +161,7 @@ impl DeviceHost {
         let Self {
             device,
             desktop,
+            config,
             plugins,
             enabled,
             failed,
@@ -151,7 +174,7 @@ impl DeviceHost {
             {
                 continue;
             }
-            match invoke(plugin.as_mut(), device, desktop, Call::Connect).await {
+            match invoke(plugin.as_mut(), device, desktop, config, Call::Connect).await {
                 Ok(output) => result.absorb(output),
                 Err(error) => {
                     newly_failed.push(meta.name);
@@ -172,6 +195,7 @@ impl DeviceHost {
         let Self {
             device,
             desktop,
+            config,
             plugins,
             enabled,
             failed,
@@ -187,7 +211,52 @@ impl DeviceHost {
             if !meta.incoming.contains(&packet.ptype.as_str()) {
                 continue;
             }
-            match invoke(plugin.as_mut(), device, desktop, Call::Packet(packet)).await {
+            match invoke(
+                plugin.as_mut(),
+                device,
+                desktop,
+                config,
+                Call::Packet(packet),
+            )
+            .await
+            {
+                Ok(output) => result.absorb(output),
+                Err(error) => {
+                    newly_failed.push(meta.name);
+                    result.errors.push(error);
+                }
+            }
+        }
+        for name in newly_failed {
+            failed.insert(name);
+        }
+        result
+    }
+
+    /// Give every enabled plugin a chance to originate packets.
+    ///
+    /// Called once per session tick. A failing plugin is marked failed exactly
+    /// as a failed packet call would be, so a broken timer path cannot spin.
+    pub async fn on_tick(&mut self) -> Dispatch {
+        let mut result = Dispatch::default();
+        let mut newly_failed = Vec::new();
+        let Self {
+            device,
+            desktop,
+            config,
+            plugins,
+            enabled,
+            failed,
+        } = self;
+        for plugin in plugins.iter_mut() {
+            let meta = plugin.meta();
+            if meta.status != PluginStatus::Implemented
+                || !enabled.contains(meta.name)
+                || failed.contains(meta.name)
+            {
+                continue;
+            }
+            match invoke(plugin.as_mut(), device, desktop, config, Call::Tick).await {
                 Ok(output) => result.absorb(output),
                 Err(error) => {
                     newly_failed.push(meta.name);
@@ -209,6 +278,7 @@ impl DeviceHost {
         let Self {
             device,
             desktop,
+            config,
             plugins,
             enabled,
             ..
@@ -218,7 +288,7 @@ impl DeviceHost {
             if meta.status != PluginStatus::Implemented || !enabled.contains(meta.name) {
                 continue;
             }
-            match invoke(plugin.as_mut(), device, desktop, Call::Disconnect).await {
+            match invoke(plugin.as_mut(), device, desktop, config, Call::Disconnect).await {
                 Ok(output) => result.absorb(output),
                 Err(error) => result.errors.push(error),
             }

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::error::{DesktopError, Result};
 use crate::model::VolumeState;
-use crate::traits::Volume;
+use crate::traits::{AudioSink, Volume};
 
 const PROGRAM: &str = "wpctl";
 const SINK: &str = "@DEFAULT_AUDIO_SINK@";
@@ -122,6 +122,116 @@ impl Volume for WpctlVolume {
             .await?;
         Ok(())
     }
+
+    async fn sinks(&self) -> Result<Vec<AudioSink>> {
+        let status = self.run(&["status"]).await?;
+        let mut sinks = parse_sinks(&status.stdout)?;
+        if sinks.is_empty() {
+            // A host without a parseable status still gets one entry: the
+            // default sink, which `get` already understands.
+            let state = self.get().await?;
+            return Ok(vec![AudioSink {
+                name: "default".to_string(),
+                description: "System volume".to_string(),
+                volume: i64::from(state.percent),
+                max_volume: 100,
+                muted: state.muted,
+                enabled: true,
+            }]);
+        }
+        for sink in &mut sinks {
+            // `wpctl` reports fractions, so read each sink back for the exact
+            // value instead of trusting the status line's bracketed number.
+            let id = sink.name.clone();
+            if let Ok(output) = self.run(&["get-volume", id.as_str()]).await {
+                if let Ok(state) = parse_volume(&output.stdout) {
+                    sink.volume = i64::from(state.percent);
+                    sink.muted = state.muted;
+                }
+            }
+        }
+        Ok(sinks)
+    }
+
+    async fn set_sink(&self, name: &str, volume: Option<i64>, muted: Option<bool>) -> Result<()> {
+        if let Some(volume) = volume {
+            let percent = format!("{}%", volume.clamp(0, 100));
+            self.run(&["set-volume", name, percent.as_str()]).await?;
+        }
+        if let Some(muted) = muted {
+            self.run(&["set-mute", name, if muted { "1" } else { "0" }])
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+/// Parse one `wpctl status` line describing a sink.
+///
+/// A status block line looks like
+/// `│  *   47. Built-in Audio Analog Stereo   [vol: 0.45]`.
+/// A `*` marks the default sink. The id is the numeric token before the `.` and
+/// the name is everything after it, with the bracketed volume stripped.
+fn parse_status_line(line: &str) -> Option<(bool, String, String)> {
+    let trimmed = line.trim_start_matches(|character: char| {
+        character.is_whitespace() || matches!(character, '│' | '├' | '─' | '└' | '*' | '+')
+    });
+    // `wpctl` puts the default marker in the first column after the tree glyph.
+    let is_default = line
+        .trim_start_matches(|character: char| character.is_whitespace() || character == '│')
+        .starts_with('*');
+    let (id, rest) = trimmed.split_once('.')?;
+    if id.trim().parse::<u32>().is_err() {
+        return None;
+    }
+    let mut rest = rest.trim();
+    // `wpctl` appends the current volume in brackets.
+    if let Some(index) = rest.find("[vol:") {
+        rest = rest[..index].trim_end();
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    Some((is_default, id.trim().to_string(), rest.to_string()))
+}
+
+/// Parse `wpctl status` output into the sinks under the `Sinks:` block.
+fn parse_sinks(stdout: &[u8]) -> Result<Vec<AudioSink>> {
+    let text = std::str::from_utf8(stdout)
+        .map_err(|_| DesktopError::Backend("wpctl returned non-UTF-8 output".to_string()))?;
+    let mut sinks = Vec::new();
+    let mut in_sinks = false;
+    for line in text.lines() {
+        if line.contains("Sinks:") {
+            in_sinks = true;
+            continue;
+        }
+        if line.contains("Sources:")
+            || line.contains("Filters:")
+            || line.contains("Clients:")
+            || line.contains("Streams:")
+        {
+            // The list of sinks is over; a later `Sinks:` under a stream
+            // section must not be mistaken for another device list.
+            in_sinks = false;
+            continue;
+        }
+        if !in_sinks {
+            continue;
+        }
+        let Some((enabled, id, description)) = parse_status_line(line) else {
+            continue;
+        };
+        sinks.push(AudioSink {
+            name: id,
+            description,
+            volume: 0,
+            max_volume: 100,
+            muted: false,
+            enabled,
+        });
+    }
+    Ok(sinks)
 }
 
 fn unexpected(text: &str) -> DesktopError {
@@ -151,6 +261,10 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    /// A trimmed capture of real `wpctl status` layout, box characters included.
+    const STATUS_FIXTURE: &str =
+        "PipeWire 'pipewire-0'\n\nAudio\n\u{251c}\u{2500} Devices:\n\u{2502}  \u{251c}\u{2500} Sinks:\n\u{2502}  \u{2502}  *   47. Built-in Audio Analog Stereo        [vol: 0.45]\n\u{2502}  \u{2502}      52. HDMI Output                        [vol: 1.00]\n\u{2502}  \u{2514}\u{2500} Sources:\n\u{2502}      58. Built-in Audio Analog Stereo        [vol: 1.00]\n";
 
     enum Reply {
         Output {
@@ -310,6 +424,112 @@ mod tests {
             ),
             "unexpected error: {error}"
         );
+    }
+
+    struct ScriptedRunner {
+        replies: Mutex<Vec<Vec<u8>>>,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl ScriptedRunner {
+        fn new(replies: Vec<&[u8]>) -> Arc<Self> {
+            Arc::new(Self {
+                replies: Mutex::new(replies.into_iter().map(<[u8]>::to_vec).collect()),
+                calls: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl CommandRunner for ScriptedRunner {
+        async fn run(&self, args: &[&str]) -> io::Result<CommandOutput> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            let stdout = {
+                let mut replies = self.replies.lock().unwrap();
+                if replies.is_empty() {
+                    Vec::new()
+                } else {
+                    replies.remove(0)
+                }
+            };
+            Ok(CommandOutput {
+                success: true,
+                code: Some(0),
+                stdout,
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn sinks_parse_the_status_block_and_read_each_sink() {
+        let runner = ScriptedRunner::new(vec![
+            STATUS_FIXTURE.as_bytes(),
+            b"Volume: 0.45\n",
+            b"Volume: 1.00 [MUTED]\n",
+        ]);
+        let volume = WpctlVolume::with_runner(Arc::clone(&runner) as Arc<dyn CommandRunner>);
+
+        let sinks = volume.sinks().await.unwrap();
+
+        assert_eq!(sinks.len(), 2, "two sinks, not the source");
+        assert_eq!(sinks[0].name, "47");
+        assert_eq!(sinks[0].description, "Built-in Audio Analog Stereo");
+        assert!(sinks[0].enabled, "the starred sink is the default");
+        assert_eq!(sinks[0].volume, 45);
+        assert!(!sinks[0].muted);
+        assert_eq!(sinks[1].name, "52");
+        assert_eq!(sinks[1].description, "HDMI Output");
+        assert!(!sinks[1].enabled);
+        assert_eq!(sinks[1].volume, 100);
+        assert!(sinks[1].muted);
+        assert_eq!(
+            runner.calls(),
+            vec![
+                call(&["status"]),
+                call(&["get-volume", "47"]),
+                call(&["get-volume", "52"]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn set_sink_addresses_the_named_sink() {
+        let (volume, runner) = volume(Reply::Output {
+            code: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
+
+        volume.set_sink("52", Some(30), Some(true)).await.unwrap();
+
+        assert_eq!(
+            runner.calls(),
+            vec![
+                call(&["set-volume", "52", "30%"]),
+                call(&["set-mute", "52", "1"]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn set_sink_without_a_volume_only_toggles_mute() {
+        let (volume, runner) = volume(Reply::Output {
+            code: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
+
+        volume.set_sink("47", None, Some(false)).await.unwrap();
+
+        assert_eq!(runner.calls(), vec![call(&["set-mute", "47", "0"])]);
     }
 
     #[tokio::test]

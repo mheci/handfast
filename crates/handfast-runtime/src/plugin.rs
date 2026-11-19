@@ -1,6 +1,7 @@
 //! Plugin contracts and registry.
 
 use async_trait::async_trait;
+
 use handfast_desktop::Desktop;
 use handfast_proto::{Capabilities, Packet};
 
@@ -47,6 +48,10 @@ pub enum DesktopRequirement {
     Contacts,
     /// Virtual display output.
     Display,
+    /// Host battery reporting.
+    Battery,
+    /// A fullscreen presentation view.
+    Presenter,
 }
 
 /// Static plugin metadata. This is the single source of truth for capabilities.
@@ -91,6 +96,19 @@ impl PluginOutput {
         self
     }
 
+    /// Append a packet if one could be built.
+    ///
+    /// Plugins whose packet types and bodies are constants normally cannot
+    /// fail to build one, but dropping a single packet is always better than
+    /// unwrapping inside a device session.
+    #[must_use]
+    pub fn with_optional_packet(mut self, packet: Option<Packet>) -> Self {
+        if let Some(packet) = packet {
+            self.packets.push(packet);
+        }
+        self
+    }
+
     /// Append an event.
     #[must_use]
     pub fn with_event(mut self, event: PluginEvent) -> Self {
@@ -112,6 +130,11 @@ pub struct PluginContext<'a> {
     pub device: &'a Device,
     /// Desktop adapters on this host.
     pub desktop: &'a Desktop,
+    /// Host-wide plugin settings, loaded once at start.
+    ///
+    /// Read-only: a plugin that needs new settings is reconfigured by
+    /// restarting the daemon, so no plugin can edit what governs its peers.
+    pub config: &'a crate::config::PluginConfig,
 }
 
 /// A fault-isolated packet handler.
@@ -140,6 +163,16 @@ pub trait Plugin: Send + Sync {
         &mut self,
         _ctx: &mut PluginContext<'_>,
     ) -> Result<PluginOutput, PluginError> {
+        Ok(PluginOutput::new())
+    }
+
+    /// Periodic opportunity to originate packets from local state.
+    ///
+    /// The session calls this once per tick for every enabled plugin. Like the
+    /// other hooks the output's packets are sent to the peer and its events go
+    /// to the daemon. A plugin that has nothing to say returns an empty output,
+    /// which is the default.
+    async fn on_tick(&mut self, _ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
         Ok(PluginOutput::new())
     }
 }
@@ -219,8 +252,10 @@ pub(crate) fn desktop_available(desktop: &Desktop, requirement: DesktopRequireme
         DesktopRequirement::Lock => desktop.lock.is_some(),
         DesktopRequirement::Shell => desktop.shell.is_some(),
         DesktopRequirement::Files => desktop.files.is_some(),
-        DesktopRequirement::Telephony
-        | DesktopRequirement::Contacts
-        | DesktopRequirement::Display => false,
+        DesktopRequirement::Battery => desktop.battery.is_some(),
+        DesktopRequirement::Presenter => desktop.presenter.is_some(),
+        DesktopRequirement::Telephony => desktop.telephony.is_some(),
+        DesktopRequirement::Contacts => desktop.contacts.is_some(),
+        DesktopRequirement::Display => desktop.display.is_some(),
     }
 }

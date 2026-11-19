@@ -13,6 +13,9 @@ pub mod host;
 pub mod plugin;
 pub mod transfer;
 
+pub mod config;
+
+pub use config::PluginConfig;
 pub use device::Device;
 pub use error::{PluginError, RuntimeError};
 pub use event::{BatteryState, Event, LogLevel, PluginEvent};

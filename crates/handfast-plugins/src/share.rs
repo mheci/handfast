@@ -182,7 +182,7 @@ mod tests {
         ShareBatch, ShareFile,
     };
     use handfast_proto::{DeviceId, DeviceName, DeviceType, PayloadTransferInfo};
-    use handfast_runtime::Device;
+    use handfast_runtime::{Device, PluginConfig};
     use serde_json::json;
 
     fn device() -> Device {
@@ -206,6 +206,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         plugin.on_packet(&mut ctx, packet).await.unwrap()
     }

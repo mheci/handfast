@@ -8,8 +8,14 @@ use async_trait::async_trait;
 
 use crate::error::{DesktopError, Result};
 use crate::files::{FileLimits, Files, FilesError, LocalFiles};
-use crate::model::{KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, VolumeState};
-use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
+use crate::model::{
+    CallEvent, ContactRecord, KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent,
+    VirtualDisplay, VolumeState,
+};
+use crate::traits::{
+    AudioSink, Battery, BatteryStatus, Clipboard, Contacts, Display, Input, Lock, Media, Notifier,
+    Presenter, Screensaver, Shell, Telephony, Volume,
+};
 use crate::Desktop;
 
 /// Recorded synthetic input.
@@ -19,6 +25,16 @@ pub enum InputEvent {
     Pointer(PointerEvent),
     /// Keyboard event.
     Key(KeyEvent),
+    /// Absolute pointer position, as a screen fraction, and whether the
+    /// primary button was down for the sample.
+    Absolute {
+        /// Horizontal position, 0.0-1.0 of the screen width.
+        x: f64,
+        /// Vertical position, 0.0-1.0 of the screen height.
+        y: f64,
+        /// Whether the primary button was held for this sample.
+        pressed: bool,
+    },
 }
 
 /// Counts lock calls made through the mock desktop.
@@ -52,6 +68,11 @@ struct MockState {
     shell_urls: Mutex<Vec<String>>,
     inhibited: Mutex<bool>,
     media_actions: Mutex<Vec<(String, MediaAction)>>,
+    battery: Mutex<BatteryStatus>,
+    presentations: Mutex<Vec<Option<(f32, f32)>>>,
+    calls: Mutex<Vec<CallEvent>>,
+    contacts: Mutex<Vec<ContactRecord>>,
+    display: Mutex<Option<VirtualDisplay>>,
 }
 
 /// A desktop backend that records every operation.
@@ -80,6 +101,11 @@ impl MockDesktop {
             shell: Some(Arc::clone(&backend) as Arc<dyn Shell>),
             files: None,
             lock: Some(Arc::clone(&lock) as Arc<dyn Lock>),
+            battery: Some(Arc::clone(&backend) as Arc<dyn Battery>),
+            presenter: Some(Arc::clone(&backend) as Arc<dyn Presenter>),
+            telephony: Some(Arc::clone(&backend) as Arc<dyn Telephony>),
+            contacts: Some(Arc::clone(&backend) as Arc<dyn Contacts>),
+            display: Some(Arc::clone(&backend) as Arc<dyn Display>),
         };
         Self {
             state,
@@ -207,10 +233,67 @@ impl MockDesktop {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Current mock battery state.
+    #[must_use]
+    pub fn battery(&self) -> BatteryStatus {
+        *self
+            .state
+            .battery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Replace the mock battery state.
+    pub fn set_battery(&self, status: BatteryStatus) {
+        *self
+            .state
+            .battery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
+    }
+
+    /// Presentation view calls: `Some((x, y))` for a move, `None` for a stop.
+    #[must_use]
+    pub fn presentations(&self) -> Vec<Option<(f32, f32)>> {
+        self.state
+            .presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Lock calls recorded by the mock lock adapter.
     #[must_use]
     pub fn lock_calls(&self) -> usize {
         self.lock.calls()
+    }
+
+    /// Queue a telephony event for the next poll.
+    pub fn push_call(&self, event: CallEvent) {
+        self.state
+            .calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+    }
+
+    /// Replace the mock address book.
+    pub fn set_contacts(&self, records: Vec<ContactRecord>) {
+        *self
+            .state
+            .contacts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = records;
+    }
+
+    /// Geometry of the mock virtual display, when one was enabled.
+    #[must_use]
+    pub fn virtual_display(&self) -> Option<VirtualDisplay> {
+        *self
+            .state
+            .display
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -299,6 +382,32 @@ impl Volume for MockBackend {
         };
         Ok(())
     }
+
+    async fn sinks(&self) -> Result<Vec<AudioSink>> {
+        let state = *self.lock(&self.0.volume)?;
+        Ok(vec![AudioSink {
+            name: "default".to_string(),
+            description: "System volume".to_string(),
+            volume: i64::from(state.percent),
+            max_volume: 100,
+            muted: state.muted,
+            enabled: true,
+        }])
+    }
+
+    async fn set_sink(&self, name: &str, volume: Option<i64>, muted: Option<bool>) -> Result<()> {
+        if name != "default" {
+            return Err(DesktopError::Backend(format!("unknown audio sink {name}")));
+        }
+        let mut state = self.lock(&self.0.volume)?;
+        if let Some(volume) = volume {
+            state.percent = u8::try_from(volume.clamp(0, 100)).unwrap_or(100);
+        }
+        if let Some(muted) = muted {
+            state.muted = muted;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -310,6 +419,12 @@ impl Input for MockBackend {
 
     async fn key(&self, event: KeyEvent) -> Result<()> {
         self.lock(&self.0.input)?.push(InputEvent::Key(event));
+        Ok(())
+    }
+
+    async fn pointer_absolute(&self, x: f64, y: f64, pressed: bool) -> Result<()> {
+        self.lock(&self.0.input)?
+            .push(InputEvent::Absolute { x, y, pressed });
         Ok(())
     }
 }
@@ -324,6 +439,71 @@ impl Screensaver for MockBackend {
     async fn release(&self) -> Result<()> {
         *self.lock(&self.0.inhibited)? = false;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Battery for MockBackend {
+    async fn status(&self) -> Result<BatteryStatus> {
+        Ok(*self.lock(&self.0.battery)?)
+    }
+}
+
+#[async_trait]
+impl Presenter for MockBackend {
+    async fn present(&self, x: f32, y: f32) -> Result<()> {
+        self.lock(&self.0.presentations)?.push(Some((x, y)));
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        self.lock(&self.0.presentations)?.push(None);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Telephony for MockBackend {
+    async fn poll(&self) -> Result<Vec<CallEvent>> {
+        // Polling consumes the queue, like a real modem event stream.
+        Ok(std::mem::take(&mut *self.lock(&self.0.calls)?))
+    }
+}
+
+#[async_trait]
+impl Contacts for MockBackend {
+    async fn list(&self) -> Result<Vec<(String, i64)>> {
+        Ok(self
+            .lock(&self.0.contacts)?
+            .iter()
+            .map(|record| (record.uid.clone(), record.timestamp_ms))
+            .collect())
+    }
+
+    async fn vcards(&self, uids: &[String]) -> Result<Vec<ContactRecord>> {
+        Ok(self
+            .lock(&self.0.contacts)?
+            .iter()
+            .filter(|record| uids.contains(&record.uid))
+            .cloned()
+            .collect())
+    }
+}
+
+#[async_trait]
+impl Display for MockBackend {
+    async fn enable(&self, display: VirtualDisplay) -> Result<()> {
+        *self.lock(&self.0.display)? = Some(display);
+        Ok(())
+    }
+
+    async fn disable(&self) -> Result<()> {
+        *self.lock(&self.0.display)? = None;
+        Ok(())
+    }
+
+    async fn is_enabled(&self) -> Result<bool> {
+        Ok(self.lock(&self.0.display)?.is_some())
     }
 }
 
@@ -394,11 +574,7 @@ mod tests {
         let desktop = MockDesktop::new();
         let input = desktop.desktop().input.clone().unwrap();
         input
-            .pointer(PointerEvent {
-                dx: 1.0,
-                dy: -2.0,
-                scroll: false,
-            })
+            .pointer(PointerEvent::movement(1.0, -2.0))
             .await
             .unwrap();
         input

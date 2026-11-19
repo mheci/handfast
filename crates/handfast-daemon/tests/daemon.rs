@@ -1561,7 +1561,7 @@ async fn two_queued_files_arrive_in_order() {
     let _serial = serial().await;
     let directory = tempfile::tempdir().unwrap();
     let log = directory.path().join("daemon.log");
-    let (daemon, mut peer, config, _) =
+    let (mut daemon, mut peer, config, _) =
         spawn_and_pair(directory.path(), &log, free_udp_port()).await;
 
     let first_port = free_payload_port();
@@ -1602,6 +1602,10 @@ async fn two_queued_files_arrive_in_order() {
         .expect("the second sender joins")
         .expect("sent");
 
+    // The completion is logged after the file is renamed into place, so the
+    // two can race by a few milliseconds. Wait for both lines instead of
+    // reading once, then check the order.
+    wait_for_log_count(&log, "event=\"ShareCompleted\"", 2, &mut daemon).await;
     let text = read_log(&log);
     let first_done = text
         .find("first.bin")

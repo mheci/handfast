@@ -131,7 +131,7 @@ mod tests {
     use super::*;
     use handfast_desktop::MockDesktop;
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::Device;
+    use handfast_runtime::{Device, PluginConfig};
     use serde_json::json;
 
     fn device() -> Device {
@@ -149,6 +149,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop: &desktop,
+            config: PluginConfig::empty(),
         };
         ConnectivityReportPlugin::new()
             .on_packet(&mut ctx, &packet)
@@ -227,6 +228,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop: &desktop,
+            config: PluginConfig::empty(),
         };
         let output = ConnectivityReportPlugin::new()
             .on_connect(&mut ctx)

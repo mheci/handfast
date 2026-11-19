@@ -1,0 +1,12 @@
+{
+  "id": 0,
+  "type": "kdeconnect.sms.messages",
+  "body": {
+    "conversations": [
+      {"thread_id": 7, "last_message_id": 42, "snippet": "see you", "unread": 2}
+    ],
+    "messages": [
+      {"_id": 42, "thread_id": 7, "address": "+15551234", "body": "see you", "date": 1700000000000, "type": 1, "attachments": ""}
+    ]
+  }
+}

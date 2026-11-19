@@ -53,6 +53,9 @@ impl Plugin for FindThisDevicePlugin {
         ctx: &mut PluginContext<'_>,
         packet: &Packet,
     ) -> Result<PluginOutput, PluginError> {
+        // Upstream advertises only the public ring request. The private alias is
+        // accepted as well because older desktop builds send it, but it is not
+        // part of the advertised capability set.
         if !matches!(
             packet.ptype.as_str(),
             types::FINDMYPHONE_REQUEST | types::FINDTHISDEVICE_PRIVATE
@@ -108,7 +111,7 @@ mod tests {
     use super::*;
     use handfast_desktop::MockDesktop;
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::Device;
+    use handfast_runtime::{Device, PluginConfig};
     use serde_json::json;
 
     fn device() -> Device {
@@ -124,6 +127,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         FindThisDevicePlugin::new()
             .on_packet(&mut ctx, packet)
