@@ -249,10 +249,9 @@ impl Plugin for SmsPlugin {
         let mut output = PluginOutput::new();
         for request in std::mem::take(&mut self.pending) {
             let (ptype, body) = match request {
-                Request::Conversations => (
-                    types::SMS_REQUEST_CONVERSATIONS,
-                    Value::Object(Map::new()),
-                ),
+                Request::Conversations => {
+                    (types::SMS_REQUEST_CONVERSATIONS, Value::Object(Map::new()))
+                }
                 Request::Conversation { thread_id } => (
                     types::SMS_REQUEST_CONVERSATION,
                     json!({ "thread_id": thread_id }),
@@ -297,11 +296,7 @@ impl Plugin for SmsPlugin {
             }
             types::SMS_ATTACHMENT_FILE => {
                 self.replies += 1;
-                let size = packet
-                    .body
-                    .get("size")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                let size = packet.body.get("size").and_then(Value::as_i64).unwrap_or(0);
                 Ok(PluginOutput::new().with_event(PluginEvent::Log {
                     level: LogLevel::Info,
                     message: format!("phone offered an attachment of {size} bytes"),
@@ -412,7 +407,10 @@ mod tests {
         assert_eq!(output.packets[1].body.get("thread_id"), Some(&json!(7)));
         // A global request carries no thread.
         assert!(output.packets[3].body.is_empty());
-        assert_eq!(output.packets[4].body.get("part_id"), Some(&json!("part-1")));
+        assert_eq!(
+            output.packets[4].body.get("part_id"),
+            Some(&json!("part-1"))
+        );
     }
 
     #[tokio::test]
@@ -483,7 +481,12 @@ mod tests {
     #[tokio::test]
     async fn a_messages_reply_with_a_bad_shape_is_ignored() {
         let mut plugin = SmsPlugin::new();
-        feed(&mut plugin, types::SMS_MESSAGES, json!({ "conversations": "nope" })).await;
+        feed(
+            &mut plugin,
+            types::SMS_MESSAGES,
+            json!({ "conversations": "nope" }),
+        )
+        .await;
         assert!(plugin.messages().is_empty());
         assert!(plugin.conversations().is_empty());
     }

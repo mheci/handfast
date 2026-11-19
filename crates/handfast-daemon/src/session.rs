@@ -2028,7 +2028,7 @@ mod tests {
             if remaining.is_zero() {
                 break;
             }
-            let Ok(Ok(DaemonEvent::PluginEvents { events: batch, .. })) =
+            let Ok(Some(DaemonEvent::PluginEvents { events: batch, .. })) =
                 tokio::time::timeout(remaining, events.recv()).await
             else {
                 break;

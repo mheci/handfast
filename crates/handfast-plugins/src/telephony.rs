@@ -255,10 +255,7 @@ mod tests {
     fn the_roster_entry_matches_upstream() {
         assert_eq!(roster::TELEPHONY.status, PluginStatus::Implemented);
         assert_eq!(roster::TELEPHONY.incoming, &[types::TELEPHONY]);
-        assert_eq!(
-            roster::TELEPHONY.outgoing,
-            &[types::TELEPHONY_REQUEST_MUTE]
-        );
+        assert_eq!(roster::TELEPHONY.outgoing, &[types::TELEPHONY_REQUEST_MUTE]);
     }
 
     #[tokio::test]

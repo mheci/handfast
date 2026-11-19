@@ -16,8 +16,8 @@ use async_trait::async_trait;
 use handfast_desktop::VirtualDisplay;
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
-    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
-    PluginMeta, PluginOutput,
+    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput,
 };
 use serde_json::{json, Map, Value};
 
@@ -47,8 +47,7 @@ impl RequestedDisplay {
     pub fn from_body(body: &serde_json::Map<String, Value>) -> Option<Self> {
         let width = body.get("width")?.as_u64()?;
         let height = body.get("height")?.as_u64()?;
-        let too_large =
-            width > u64::from(MAX_DIMENSION) || height > u64::from(MAX_DIMENSION);
+        let too_large = width > u64::from(MAX_DIMENSION) || height > u64::from(MAX_DIMENSION);
         if width == 0 || height == 0 || too_large {
             return None;
         }
@@ -111,7 +110,6 @@ impl Plugin for VirtualMonitorPlugin {
     fn meta(&self) -> &'static PluginMeta {
         &roster::VIRTUALMONITOR
     }
-
 
     async fn on_packet(
         &mut self,
