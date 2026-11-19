@@ -23,8 +23,8 @@
 use async_trait::async_trait;
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
-    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
-    PluginMeta, PluginOutput,
+    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput,
 };
 use serde_json::{json, Map, Value};
 
@@ -169,7 +169,10 @@ impl SmsPlugin {
                 Some(Conversation {
                     thread_id: entry.get("thread_id")?.as_i64()?,
                     last_message_id: entry.get("last_message_id").and_then(Value::as_i64),
-                    snippet: entry.get("snippet").and_then(Value::as_str).map(str::to_string),
+                    snippet: entry
+                        .get("snippet")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                     unread: entry.get("unread").and_then(Value::as_i64),
                 })
             })
@@ -194,7 +197,10 @@ impl SmsPlugin {
             let message = Message {
                 id: entry.get("_id").and_then(Value::as_i64),
                 thread_id,
-                address: entry.get("address").and_then(Value::as_str).map(str::to_string),
+                address: entry
+                    .get("address")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 body: body_text.to_string(),
                 date: entry.get("date").and_then(Value::as_i64),
                 sent: entry
@@ -235,7 +241,6 @@ impl Plugin for SmsPlugin {
     fn meta(&self) -> &'static PluginMeta {
         &roster::SMS
     }
-
 
     async fn on_tick(&mut self, _ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
         if self.pending.is_empty() {

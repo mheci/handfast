@@ -113,6 +113,10 @@ pub struct DeviceSession {
 
 impl DeviceSession {
     /// Start a session for an authenticated, paired link without transfers.
+    ///
+    /// Convenience wrapper used by the session tests, which have no config to
+    /// pass. The daemon always uses [`DeviceSession::start_with_config`].
+    #[cfg(test)]
     pub fn start(
         peer: Identity,
         link: LinkHandle,
@@ -153,6 +157,10 @@ impl DeviceSession {
     /// The runner exists only when the desktop has a Files adapter. Without one
     /// the share plugin is disabled, so no transfer intent can arrive and an
     /// outbound share is unavailable.
+    ///
+    /// Test-only, like [`DeviceSession::start`]: the daemon passes its config
+    /// through `start_with_transfers_config`.
+    #[cfg(test)]
     pub fn start_with_transfers(
         peer: Identity,
         link: LinkHandle,
@@ -814,6 +822,7 @@ struct SessionChannels {
     stop: watch::Receiver<Option<String>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     peer: Identity,
     link: LinkHandle,

@@ -77,8 +77,7 @@ impl ShareInputDevicesRemotePlugin {
         } else {
             ShareState::Idle
         };
-        if let Ok(packet) =
-            Packet::new(types::SHAREINPUTDEVICES_REQUEST, json!({ "share": share }))
+        if let Ok(packet) = Packet::new(types::SHAREINPUTDEVICES_REQUEST, json!({ "share": share }))
         {
             self.pending.push(packet);
         }
@@ -238,8 +237,8 @@ pub fn body_for_key(event: &KeyEvent) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use handfast_desktop::{Modifiers, PointerEvent};
     use handfast_desktop::MockDesktop;
+    use handfast_desktop::{Modifiers, PointerEvent};
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
     use handfast_runtime::{Device, PluginConfig, PluginStatus};
 

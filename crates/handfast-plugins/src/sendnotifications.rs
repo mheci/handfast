@@ -252,7 +252,6 @@ mod tests {
             }
         }
 
-
         /// Queue a notification, borrowing the plugin mutably and everything
         /// else immutably.
         ///
@@ -317,9 +316,8 @@ mod tests {
     #[tokio::test]
     async fn an_allowed_application_is_forwarded_with_the_upstream_fields() {
         let mut harness = Harness::new(configured("firefox,kmail"));
-        let accepted = harness.notify(
-            OutgoingNotification::new("firefox", "Download done").with_text("report.pdf"),
-        );
+        let accepted = harness
+            .notify(OutgoingNotification::new("firefox", "Download done").with_text("report.pdf"));
         assert!(accepted);
 
         let output = harness.tick().await;

@@ -24,6 +24,7 @@ async fn run_returns_when_the_shutdown_future_completes() {
         discovery_port: free_udp_port(),
         log_file: None,
         print_identity: false,
+        config_file: None,
     };
     let daemon = tokio::spawn(run(args, async {
         let _ = shutdown_rx.await;
@@ -52,6 +53,7 @@ async fn run_returns_when_the_control_channel_requests_shutdown() {
         discovery_port: free_udp_port(),
         log_file: None,
         print_identity: false,
+        config_file: None,
     };
     let daemon = tokio::spawn(run(args, std::future::pending()));
 
