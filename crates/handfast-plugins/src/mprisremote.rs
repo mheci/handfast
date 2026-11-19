@@ -280,7 +280,7 @@ impl MprisRemotePlugin {
             // A player list is authoritative: players missing from it are gone.
             self.players.retain(|name, _| announced.contains(name));
             output = output.with_event(PluginEvent::Log {
-                level: LogLevel::Debug,
+                level: LogLevel::Info,
                 message: format!("phone reports {} players", announced.len()),
             });
         }
@@ -470,7 +470,10 @@ mod tests {
         let output = tick(&mut plugin).await;
         assert_eq!(plugin.pending(), 0);
         assert_eq!(output.packets.len(), 5);
-        assert!(output.packets.iter().all(|p| p.ptype == types::MPRIS_REQUEST));
+        assert!(output
+            .packets
+            .iter()
+            .all(|p| p.ptype == types::MPRIS_REQUEST));
         assert_eq!(
             output.packets[0].body,
             *json!({ "requestPlayerList": true }).as_object().unwrap()
@@ -484,7 +487,10 @@ mod tests {
             output.packets[1].body.get("requestVolume"),
             Some(&json!(true))
         );
-        assert_eq!(output.packets[2].body.get("action"), Some(&json!("PlayPause")));
+        assert_eq!(
+            output.packets[2].body.get("action"),
+            Some(&json!("PlayPause"))
+        );
         // Volume above 100 is clamped to the wire range.
         assert_eq!(output.packets[3].body.get("setVolume"), Some(&json!(100)));
         // Seek keeps the signed millisecond offset and the wire spelling.
@@ -499,7 +505,9 @@ mod tests {
         let mut plugin = MprisRemotePlugin::new();
         assert!(plugin.request_now_playing("").is_err());
         assert!(plugin.control("vlc", "Shuffle").is_err());
-        assert!(plugin.set_volume(&"x".repeat(MAX_PLAYER_BYTES + 1), 10).is_err());
+        assert!(plugin
+            .set_volume(&"x".repeat(MAX_PLAYER_BYTES + 1), 10)
+            .is_err());
         assert!(plugin.seek("vlc", 0).is_err());
         assert!(plugin.seek("vlc", MAX_SEEK_MS + 1).is_err());
         assert_eq!(plugin.pending(), 0);
@@ -524,8 +532,8 @@ mod tests {
     #[tokio::test]
     async fn other_packets_are_ignored() {
         let mut plugin = MprisRemotePlugin::new();
-        let packet = Packet::from_body(types::MPRIS_REQUEST, &json!({ "requestPlayerList": true }))
-            .unwrap();
+        let packet =
+            Packet::from_body(types::MPRIS_REQUEST, &json!({ "requestPlayerList": true })).unwrap();
         assert!(feed(&mut plugin, &packet).await.packets.is_empty());
         assert!(plugin.players().is_empty());
     }
