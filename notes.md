@@ -235,3 +235,31 @@ Design risks carried into implementation:
 - Pairing clock skew and Windows state-file and incoming-file ACLs remain open.
 - The unpaired idle timeout must not close a link inside the 30-second pairing window.
 - The testkit TLS peer duplicates handshake logic on purpose.
+
+## Wave 19 — capability parity and the input plugin (PR #275)
+
+The roster was written from memory rather than from upstream
+`plugins/*/kdeconnect_*.json`. A scripted comparison found 17 of 31 plugins
+advertising the wrong direction or a type no peer sends; the worst was
+`kdeconnect.battery.request`, which does not exist. Every plugin now matches its
+upstream capability JSON, with one deliberate exception: `share` keeps
+`kdeconnect.share.request.update` in its incoming set because Android receives
+it even though the desktop client only sends it.
+
+Plugins that were declared implemented but inert now do their work: battery
+publishes the host charge on connect and on change, clipboard pushes local text
+without echoing the peer, lockdevice runs the request/result state machine and
+refuses remote unlock, mpriscontrol answers `requestPlayerList` and
+`requestNowPlaying`, notifications gained request/action/reply, presenter drives
+a real presentation view, and systemvolume became a sink provider.
+
+New runtime and desktop work: `Plugin::on_tick`, driven by the session every two
+seconds so polled plugins can originate packets; `Battery` and `Presenter`
+adapters; a sysfs battery backend, per-sink `wpctl` enumeration and `set_sink`,
+and an `xdotool` input backend with the upstream special-key table. `mousepad`
+is registered for the first time, and its clicks and drags now inject.
+
+CI note: this environment cannot read job logs, so a temporary
+`compile-report` workflow republished rustfmt, clippy, rustdoc and test output
+as check-run annotations. It was removed once the branch was green; the whole
+matrix (fmt, clippy, docs, gui, msrv, test, windows, fuzz, deny, testkit) passes.
