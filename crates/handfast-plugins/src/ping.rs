@@ -2,9 +2,7 @@
 
 use async_trait::async_trait;
 use handfast_proto::{types, Packet};
-use handfast_runtime::{
-    Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta, PluginOutput,
-};
+use handfast_runtime::{Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta, PluginOutput};
 use serde_json::Value;
 
 use crate::roster;
@@ -63,14 +61,18 @@ mod tests {
     use super::*;
     use handfast_desktop::MockDesktop;
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::Device;
+    use handfast_runtime::{Device, PluginConfig};
     use serde_json::json;
 
     fn context<'a>(
         desktop: &'a handfast_desktop::Desktop,
         device: &'a Device,
     ) -> PluginContext<'a> {
-        PluginContext { device, desktop }
+        PluginContext {
+            device,
+            desktop,
+            config: PluginConfig::empty(),
+        }
     }
 
     fn device() -> Device {

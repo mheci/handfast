@@ -10,10 +10,8 @@
 
 use async_trait::async_trait;
 use handfast_proto::{types, Packet};
-use handfast_runtime::{
-    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
-    PluginOutput,
-};
+use handfast_runtime::{LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput};
 use serde_json::{Map, Value};
 
 use crate::roster;
@@ -150,7 +148,7 @@ mod tests {
     use super::*;
     use handfast_desktop::{Desktop, MockDesktop};
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::Device;
+    use handfast_runtime::{Device, PluginConfig};
     use serde_json::json;
 
     fn device() -> Device {
@@ -166,6 +164,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         let packet = Packet::from_body(types::PRESENTER, &body).unwrap();
         PresenterPlugin::new()
@@ -224,6 +223,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop: &desktop,
+            config: PluginConfig::empty(),
         };
         PresenterPlugin::new()
             .on_disconnect(&mut ctx)

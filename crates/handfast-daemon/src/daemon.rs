@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -24,7 +24,7 @@ use handfast_plugins::registry;
 use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
-use handfast_runtime::{PluginEvent, Registry};
+use handfast_runtime::{PluginConfig, PluginEvent, Registry};
 use handfast_store::{Store, StoreError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -96,6 +96,13 @@ pub struct DaemonArgs {
     /// Print this device's identity packet and exit.
     #[arg(long)]
     pub print_identity: bool,
+
+    /// Plugin settings file. Defaults to `plugins.toml` in the state directory.
+    ///
+    /// An absent file means every plugin runs with its safe defaults, which is
+    /// to say no command is executable and nothing is forwarded.
+    #[arg(long)]
+    pub config_file: Option<PathBuf>,
 }
 
 impl Default for DaemonArgs {
@@ -107,6 +114,7 @@ impl Default for DaemonArgs {
             discovery_port: handfast_net::DISCOVERY_PORT,
             log_file: None,
             print_identity: false,
+            config_file: None,
         }
     }
 }
@@ -135,6 +143,12 @@ pub async fn run(
     identity::secure_state_file(&state_path)?;
     identity::ensure_owned_state_path(&state_path)?;
     let device_id = identity::load_or_create_device_id(&store)?;
+
+    let config_path = args
+        .config_file
+        .clone()
+        .unwrap_or_else(|| data_dir.join("plugins.toml"));
+    let plugin_config = Arc::new(load_plugin_config(&config_path)?);
 
     let desktop = Desktop::default();
     let registry = Arc::new(registry());
@@ -308,6 +322,7 @@ pub async fn run(
     let mut daemon = Daemon {
         store,
         registry,
+        plugin_config,
         desktop,
         links,
         payloads,
@@ -392,9 +407,34 @@ pub async fn run(
     Ok(())
 }
 
+/// Load plugin settings, treating an absent file as an empty config.
+///
+/// A file that exists but cannot be parsed is a hard error: silently falling
+/// back to "no commands allowed" would look identical to a typo'd allowlist
+/// and would be very hard to notice.
+fn load_plugin_config(path: &Path) -> Result<PluginConfig, Box<dyn Error + Send + Sync>> {
+    match PluginConfig::load(path) {
+        Ok(config) => {
+            let sections: Vec<&str> = config.sections().collect();
+            tracing::info!(path = %path.display(), sections = ?sections, "plugin config loaded");
+            Ok(config)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!(
+                path = %path.display(),
+                "no plugin config; plugins run with their safe defaults"
+            );
+            Ok(PluginConfig::new())
+        }
+        Err(error) => Err(format!("plugin config {}: {error}", path.display()).into()),
+    }
+}
+
 struct Daemon {
     store: Arc<Store>,
     registry: Arc<Registry>,
+    /// Host-wide plugin settings, shared by every session.
+    plugin_config: Arc<PluginConfig>,
     desktop: Desktop,
     links: LinkManagerHandle,
     payloads: Arc<PayloadService>,
@@ -437,7 +477,7 @@ impl Daemon {
             max_queued_receives: self.limits.max_queued_receives,
         };
         if self.desktop.files.is_some() {
-            DeviceSession::start_with_transfers(
+            DeviceSession::start_with_transfers_config(
                 peer,
                 link,
                 Arc::clone(&self.registry),
@@ -449,15 +489,17 @@ impl Daemon {
                     payloads: Arc::clone(&self.payloads),
                     limits: session_limits,
                 },
+                Arc::clone(&self.plugin_config),
             )
         } else {
-            DeviceSession::start(
+            DeviceSession::start_with_config(
                 peer,
                 link,
                 Arc::clone(&self.registry),
                 self.desktop.clone(),
                 self.events.clone(),
                 session_limits,
+                Arc::clone(&self.plugin_config),
             )
         }
     }
@@ -1504,6 +1546,7 @@ mod tests {
         let mut daemon = Daemon {
             store,
             registry,
+            plugin_config: Arc::new(PluginConfig::new()),
             desktop,
             links: links.clone(),
             payloads,
@@ -1713,6 +1756,7 @@ mod tests {
         let daemon = Daemon {
             store,
             registry: Arc::new(registry()),
+            plugin_config: Arc::new(PluginConfig::new()),
             desktop: Desktop::default(),
             links: links.clone(),
             payloads: Arc::new(PayloadService::new(

@@ -20,7 +20,9 @@ use handfast_net::{
 use handfast_proto::{
     file_request, DeviceId, Identity, Packet, PayloadSize, ProtoError, ShareFile,
 };
-use handfast_runtime::{Device, DeviceHost, Dispatch, PluginEvent, Registry, Transfer};
+use handfast_runtime::{
+    Device, DeviceHost, Dispatch, PluginConfig, PluginEvent, Registry, Transfer,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 
@@ -119,7 +121,31 @@ impl DeviceSession {
         events: mpsc::Sender<DaemonEvent>,
         limits: SessionLimits,
     ) -> Self {
-        Self::start_inner(peer, link, registry, desktop, events, limits, None)
+        Self::start_with_config(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            limits,
+            Arc::new(PluginConfig::new()),
+        )
+    }
+
+    /// Start a session with explicit plugin settings.
+    ///
+    /// The config is host-wide, so the daemon loads it once and every session
+    /// shares the same read-only view.
+    pub fn start_with_config(
+        peer: Identity,
+        link: LinkHandle,
+        registry: Arc<Registry>,
+        desktop: Desktop,
+        events: mpsc::Sender<DaemonEvent>,
+        limits: SessionLimits,
+        config: Arc<PluginConfig>,
+    ) -> Self {
+        Self::start_inner(peer, link, registry, desktop, events, limits, None, config)
     }
 
     /// Start a session with the share transfer runner.
@@ -147,7 +173,51 @@ impl DeviceSession {
             #[cfg(test)]
             connects: Arc::new(AtomicUsize::new(0)),
         });
-        Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps)
+        Self::start_inner(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            setup.limits,
+            deps,
+            Arc::new(PluginConfig::new()),
+        )
+    }
+
+    /// Start a session with the share transfer runner and explicit plugin
+    /// settings.
+    pub fn start_with_transfers_config(
+        peer: Identity,
+        link: LinkHandle,
+        registry: Arc<Registry>,
+        desktop: Desktop,
+        events: mpsc::Sender<DaemonEvent>,
+        setup: TransferSetup,
+        config: Arc<PluginConfig>,
+    ) -> Self {
+        let deps = desktop.files.clone().map(|files| TransferDeps {
+            peer: PayloadPeer {
+                device_id: peer.device_id.clone(),
+                address: setup.remote_addr,
+                certificate: setup.certificate,
+            },
+            files,
+            payloads: setup.payloads,
+            max_queued_receives: setup.limits.max_queued_receives,
+            #[cfg(test)]
+            connects: Arc::new(AtomicUsize::new(0)),
+        });
+        Self::start_inner(
+            peer,
+            link,
+            registry,
+            desktop,
+            events,
+            setup.limits,
+            deps,
+            config,
+        )
     }
 
     /// Start a session and return the connect-completion probe. Test only.
@@ -173,11 +243,21 @@ impl DeviceSession {
             connects: Arc::clone(&connects),
         });
         (
-            Self::start_inner(peer, link, registry, desktop, events, setup.limits, deps),
+            Self::start_inner(
+                peer,
+                link,
+                registry,
+                desktop,
+                events,
+                setup.limits,
+                deps,
+                Arc::new(PluginConfig::new()),
+            ),
             connects,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_inner(
         peer: Identity,
         link: LinkHandle,
@@ -186,6 +266,7 @@ impl DeviceSession {
         events: mpsc::Sender<DaemonEvent>,
         limits: SessionLimits,
         deps: Option<TransferDeps>,
+        config: Arc<PluginConfig>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(SESSION_QUEUE);
         let (stop_tx, stop_rx) = watch::channel(None);
@@ -206,6 +287,7 @@ impl DeviceSession {
                 stop: stop_rx,
             },
             deps,
+            config,
         ));
         Self { task, handle }
     }
@@ -740,6 +822,7 @@ async fn run(
     events: mpsc::Sender<DaemonEvent>,
     channels: SessionChannels,
     deps: Option<TransferDeps>,
+    config: Arc<PluginConfig>,
 ) {
     let SessionChannels {
         mut input,
@@ -753,7 +836,7 @@ async fn run(
         paired: true,
         connected: true,
     };
-    let mut host = DeviceHost::new(device, registry.as_ref(), desktop);
+    let mut host = DeviceHost::with_config(device, registry.as_ref(), desktop, config);
     let mut runner = deps.map(|deps| TransferRunner::new(deps, events.clone()));
 
     let dispatch = host.on_connect().await;

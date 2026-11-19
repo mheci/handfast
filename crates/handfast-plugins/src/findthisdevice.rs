@@ -3,10 +3,8 @@
 use async_trait::async_trait;
 use handfast_desktop::Notification;
 use handfast_proto::{types, Packet};
-use handfast_runtime::{
-    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
-    PluginOutput,
-};
+use handfast_runtime::{LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput};
 use serde_json::Value;
 
 use crate::roster;
@@ -111,7 +109,7 @@ mod tests {
     use super::*;
     use handfast_desktop::MockDesktop;
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::Device;
+    use handfast_runtime::{Device, PluginConfig};
     use serde_json::json;
 
     fn device() -> Device {
@@ -127,6 +125,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         FindThisDevicePlugin::new()
             .on_packet(&mut ctx, packet)

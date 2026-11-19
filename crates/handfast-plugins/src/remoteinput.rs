@@ -19,10 +19,8 @@
 use async_trait::async_trait;
 use handfast_desktop::{Modifiers, PointerAction, PointerButton, PointerEvent};
 use handfast_proto::{types, Packet};
-use handfast_runtime::{
-    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
-    PluginOutput,
-};
+use handfast_runtime::{LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput};
 use serde_json::{json, Map, Value};
 
 use crate::roster;
@@ -427,7 +425,7 @@ impl PluginFactory for RemoteKeyboardFactory {
 mod tests {
     use super::*;
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::{Device, PluginStatus};
+    use handfast_runtime::{Device, PluginConfig, PluginStatus};
 
     fn device() -> Device {
         Device::new(
@@ -452,6 +450,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop: &desktop,
+            config: PluginConfig::empty(),
         };
         plugin.on_tick(&mut ctx).await.unwrap()
     }
@@ -462,6 +461,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop: &desktop,
+            config: PluginConfig::empty(),
         };
         plugin.on_packet(&mut ctx, packet).await.unwrap()
     }

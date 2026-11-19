@@ -1,6 +1,7 @@
 //! Plugin contracts and registry.
 
 use async_trait::async_trait;
+
 use handfast_desktop::Desktop;
 use handfast_proto::{Capabilities, Packet};
 
@@ -116,6 +117,11 @@ pub struct PluginContext<'a> {
     pub device: &'a Device,
     /// Desktop adapters on this host.
     pub desktop: &'a Desktop,
+    /// Host-wide plugin settings, loaded once at start.
+    ///
+    /// Read-only: a plugin that needs new settings is reconfigured by
+    /// restarting the daemon, so no plugin can edit what governs its peers.
+    pub config: &'a crate::config::PluginConfig,
 }
 
 /// A fault-isolated packet handler.

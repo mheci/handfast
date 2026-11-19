@@ -2,10 +2,8 @@
 
 use async_trait::async_trait;
 use handfast_proto::Packet;
-use handfast_runtime::{
-    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
-    PluginOutput,
-};
+use handfast_runtime::{LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput};
 
 use crate::roster;
 
@@ -102,7 +100,7 @@ mod tests {
     use super::*;
     use handfast_desktop::{Desktop, MockDesktop};
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::Device;
+    use handfast_runtime::{Device, PluginConfig};
 
     fn device() -> Device {
         Device::new(
@@ -117,6 +115,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         plugin.on_connect(&mut ctx).await.unwrap()
     }
@@ -126,6 +125,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         plugin.on_disconnect(&mut ctx).await.unwrap()
     }

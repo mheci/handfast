@@ -80,7 +80,7 @@ pub fn metas() -> &'static [&'static PluginMeta] {
 mod tests {
     use handfast_desktop::MockDesktop;
     use handfast_proto::{types, DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::{Device, DeviceHost};
+    use handfast_runtime::{Device, DeviceHost, PluginConfig};
 
     use super::registry;
 
@@ -107,6 +107,19 @@ mod tests {
         assert!(capabilities.accepts(types::SHARE_REQUEST));
         assert!(capabilities.accepts(types::SHARE_REQUEST_UPDATE));
         assert!(DeviceHost::new(device(), &registry, with_files.desktop()).is_enabled("share"));
+    }
+
+    #[test]
+    fn runcommand_is_enabled_but_its_allowlist_defaults_to_empty() {
+        // The plugin is advertised so a phone can see it, but with no config
+        // it must not execute anything. Both halves matter: hiding the plugin
+        // would be a capability lie, and an unconfigured allowlist that
+        // matched everything would be a remote shell.
+        let mock = MockDesktop::new();
+        let capabilities = registry().capabilities(&mock.desktop()).unwrap();
+        assert!(capabilities.accepts(types::RUNCOMMAND_REQUEST));
+        let empty = PluginConfig::new();
+        assert!(empty.get_list("runcommand", "commands").is_empty());
     }
 
     #[test]

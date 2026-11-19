@@ -3,10 +3,8 @@
 use async_trait::async_trait;
 use handfast_desktop::{Media, MediaAction, PlaybackState};
 use handfast_proto::{types, Packet};
-use handfast_runtime::{
-    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
-    PluginOutput,
-};
+use handfast_runtime::{LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput};
 use serde_json::{json, Value};
 
 use crate::roster;
@@ -322,7 +320,7 @@ mod tests {
 
     use handfast_desktop::{Desktop, MockDesktop, Result as DesktopResult};
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::{Device, PluginStatus};
+    use handfast_runtime::{Device, PluginConfig, PluginStatus};
 
     struct RecordingMedia {
         players: Vec<String>,
@@ -402,6 +400,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         MprisControlPlugin::new().on_packet(&mut ctx, packet).await
     }

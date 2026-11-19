@@ -9,10 +9,8 @@ use std::collections::{HashSet, VecDeque};
 use async_trait::async_trait;
 use handfast_proto::share::ShareRequest;
 use handfast_proto::{types, Packet};
-use handfast_runtime::{
-    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
-    PluginOutput, Transfer,
-};
+use handfast_runtime::{LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput, Transfer};
 
 use crate::roster;
 
@@ -182,7 +180,7 @@ mod tests {
         ShareBatch, ShareFile,
     };
     use handfast_proto::{DeviceId, DeviceName, DeviceType, PayloadTransferInfo};
-    use handfast_runtime::Device;
+    use handfast_runtime::{Device, PluginConfig};
     use serde_json::json;
 
     fn device() -> Device {
@@ -206,6 +204,7 @@ mod tests {
         let mut ctx = PluginContext {
             device: &device,
             desktop,
+            config: PluginConfig::empty(),
         };
         plugin.on_packet(&mut ctx, packet).await.unwrap()
     }
