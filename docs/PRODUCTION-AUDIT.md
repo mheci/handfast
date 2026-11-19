@@ -50,3 +50,12 @@ reports green; that does not establish real-device or production readiness.
 
 The audit is ongoing. This list is not a claim that the entire codebase has
 been inspected or that these are all defects.
+
+## CI advisory observed during this audit
+
+The PR's `cargo-deny` job reports RUSTSEC-2026-0543: `chrono` is
+unmaintained. It is a transitive dependency through both `russh-sftp` and
+`russh-util`, and the advisory names no safe upgrade. This is an unmaintained
+warning, not a finding that Handfast has an exploitable vulnerability. Do not
+suppress it merely to make CI green; investigate upstream replacements or a
+reviewed dependency change and keep the security gate visible in the meantime.
