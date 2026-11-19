@@ -31,6 +31,21 @@ pub trait Runner: Send + Sync {
     /// # Errors
     /// Fails when the process cannot be started or exited non-zero.
     fn run(&self, program: &str, args: &[String]) -> io::Result<()>;
+
+    /// Run `program` with `args` and return its standard output.
+    ///
+    /// Only the screen query needs this. The default implementation reports
+    /// that the backend cannot read output, so a runner that only injects
+    /// input keeps working unchanged.
+    ///
+    /// # Errors
+    /// Fails when the process cannot be started or exited non-zero.
+    fn output(&self, _program: &str, _args: &[String]) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this runner cannot capture output",
+        ))
+    }
 }
 
 /// [`Runner`] backed by [`std::process::Command`] on a blocking pool.
@@ -53,6 +68,21 @@ impl Runner for StdRunner {
         } else {
             Err(io::Error::other(format!("{program} exited with {status}")))
         }
+    }
+
+    fn output(&self, program: &str, args: &[String]) -> io::Result<String> {
+        let output = std::process::Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "{program} exited with {}",
+                output.status
+            )));
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "output is not UTF-8"))
     }
 }
 
@@ -225,6 +255,55 @@ impl XdotoolInput {
     }
 }
 
+/// The command line for an absolute pointer move.
+///
+/// `xdotool mousemove` addresses the screen in pixels, so the caller scales the
+/// fraction first.
+///
+/// A pressed sample moves and then presses, and a released sample moves and
+/// then releases. Pressing without releasing would leave the button held
+/// forever if the phone dropped the connection mid-stroke, and a tablet sample
+/// is already a complete point — the plugin tracks the stroke, not the backend.
+pub fn absolute_command(x: f64, y: f64, pressed: bool) -> Vec<Vec<String>> {
+    let mut commands = vec![vec![
+        "mousemove".to_string(),
+        format!("{}", x.round() as i64),
+        format!("{}", y.round() as i64),
+    ]];
+    if pressed {
+        commands.push(vec!["mousedown".to_string(), "1".to_string()]);
+        commands.push(vec!["mouseup".to_string(), "1".to_string()]);
+    }
+    commands
+}
+
+impl XdotoolInput {
+    /// Current screen size in pixels.
+    fn screen_size(&self) -> Result<(f64, f64)> {
+        let text = self
+            .runner
+            .output("xdotool", &["getdisplaygeometry".to_string()])
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => {
+                    DesktopError::Unsupported("xdotool is not installed")
+                }
+                io::ErrorKind::Unsupported => DesktopError::Unsupported(
+                    "this backend cannot read the screen geometry",
+                ),
+                _ => DesktopError::Backend(error.to_string()),
+            })?;
+        let mut parts = text.split_whitespace();
+        let width = parts.next().and_then(|part| part.parse::<f64>().ok());
+        let height = parts.next().and_then(|part| part.parse::<f64>().ok());
+        match (width, height) {
+            (Some(width), Some(height)) => Ok((width, height)),
+            _ => Err(DesktopError::Backend(
+                "xdotool returned an unusable display geometry".to_string(),
+            )),
+        }
+    }
+}
+
 impl Default for XdotoolInput {
     fn default() -> Self {
         Self::new()
@@ -235,6 +314,23 @@ impl Default for XdotoolInput {
 impl Input for XdotoolInput {
     async fn pointer(&self, event: PointerEvent) -> Result<()> {
         self.run(pointer_command(event))
+    }
+
+    async fn pointer_absolute(&self, x: f64, y: f64, pressed: bool) -> Result<()> {
+        let (width, height) = self.screen_size()?;
+        if width <= 0.0 || height <= 0.0 {
+            return Err(DesktopError::Backend(
+                "screen geometry is unavailable".to_string(),
+            ));
+        }
+        // xdotool addresses the screen in pixels, so the fraction is scaled
+        // here rather than in the plugin.
+        let pixel_x = (x.clamp(0.0, 1.0) * width).round();
+        let pixel_y = (y.clamp(0.0, 1.0) * height).round();
+        for command in absolute_command(pixel_x, pixel_y, pressed) {
+            self.run(command)?;
+        }
+        Ok(())
     }
 
     async fn key(&self, event: KeyEvent) -> Result<()> {

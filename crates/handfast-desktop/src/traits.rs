@@ -3,7 +3,10 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::model::{KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, VolumeState};
+use crate::model::{
+    CallEvent, ContactRecord, KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent,
+    VirtualDisplay, VolumeState,
+};
 
 /// Text clipboard access.
 #[async_trait]
@@ -180,6 +183,25 @@ pub trait Input: Send + Sync {
 
     /// Inject a key press and release.
     async fn key(&self, event: KeyEvent) -> Result<()>;
+
+    /// Move the pointer to an absolute position, expressed as a fraction of
+    /// the screen in 0.0-1.0.
+    ///
+    /// Separate from [`Input::pointer`] because relative movement cannot
+    /// express a tablet sample: a digitizer event names a position on a
+    /// surface, not a delta. Backends that cannot address the pointer
+    /// absolutely return `Unsupported`, which the digitizer plugin reports
+    /// once instead of failing every sample.
+    ///
+    /// `pressed` holds the primary button down, for a continuous stroke.
+    ///
+    /// # Errors
+    /// Fails when the backend cannot position the pointer.
+    async fn pointer_absolute(&self, _x: f64, _y: f64, _pressed: bool) -> Result<()> {
+        Err(crate::error::DesktopError::Unsupported(
+            "this backend cannot position the pointer absolutely",
+        ))
+    }
 }
 
 /// Screensaver inhibition.
@@ -207,4 +229,41 @@ pub trait Lock: Send + Sync {
 pub trait Shell: Send + Sync {
     /// Open a URL with the default handler.
     async fn open_url(&self, url: &str) -> Result<()>;
+}
+
+/// Telephony state changes from the host's phone stack.
+///
+/// On a desktop this is usually absent: a Linux host has no modem. The trait
+/// exists so a Linux host with ModemManager, or a future mobile build, can
+/// report calls without the plugin knowing how they were detected.
+#[async_trait]
+pub trait Telephony: Send + Sync {
+    /// Events emitted since the last call, oldest first.
+    ///
+    /// Polled once per plugin tick rather than pushed, so the backend never
+    /// has to hold a reference into the plugin.
+    async fn poll(&self) -> Result<Vec<CallEvent>>;
+}
+
+/// Address book storage.
+#[async_trait]
+pub trait Contacts: Send + Sync {
+    /// Uid and modification time for every contact, for the change handshake.
+    async fn list(&self) -> Result<Vec<(String, i64)>>;
+
+    /// Fetch the vCards for the given uids. Unknown uids are skipped.
+    async fn vcards(&self, uids: &[String]) -> Result<Vec<ContactRecord>>;
+}
+
+/// Virtual display creation and removal.
+#[async_trait]
+pub trait Display: Send + Sync {
+    /// Create or update the virtual display.
+    async fn enable(&self, display: VirtualDisplay) -> Result<()>;
+
+    /// Remove the virtual display.
+    async fn disable(&self) -> Result<()>;
+
+    /// Whether a virtual display currently exists.
+    async fn is_enabled(&self) -> Result<bool>;
 }

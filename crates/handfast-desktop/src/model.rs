@@ -231,3 +231,42 @@ pub struct PlaybackState {
     /// Player volume, 0-100.
     pub volume: Option<u8>,
 }
+
+/// One telephony event reported by the host's telephony stack.
+///
+/// Mirrors the fields of `kdeconnect.telephony` so the plugin only has to
+/// serialize this, and the backend only has to fill it in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallEvent {
+    /// Event kind, exactly as the wire spells it: `ringing`, `talking`,
+    /// `missedCall` or `sms`.
+    pub event: String,
+    /// Caller identifier, when the stack knows it.
+    pub phone_number: Option<String>,
+    /// Contact name resolved from the phone number.
+    pub contact_name: Option<String>,
+    /// Whether the event is a cancellation of the previous one.
+    pub is_cancel: bool,
+}
+
+/// One contact address book entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactRecord {
+    /// Stable identifier, unique within the address book.
+    pub uid: String,
+    /// Last modification time in milliseconds since the Unix epoch.
+    pub timestamp_ms: i64,
+    /// The vCard document body.
+    pub vcard: String,
+}
+
+/// Geometry a virtual display should be created with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualDisplay {
+    /// Requested width in pixels.
+    pub width: u32,
+    /// Requested height in pixels.
+    pub height: u32,
+    /// Fractional scale, as a percentage (100 is 1.0).
+    pub scale: u16,
+}

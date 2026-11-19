@@ -96,6 +96,19 @@ impl PluginOutput {
         self
     }
 
+    /// Append a packet if one could be built.
+    ///
+    /// Plugins whose packet types and bodies are constants normally cannot
+    /// fail to build one, but dropping a single packet is always better than
+    /// unwrapping inside a device session.
+    #[must_use]
+    pub fn with_optional_packet(mut self, packet: Option<Packet>) -> Self {
+        if let Some(packet) = packet {
+            self.packets.push(packet);
+        }
+        self
+    }
+
     /// Append an event.
     #[must_use]
     pub fn with_event(mut self, event: PluginEvent) -> Self {
@@ -241,8 +254,8 @@ pub(crate) fn desktop_available(desktop: &Desktop, requirement: DesktopRequireme
         DesktopRequirement::Files => desktop.files.is_some(),
         DesktopRequirement::Battery => desktop.battery.is_some(),
         DesktopRequirement::Presenter => desktop.presenter.is_some(),
-        DesktopRequirement::Telephony
-        | DesktopRequirement::Contacts
-        | DesktopRequirement::Display => false,
+        DesktopRequirement::Telephony => desktop.telephony.is_some(),
+        DesktopRequirement::Contacts => desktop.contacts.is_some(),
+        DesktopRequirement::Display => desktop.display.is_some(),
     }
 }

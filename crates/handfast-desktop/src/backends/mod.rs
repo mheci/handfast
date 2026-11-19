@@ -5,20 +5,25 @@
 
 pub mod battery;
 pub mod clipboard;
+pub mod contacts;
+pub mod display;
 pub mod input;
 pub mod lock;
 pub mod mpris;
 pub mod notifications;
 pub mod presenter;
 pub mod screensaver;
+pub mod sftp;
 pub mod shell;
+pub mod telephony;
 pub mod volume;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::traits::{
-    Battery, Clipboard, Input, Lock, Media, Notifier, Presenter, Screensaver, Shell, Volume,
+    Battery, Clipboard, Contacts, Display, Input, Lock, Media, Notifier, Presenter, Screensaver,
+    Shell, Telephony, Volume,
 };
 
 /// Whether `program` resolves to a regular file on `PATH`.
@@ -121,6 +126,60 @@ pub fn screensaver() -> Arc<dyn Screensaver> {
 #[must_use]
 pub fn lock() -> Arc<dyn Lock> {
     Arc::new(lock::LoginctlLock::new())
+}
+
+/// Build the host telephony backend.
+///
+/// Only a host with a modem has one; `mmcli` missing means the plugin stays
+/// disabled rather than reporting an empty call list forever.
+#[must_use]
+pub fn telephony() -> Arc<dyn Telephony> {
+    Arc::new(telephony::MmTelephony::new())
+}
+
+/// Build the host address book backend for `directory`.
+#[must_use]
+pub fn contacts(directory: impl Into<PathBuf>) -> Arc<dyn Contacts> {
+    Arc::new(contacts::VcardDirectory::new(directory))
+}
+
+/// Build the host virtual display backend.
+///
+/// `wlay` is preferred because it attaches to the running compositor; `weston`
+/// is the fallback that works anywhere.
+#[must_use]
+pub fn display() -> Arc<dyn Display> {
+    let backend = if program_available(display::Backend::Wlay.program()) {
+        display::Backend::Wlay
+    } else {
+        display::Backend::Weston
+    };
+    Arc::new(display::HeadlessDisplay::new(backend))
+}
+
+/// Build the SFTP serving backend.
+#[must_use]
+pub fn sftp_server() -> Arc<dyn sftp::SftpServerBackend> {
+    Arc::new(sftp::SshdSftp::new())
+}
+
+/// Whether `sshd` is installed.
+#[must_use]
+pub fn sftp_available() -> bool {
+    program_available(sftp::PROGRAM)
+}
+
+/// Whether a modem stack is installed.
+#[must_use]
+pub fn telephony_available() -> bool {
+    program_available(telephony::PROGRAM)
+}
+
+/// Whether either virtual display program is installed.
+#[must_use]
+pub fn display_available() -> bool {
+    program_available(display::Backend::Wlay.program())
+        || program_available(display::Backend::Weston.program())
 }
 
 #[cfg(test)]

@@ -9,6 +9,9 @@
 pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
+pub mod contacts;
+pub mod digitizer;
+pub mod findmyphone;
 pub mod findthisdevice;
 pub mod lockdevice;
 pub mod mousepad;
@@ -18,17 +21,30 @@ pub mod notifications;
 pub mod pausemusic;
 pub mod ping;
 pub mod presenter;
+pub mod remotecommands;
 pub mod remoteinput;
+pub mod remotesystemvolume;
 pub mod roster;
+pub mod runcommand;
+pub mod sendnotifications;
+pub mod sftp;
+pub mod shareinputdevices;
+pub mod shareinputdevicesremote;
+pub mod sms;
 pub mod screensaver_inhibit;
 pub mod share;
 pub mod systemvolume;
+pub mod telephony;
+pub mod virtualmonitor;
 
 use handfast_runtime::{PluginMeta, Registry};
 
 pub use battery::{BatteryFactory, BatteryPlugin};
 pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
+pub use contacts::{ContactsFactory, ContactsPlugin};
+pub use digitizer::{DigitizerFactory, DigitizerPlugin, DigitizerSession};
+pub use findmyphone::{FindMyPhoneFactory, FindMyPhonePlugin};
 pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
 pub use lockdevice::{LockDeviceFactory, LockDevicePlugin};
 pub use mousepad::{MousepadFactory, MousepadPlugin};
@@ -38,6 +54,24 @@ pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
 pub use presenter::{PresenterFactory, PresenterPlugin};
+pub use remotecommands::{
+    RemoteCommand, RemoteCommandError, RemoteCommandsFactory, RemoteCommandsPlugin,
+};
+pub use remotesystemvolume::{
+    RemoteSystemVolumeFactory, RemoteSystemVolumePlugin, RemoteVolumeError,
+};
+pub use runcommand::{
+    parse_commands, ConfiguredCommand, RunCommandError, RunCommandFactory, RunCommandPlugin,
+};
+pub use sendnotifications::{
+    OutgoingNotification, SendNotificationsFactory, SendNotificationsPlugin,
+};
+pub use sftp::{DesktopSftpServer, SftpFactory, SftpPlugin, SftpServer, SftpStart};
+pub use shareinputdevices::{ShareInputDevicesFactory, ShareInputDevicesPlugin};
+pub use shareinputdevicesremote::{
+    ShareInputDevicesRemoteFactory, ShareInputDevicesRemotePlugin, ShareState,
+};
+pub use sms::{Conversation, Message, SmsFactory, SmsPlugin};
 pub use remoteinput::{
     RemoteControlFactory, RemoteControlPlugin, RemoteInputError, RemoteKeyboardFactory,
     RemoteKeyboardPlugin,
@@ -45,10 +79,22 @@ pub use remoteinput::{
 pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
 pub use share::{ShareFactory, SharePlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
+pub use telephony::{TelephonyEvent, TelephonyFactory, TelephonyPlugin};
+pub use virtualmonitor::{RequestedDisplay, VirtualMonitorFactory, VirtualMonitorPlugin};
 
 /// Build the registry of implemented plugins.
 #[must_use]
 pub fn registry() -> Registry {
+    registry_with_sftp(None)
+}
+
+/// Build the registry with an SFTP serving backend.
+///
+/// `sftp` is the one plugin whose behaviour depends on a host-wide resource
+/// (an `sshd` process and a port), so the backend is passed in rather than
+/// discovered by the plugin.
+#[must_use]
+pub fn registry_with_sftp(server: Option<std::sync::Arc<dyn sftp::SftpServer>>) -> Registry {
     Registry::new(vec![
         Box::new(ping::PingFactory),
         Box::new(battery::BatteryFactory),
@@ -67,6 +113,22 @@ pub fn registry() -> Registry {
         Box::new(mousepad::MousepadFactory),
         Box::new(remoteinput::RemoteControlFactory),
         Box::new(remoteinput::RemoteKeyboardFactory),
+        Box::new(findmyphone::FindMyPhoneFactory),
+        Box::new(remotesystemvolume::RemoteSystemVolumeFactory),
+        Box::new(sendnotifications::SendNotificationsFactory),
+        Box::new(remotecommands::RemoteCommandsFactory),
+        Box::new(runcommand::RunCommandFactory),
+        Box::new(match server {
+            Some(server) => sftp::SftpFactory::with_server(server),
+            None => sftp::SftpFactory::new(),
+        }),
+        Box::new(digitizer::DigitizerFactory),
+        Box::new(shareinputdevices::ShareInputDevicesFactory),
+        Box::new(shareinputdevicesremote::ShareInputDevicesRemoteFactory),
+        Box::new(contacts::ContactsFactory),
+        Box::new(sms::SmsFactory),
+        Box::new(telephony::TelephonyFactory),
+        Box::new(virtualmonitor::VirtualMonitorFactory),
     ])
 }
 

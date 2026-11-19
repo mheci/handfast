@@ -12,6 +12,9 @@ handfast-desktop = { path = "../handfast-desktop", version = "0.3.0" }
 handfast-proto = { path = "../handfast-proto", version = "0.3.0" }
 handfast-runtime = { path = "../handfast-runtime", version = "0.3.0" }
 serde_json.workspace = true
+# `runcommand` spawns processes and streams their output; `sftp` is async only
+# through the runtime, so the plugin crate needs the same tokio features.
+tokio = { workspace = true, features = ["process", "io-util", "sync"] }
 
 [dev-dependencies]
 tokio.workspace = true

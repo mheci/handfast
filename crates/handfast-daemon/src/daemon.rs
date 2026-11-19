@@ -20,7 +20,6 @@ use handfast_net::{
     LinkManagerHandle, LocalEndpoint, PayloadService, PeerCertificate, PendingLink, ShareEvent,
     TrustTable,
 };
-use handfast_plugins::registry;
 use handfast_proto::{
     DeviceId, DeviceName, DeviceType, Identity, Packet, PairingRequest, MAX_TCP_PORT, MIN_TCP_PORT,
 };
@@ -151,7 +150,18 @@ pub async fn run(
     let plugin_config = Arc::new(load_plugin_config(&config_path)?);
 
     let desktop = Desktop::default();
-    let registry = Arc::new(registry());
+    // An SFTP server needs `sshd`; without it the plugin is registered but has
+    // no backend, so it answers start requests with a reason instead of
+    // silently advertising a server it cannot start.
+    let sftp = if backends::sftp_available() {
+        Some(
+            Arc::new(handfast_plugins::DesktopSftpServer::new(backends::sftp_server()))
+                as Arc<dyn handfast_plugins::SftpServer>,
+        )
+    } else {
+        None
+    };
+    let registry = Arc::new(handfast_plugins::registry_with_sftp(sftp));
     let capabilities = registry.capabilities(&desktop)?;
     let name = device_name();
 
@@ -203,6 +213,7 @@ pub async fn run(
         std::env::var_os("WAYLAND_DISPLAY").is_some(),
         backends::program_available,
     );
+    let desktop = install_config_backends(desktop, &plugin_config);
     let capabilities = registry.capabilities(&desktop)?;
     tracing::info!(
         capabilities = ?desktop.capabilities(),
@@ -1131,6 +1142,30 @@ fn device_name() -> String {
         .unwrap_or_else(|_| "Handfast desktop".to_string())
 }
 
+/// Install the backends whose presence is a *configuration* decision rather
+/// than a program lookup.
+///
+/// Address book and virtual display are different from the rest: a machine can
+/// have `mmcli` installed and still have no modem, and a machine can have
+/// `wlay` installed without the user wanting a second monitor. These are only
+/// installed when the user asked for them in `plugins.toml`, so an
+/// unconfigured host does not advertise a capability it cannot honour.
+fn install_config_backends(mut desktop: Desktop, config: &PluginConfig) -> Desktop {
+    if let Some(directory) = config.get("contacts", "directory") {
+        if !directory.trim().is_empty() {
+            desktop.contacts = Some(backends::contacts(directory));
+        }
+    }
+    // A virtual display needs either backend program; the adapter picks.
+    if backends::display_available() {
+        desktop.display = Some(backends::display());
+    }
+    if backends::telephony_available() {
+        desktop.telephony = Some(backends::telephony());
+    }
+    desktop
+}
+
 fn install_backends(
     mut desktop: Desktop,
     wayland: bool,
@@ -1224,6 +1259,9 @@ mod tests {
                 files: false,
                 battery: true,
                 presenter: true,
+                telephony: false,
+                contacts: false,
+                display: false,
             }
         );
 
@@ -1246,7 +1284,7 @@ mod tests {
 
     #[test]
     fn capabilities_follow_the_installed_adapters() {
-        let registry = registry();
+        let registry = handfast_plugins::registry();
         let packets = [
             ("xclip", &[types::CLIPBOARD, types::CLIPBOARD_CONNECT][..]),
             (
@@ -1283,7 +1321,7 @@ mod tests {
 
     #[test]
     fn shell_and_screensaver_adapters_add_no_packets() {
-        let registry = registry();
+        let registry = handfast_plugins::registry();
         let desktop = install_backends(Desktop::default(), false, |program| {
             program == "xdg-open" || program == "systemd-inhibit"
         });
@@ -1495,7 +1533,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("create the test state directory");
         let store =
             Arc::new(Store::open(directory.path().join("state.db")).expect("open the store"));
-        let registry = Arc::new(registry());
+        let registry = Arc::new(handfast_plugins::registry());
         let mock = MockDesktop::with_files().expect("build the mock desktop");
         let desktop = mock.desktop();
 
@@ -1755,7 +1793,7 @@ mod tests {
         let (shutdown, _shutdown_rx) = oneshot::channel();
         let daemon = Daemon {
             store,
-            registry: Arc::new(registry()),
+            registry: Arc::new(handfast_plugins::registry()),
             plugin_config: Arc::new(PluginConfig::new()),
             desktop: Desktop::default(),
             links: links.clone(),

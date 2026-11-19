@@ -8,10 +8,13 @@ use async_trait::async_trait;
 
 use crate::error::{DesktopError, Result};
 use crate::files::{FileLimits, Files, FilesError, LocalFiles};
-use crate::model::{KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, VolumeState};
+use crate::model::{
+    CallEvent, ContactRecord, KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent,
+    VirtualDisplay, VolumeState,
+};
 use crate::traits::{
-    AudioSink, Battery, BatteryStatus, Clipboard, Input, Lock, Media, Notifier, Presenter,
-    Screensaver, Shell, Volume,
+    AudioSink, Battery, BatteryStatus, Clipboard, Contacts, Display, Input, Lock, Media, Notifier,
+    Presenter, Screensaver, Shell, Telephony, Volume,
 };
 use crate::Desktop;
 
@@ -22,6 +25,9 @@ pub enum InputEvent {
     Pointer(PointerEvent),
     /// Keyboard event.
     Key(KeyEvent),
+    /// Absolute pointer position, as a screen fraction, and whether the
+    /// primary button was down for the sample.
+    Absolute { x: f64, y: f64, pressed: bool },
 }
 
 /// Counts lock calls made through the mock desktop.
@@ -57,6 +63,9 @@ struct MockState {
     media_actions: Mutex<Vec<(String, MediaAction)>>,
     battery: Mutex<BatteryStatus>,
     presentations: Mutex<Vec<Option<(f32, f32)>>>,
+    calls: Mutex<Vec<CallEvent>>,
+    contacts: Mutex<Vec<ContactRecord>>,
+    display: Mutex<Option<VirtualDisplay>>,
 }
 
 /// A desktop backend that records every operation.
@@ -87,6 +96,9 @@ impl MockDesktop {
             lock: Some(Arc::clone(&lock) as Arc<dyn Lock>),
             battery: Some(Arc::clone(&backend) as Arc<dyn Battery>),
             presenter: Some(Arc::clone(&backend) as Arc<dyn Presenter>),
+            telephony: Some(Arc::clone(&backend) as Arc<dyn Telephony>),
+            contacts: Some(Arc::clone(&backend) as Arc<dyn Contacts>),
+            display: Some(Arc::clone(&backend) as Arc<dyn Display>),
         };
         Self {
             state,
@@ -248,6 +260,34 @@ impl MockDesktop {
     pub fn lock_calls(&self) -> usize {
         self.lock.calls()
     }
+
+    /// Queue a telephony event for the next poll.
+    pub fn push_call(&self, event: CallEvent) {
+        self.state
+            .calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+    }
+
+    /// Replace the mock address book.
+    pub fn set_contacts(&self, records: Vec<ContactRecord>) {
+        *self
+            .state
+            .contacts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = records;
+    }
+
+    /// Geometry of the mock virtual display, when one was enabled.
+    #[must_use]
+    pub fn virtual_display(&self) -> Option<VirtualDisplay> {
+        *self
+            .state
+            .display
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 impl Default for MockDesktop {
@@ -374,6 +414,12 @@ impl Input for MockBackend {
         self.lock(&self.0.input)?.push(InputEvent::Key(event));
         Ok(())
     }
+
+    async fn pointer_absolute(&self, x: f64, y: f64, pressed: bool) -> Result<()> {
+        self.lock(&self.0.input)?
+            .push(InputEvent::Absolute { x, y, pressed });
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -406,6 +452,51 @@ impl Presenter for MockBackend {
     async fn stop(&self) -> Result<()> {
         self.lock(&self.0.presentations)?.push(None);
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Telephony for MockBackend {
+    async fn poll(&self) -> Result<Vec<CallEvent>> {
+        // Polling consumes the queue, like a real modem event stream.
+        Ok(std::mem::take(&mut *self.lock(&self.0.calls)?))
+    }
+}
+
+#[async_trait]
+impl Contacts for MockBackend {
+    async fn list(&self) -> Result<Vec<(String, i64)>> {
+        Ok(self
+            .lock(&self.0.contacts)?
+            .iter()
+            .map(|record| (record.uid.clone(), record.timestamp_ms))
+            .collect())
+    }
+
+    async fn vcards(&self, uids: &[String]) -> Result<Vec<ContactRecord>> {
+        Ok(self
+            .lock(&self.0.contacts)?
+            .iter()
+            .filter(|record| uids.contains(&record.uid))
+            .cloned()
+            .collect())
+    }
+}
+
+#[async_trait]
+impl Display for MockBackend {
+    async fn enable(&self, display: VirtualDisplay) -> Result<()> {
+        *self.lock(&self.0.display)? = Some(display);
+        Ok(())
+    }
+
+    async fn disable(&self) -> Result<()> {
+        *self.lock(&self.0.display)? = None;
+        Ok(())
+    }
+
+    async fn is_enabled(&self) -> Result<bool> {
+        Ok(self.lock(&self.0.display)?.is_some())
     }
 }
 

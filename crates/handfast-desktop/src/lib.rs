@@ -24,12 +24,12 @@ pub use files::{
 };
 pub use mock::MockDesktop;
 pub use model::{
-    KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerAction, PointerButton,
-    PointerEvent, Urgency, VolumeState,
+    CallEvent, ContactRecord, KeyEvent, MediaAction, Modifiers, Notification, PlaybackState,
+    PointerAction, PointerButton, PointerEvent, Urgency, VirtualDisplay, VolumeState,
 };
 pub use traits::{
-    AudioSink, Battery, BatteryStatus, Clipboard, Input, Lock, Media, Notifier, Presenter,
-    Screensaver, Shell, Volume,
+    AudioSink, Battery, BatteryStatus, Clipboard, Contacts, Display, Input, Lock, Media, Notifier,
+    Presenter, Screensaver, Shell, Telephony, Volume,
 };
 
 /// Presence of desktop adapters on the current host.
@@ -57,6 +57,12 @@ pub struct DesktopCapabilities {
     pub battery: bool,
     /// A fullscreen presentation view is available.
     pub presenter: bool,
+    /// Telephony events can be read from a local modem stack.
+    pub telephony: bool,
+    /// An address book can be read.
+    pub contacts: bool,
+    /// A virtual display can be created.
+    pub display: bool,
 }
 
 /// A composed desktop backend.
@@ -84,6 +90,12 @@ pub struct Desktop {
     pub battery: Option<Arc<dyn Battery>>,
     /// Presentation view adapter.
     pub presenter: Option<Arc<dyn Presenter>>,
+    /// Telephony adapter.
+    pub telephony: Option<Arc<dyn Telephony>>,
+    /// Address book adapter.
+    pub contacts: Option<Arc<dyn Contacts>>,
+    /// Virtual display adapter.
+    pub display: Option<Arc<dyn Display>>,
 }
 
 impl std::fmt::Debug for Desktop {
@@ -113,6 +125,27 @@ impl Desktop {
     #[must_use]
     pub fn with_volume(mut self, volume: Arc<dyn Volume>) -> Self {
         self.volume = Some(volume);
+        self
+    }
+
+    /// Install a telephony adapter.
+    #[must_use]
+    pub fn with_telephony(mut self, telephony: Arc<dyn Telephony>) -> Self {
+        self.telephony = Some(telephony);
+        self
+    }
+
+    /// Install an address book adapter.
+    #[must_use]
+    pub fn with_contacts(mut self, contacts: Arc<dyn Contacts>) -> Self {
+        self.contacts = Some(contacts);
+        self
+    }
+
+    /// Install a virtual display adapter.
+    #[must_use]
+    pub fn with_display(mut self, display: Arc<dyn Display>) -> Self {
+        self.display = Some(display);
         self
     }
 
@@ -173,6 +206,9 @@ impl Desktop {
             files: self.files.is_some(),
             battery: self.battery.is_some(),
             presenter: self.presenter.is_some(),
+            telephony: self.telephony.is_some(),
+            contacts: self.contacts.is_some(),
+            display: self.display.is_some(),
         }
     }
 }
