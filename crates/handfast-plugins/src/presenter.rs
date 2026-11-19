@@ -118,12 +118,16 @@ impl Plugin for PresenterPlugin {
         ctx: &mut PluginContext<'_>,
     ) -> Result<PluginOutput, PluginError> {
         // A dropped link must not leave a marker on screen.
-        if let Some(presenter) = ctx.desktop.presenter.as_ref() {
-            if let Err(error) = presenter.stop().await {
-                tracing::debug!(%error, "failed to close the presentation view");
-            }
+        let Some(presenter) = ctx.desktop.presenter.as_ref() else {
+            return Ok(PluginOutput::new());
+        };
+        match presenter.stop().await {
+            Ok(()) => Ok(PluginOutput::new()),
+            Err(error) => Ok(PluginOutput::new().with_event(PluginEvent::Log {
+                level: LogLevel::Warn,
+                message: format!("failed to close the presentation view: {error}"),
+            })),
         }
-        Ok(PluginOutput::new())
     }
 }
 

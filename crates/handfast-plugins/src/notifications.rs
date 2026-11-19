@@ -253,6 +253,7 @@ impl NotificationsPlugin {
             .notifier
             .as_ref()
             .ok_or(PluginError::UnsupportedDesktop("notifications"))?;
+        let mut accepted_replies: Vec<String> = Vec::new();
         match incoming {
             Incoming::Post(notification) => {
                 notifier
@@ -262,10 +263,10 @@ impl NotificationsPlugin {
                 if let Some(id) = notification.id.clone() {
                     self.posted.push(id);
                 }
-                if let Some(reply_id) = notification.reply_id.as_deref() {
+                if notification.reply_id.is_some() {
                     // The notifier shows a reply prompt for this notification;
                     // the plugin answers it through [`Self::reply`].
-                    tracing::debug!(%reply_id, "notification accepts a reply");
+                    accepted_replies.push(notification.id.clone().unwrap_or_default());
                 }
             }
             Incoming::Cancel(id) => notifier
@@ -273,7 +274,14 @@ impl NotificationsPlugin {
                 .await
                 .map_err(|error| PluginError::Backend(error.to_string()))?,
         }
-        Ok(PluginOutput::new())
+        let mut output = PluginOutput::new();
+        for id in accepted_replies {
+            output = output.with_event(PluginEvent::Log {
+                level: LogLevel::Info,
+                message: format!("notification {id} accepts a reply"),
+            });
+        }
+        Ok(output)
     }
 }
 
@@ -303,10 +311,7 @@ impl Plugin for NotificationsPlugin {
             // is confused rather than hostile, so note it at debug level.
             types::NOTIFICATION_REQUEST
             | types::NOTIFICATION_ACTION
-            | types::NOTIFICATION_REPLY => {
-                tracing::debug!(ptype = %packet.ptype, "ignoring a control packet from the peer");
-                Ok(PluginOutput::new())
-            }
+            | types::NOTIFICATION_REPLY => Ok(PluginOutput::new()),
             _ => Ok(PluginOutput::new()),
         }
     }

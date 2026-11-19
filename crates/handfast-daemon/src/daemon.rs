@@ -1211,13 +1211,7 @@ mod tests {
                 "wpctl",
                 &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST][..],
             ),
-            (
-                "loginctl",
-                &[
-                    types::LOCK_REQUEST,
-                    types::LOCK,
-                ][..],
-            ),
+            ("loginctl", &[types::LOCK_REQUEST, types::LOCK][..]),
         ];
 
         for (tool, accepted) in packets {

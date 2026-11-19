@@ -96,7 +96,9 @@ impl ClipboardPlugin {
         }
         let text = text.unwrap_or_default();
         self.last_sent = Some(text.clone());
-        Ok(Some(clipboard_packet(&text)?))
+        Ok(Some(
+            clipboard_packet(&text).map_err(|error| PluginError::InvalidPacket(error.to_string()))?,
+        ))
     }
 
     /// Last applied peer timestamp in milliseconds.
@@ -128,7 +130,9 @@ impl Plugin for ClipboardPlugin {
         };
         self.last_sent = Some(text.clone());
         let timestamp = now_ms().unwrap_or(0);
-        Ok(PluginOutput::new().with_packet(clipboard_connect_packet(&text, timestamp)?))
+        let packet = clipboard_connect_packet(&text, timestamp)
+            .map_err(|error| PluginError::InvalidPacket(error.to_string()))?;
+        Ok(PluginOutput::new().with_packet(packet))
     }
 
     async fn on_tick(&mut self, ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {

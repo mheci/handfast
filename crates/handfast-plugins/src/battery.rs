@@ -30,21 +30,20 @@ pub const LOW_CHARGE: i32 = 15;
 /// official clients send and expect.
 #[must_use]
 pub fn battery_packet(status: BatteryStatus) -> Packet {
-    let body = json!({
-        "currentCharge": status.charge,
-        "isCharging": status.charging,
-        "thresholdEvent": i64::from(status.threshold.min(1)),
-    });
-    // The type is a constant and the body is an object, so this cannot fail.
-    Packet::new(types::BATTERY, body).unwrap_or_else(|_| {
-        Packet {
-            id: 0,
-            ptype: types::BATTERY.to_string(),
-            body: serde_json::Map::new(),
-            payload_size: None,
-            payload_transfer_info: None,
-        }
-    })
+    let mut body = serde_json::Map::new();
+    body.insert("currentCharge".to_string(), json!(status.charge));
+    body.insert("isCharging".to_string(), json!(status.charging));
+    body.insert(
+        "thresholdEvent".to_string(),
+        json!(i64::from(status.threshold.min(1))),
+    );
+    Packet {
+        id: 0,
+        ptype: types::BATTERY.to_string(),
+        body,
+        payload_size: None,
+        payload_transfer_info: None,
+    }
 }
 
 fn parse(packet: &Packet) -> Option<BatteryState> {

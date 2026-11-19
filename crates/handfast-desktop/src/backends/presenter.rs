@@ -41,7 +41,10 @@ impl PositionTracker {
     /// The current marker position, or `None` when no presentation is active.
     #[must_use]
     pub fn position(&self) -> Option<(f32, f32)> {
-        *self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn apply(&self, dx: f32, dy: f32) -> (f32, f32) {

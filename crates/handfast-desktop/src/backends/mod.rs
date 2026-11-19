@@ -16,7 +16,9 @@ pub mod volume;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::traits::{Battery, Clipboard, Lock, Media, Notifier, Presenter, Screensaver, Shell, Volume};
+use crate::traits::{
+    Battery, Clipboard, Lock, Media, Notifier, Presenter, Screensaver, Shell, Volume,
+};
 
 /// Whether `program` resolves to a regular file on `PATH`.
 ///
