@@ -114,8 +114,22 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
       - name: build
         shell: bash
-        run: cargo build --workspace --all-targets --message-format=short > build.txt 2>&1 || true
-      - name: annotate
+        run: cargo build --workspace --all-features --message-format=short > build.txt 2>&1 || true
+      - name: annotate build
         if: always()
         shell: bash
         run: python3 .github/scripts/annotate.py build.txt
+      - name: desktop tests
+        shell: bash
+        run: cargo test -p handfast-desktop --all-features > desktop.txt 2>&1 || true
+      - name: annotate desktop
+        if: always()
+        shell: bash
+        run: python3 .github/scripts/annotate.py desktop.txt
+      - name: daemon lib tests
+        shell: bash
+        run: cargo test -p handfast-daemon --all-features --lib > daemon.txt 2>&1 || true
+      - name: annotate daemon
+        if: always()
+        shell: bash
+        run: python3 .github/scripts/annotate.py daemon.txt
