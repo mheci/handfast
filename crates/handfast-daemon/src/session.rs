@@ -1474,6 +1474,14 @@ mod tests {
             Ok(PluginOutput::new())
         }
 
+        async fn on_tick(
+            &mut self,
+            _ctx: &mut PluginContext<'_>,
+        ) -> Result<PluginOutput, PluginError> {
+            self.ticks.fetch_add(1, Ordering::SeqCst);
+            Ok(PluginOutput::new())
+        }
+
         async fn on_disconnect(
             &mut self,
             _ctx: &mut PluginContext<'_>,

@@ -359,7 +359,7 @@ mod tests {
     use super::*;
     use handfast_desktop::MockDesktop;
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
-    use handfast_runtime::{Device, PluginStatus};
+    use handfast_runtime::Device;
 
     const RAW_ID: &str = "0|com.example|1|null|1000";
 
@@ -383,15 +383,6 @@ mod tests {
             desktop: &desktop,
         };
         plugin.on_packet(&mut ctx, packet).await.unwrap()
-    }
-
-    async fn disconnect(
-        plugin: &mut NotificationsPlugin,
-        device: &Device,
-        desktop: &handfast_desktop::Desktop,
-    ) -> PluginOutput {
-        let mut ctx = PluginContext { device, desktop };
-        plugin.on_disconnect(&mut ctx).await.unwrap()
     }
 
     fn post_with(id: &str) -> Packet {
