@@ -1602,6 +1602,10 @@ async fn two_queued_files_arrive_in_order() {
         .expect("the second sender joins")
         .expect("sent");
 
+    // The completion is logged after the file is renamed into place, so the
+    // two can race by a few milliseconds. Wait for both lines instead of
+    // reading once, then check the order.
+    wait_for_log_count(&log, "event=\"ShareCompleted\"", 2, &mut daemon).await;
     let text = read_log(&log);
     let first_done = text
         .find("first.bin")
