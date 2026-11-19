@@ -82,11 +82,16 @@ fn dummy_peer() -> PayloadPeer {
 
 fn free_port() -> u16 {
     for port in 1739..=1764 {
-        // Production senders bind all interfaces. A loopback-only probe can
-        // succeed while a wildcard bind is still blocked by TIME_WAIT.
-        if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", port)) {
+        // Testkit peers bind loopback; production senders bind all interfaces.
+        // Probe both separately: their reuse and TIME_WAIT rules differ by OS.
+        // The lock shared by these tests prevents in-process bind races.
+        let loopback = std::net::TcpListener::bind(("127.0.0.1", port));
+        if let Ok(listener) = loopback {
             drop(listener);
-            return port;
+            if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", port)) {
+                drop(listener);
+                return port;
+            }
         }
     }
     panic!("no free payload port in 1739-1764");
