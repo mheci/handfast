@@ -66,3 +66,40 @@ jobs:
         if: always()
         shell: bash
         run: python3 .github/scripts/annotate.py build.txt
+
+  clippy:
+    name: report clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --message-format=short -- -D warnings > /tmp/clippy.txt 2>&1 || true
+      - name: annotate
+        if: always()
+        run: python3 .github/scripts/annotate.py /tmp/clippy.txt
+
+  gui:
+    name: report gui
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - name: clippy gui
+        run: cargo clippy -p handfast-daemon --features gui --all-targets --message-format=short -- -D warnings > /tmp/gui.txt 2>&1 || true
+      - name: annotate
+        if: always()
+        run: python3 .github/scripts/annotate.py /tmp/gui.txt
