@@ -916,7 +916,30 @@ fn free_payload_port() -> u16 {
 
 fn occupy_payload_ports() -> Vec<std::net::TcpListener> {
     (PAYLOAD_PORT_MIN..=PAYLOAD_PORT_MAX)
-        .map(|port| std::net::TcpListener::bind(("0.0.0.0", port)).expect("occupy a payload port"))
+        .filter_map(|port| {
+            let socket = socket2::Socket::new(
+                socket2::Domain::IPV4,
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            )
+            .expect("create a payload test socket");
+            // Match the production bind policy, including Unix TIME_WAIT reuse.
+            #[cfg(unix)]
+            socket
+                .set_reuse_address(true)
+                .expect("configure address reuse");
+            let address = SocketAddr::from(([0, 0, 0, 0], port));
+            match socket.bind(&address.into()) {
+                Ok(()) => {
+                    socket.listen(1024).expect("listen on payload port");
+                    Some(socket.into())
+                }
+                // An already occupied port is unavailable to the production
+                // binder too; it need not be owned by this test.
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => None,
+                Err(error) => panic!("occupy payload port {port}: {error}"),
+            }
+        })
         .collect()
 }
 

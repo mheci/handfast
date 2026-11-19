@@ -1,5 +1,7 @@
 //! Notifications plugin.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use handfast_desktop::Notification;
 use handfast_proto::{types, DeviceId, Packet};
@@ -13,6 +15,8 @@ use crate::roster;
 
 const MAX_ID_BYTES: usize = 256;
 const MAX_TEXT_BYTES: usize = 4 * 1024;
+// Bound memory and disconnect work even if a paired peer sends unbounded IDs.
+const MAX_POSTED: usize = 256;
 
 /// A parsed `kdeconnect.notification` body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,14 +99,16 @@ fn parse(packet: &Packet, device_id: &DeviceId) -> Result<Incoming, String> {
 /// Shows inbound phone notifications and closes them on cancel or disconnect.
 #[derive(Debug, Default)]
 pub struct NotificationsPlugin {
-    posted: Vec<String>,
+    posted: HashSet<String>,
 }
 
 impl NotificationsPlugin {
     /// Create a notifications plugin.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { posted: Vec::new() }
+    pub fn new() -> Self {
+        Self {
+            posted: HashSet::new(),
+        }
     }
 
     async fn apply(
@@ -123,18 +129,26 @@ impl NotificationsPlugin {
             .ok_or(PluginError::UnsupportedDesktop("notifications"))?;
         match incoming {
             Incoming::Post(notification) => {
+                if let Some(id) = notification.id.as_ref() {
+                    if !self.posted.contains(id) && self.posted.len() >= MAX_POSTED {
+                        return Ok(warn(format!("notification limit of {MAX_POSTED} reached")));
+                    }
+                }
                 notifier
                     .notify(&notification)
                     .await
                     .map_err(|error| PluginError::Backend(error.to_string()))?;
                 if let Some(id) = notification.id {
-                    self.posted.push(id);
+                    self.posted.insert(id);
                 }
             }
-            Incoming::Cancel(id) => notifier
-                .close(&id)
-                .await
-                .map_err(|error| PluginError::Backend(error.to_string()))?,
+            Incoming::Cancel(id) => {
+                notifier
+                    .close(&id)
+                    .await
+                    .map_err(|error| PluginError::Backend(error.to_string()))?;
+                self.posted.remove(&id);
+            }
         }
         Ok(PluginOutput::new())
     }
@@ -288,6 +302,39 @@ mod tests {
 
         dispatch(&mut plugin, &device, &mock, &cancel(RAW_ID)).await;
         assert!(mock.notifications().is_empty());
+    }
+
+    #[tokio::test]
+    async fn notification_tracking_is_bounded_and_cancel_frees_capacity() {
+        let mock = MockDesktop::new();
+        let device = device();
+        let mut plugin = NotificationsPlugin::new();
+        for index in 0..MAX_POSTED {
+            dispatch(
+                &mut plugin,
+                &device,
+                &mock,
+                &post_with(&format!("id-{index}")),
+            )
+            .await;
+        }
+        // Repeated updates to an existing notification do not consume slots.
+        dispatch(&mut plugin, &device, &mock, &post_with("id-0")).await;
+        assert_eq!(plugin.posted.len(), MAX_POSTED);
+        let output = dispatch(&mut plugin, &device, &mock, &post_with("overflow")).await;
+        assert!(matches!(
+            output.events.as_slice(),
+            [PluginEvent::Log {
+                level: LogLevel::Warn,
+                ..
+            }]
+        ));
+        assert_eq!(plugin.posted.len(), MAX_POSTED);
+        dispatch(&mut plugin, &device, &mock, &cancel("id-0")).await;
+        assert_eq!(plugin.posted.len(), MAX_POSTED - 1);
+        dispatch(&mut plugin, &device, &mock, &post_with("overflow")).await;
+        assert_eq!(plugin.posted.len(), MAX_POSTED);
+        assert!(plugin.posted.contains(&namespaced(&device, "overflow")));
     }
 
     #[tokio::test]

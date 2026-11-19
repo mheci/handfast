@@ -11,7 +11,7 @@ members = [
     "crates/handfast-daemon",
     "xtask",
 ]
-exclude = ["fuzz"]
+exclude = ["fuzz", "vendor/russh-sftp", "vendor/russh-util"]
 
 [workspace.package]
 version = "0.3.0"
@@ -67,3 +67,9 @@ strip = true
 inherits = "release"
 strip = false
 debug = true
+
+# Temporary, narrowly scoped forks removing an unmaintained transitive crate.
+# See vendor/README.md for provenance and removal criteria.
+[patch.crates-io]
+russh-sftp = { path = "vendor/russh-sftp" }
+russh-util = { path = "vendor/russh-util" }

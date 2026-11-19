@@ -1147,12 +1147,12 @@ async fn receive_transfer(
     });
 
     let (progress_tx, mut progress_rx) = mpsc::channel(PROGRESS_QUEUE);
+    let mut last_bytes = 0u64;
     let result = {
         let writer = incoming.writer();
         let receive = payloads.receive_pending(pending, writer, Some(progress_tx));
         tokio::pin!(receive);
         let mut last_emit = Instant::now();
-        let mut last_bytes = 0u64;
         let mut progress_open = true;
         loop {
             tokio::select! {
@@ -1180,6 +1180,23 @@ async fn receive_transfer(
             }
         }
     };
+
+    // A transfer may finish before the select loop drains its progress queue.
+    // Report its final byte count before completion, even for a fast transfer.
+    // Progress is still best-effort when the daemon event queue is full.
+    if let Ok(outcome) = &result {
+        if outcome.bytes > last_bytes {
+            emit_progress(
+                &events,
+                &device_id,
+                PluginEvent::ShareProgress {
+                    transfer_id: id,
+                    bytes: outcome.bytes,
+                    total,
+                },
+            );
+        }
+    }
 
     match result {
         Ok(outcome) => match incoming.commit().await {
