@@ -329,3 +329,62 @@ Remaining in the input family: `shareinputdevices` and `shareinputdevicesremote`
 (libei capture and forwarding between two desktops). Those need a Wayland input
 capture backend that does not exist yet; the packet side is already in the
 roster.
+
+## Wave 22: the rest of the roster
+
+Every plugin in the 31-row roster is now implemented. PR #275 carries the wave.
+
+The wave needed a configuration surface first. `runcommand`, `sftp`,
+`sendnotifications` and `contacts` cannot work without settings — an allowlist
+of executable commands, a directory to serve, an app filter, an address book
+path — and there was nowhere to put them. `PluginConfig` is a small TOML
+document loaded once by the daemon and borrowed read-only by every plugin:
+
+- `plugins.toml` next to the daemon state, overridable with `--config-file`;
+- absent file = empty config, which is the safe default in every case;
+- malformed file = a hard start error with a line number, because silently
+  ignoring a typo in an allowlist is how a command runs that the user did not
+  intend;
+- absent list key = empty set, so `runcommand` executes nothing until the user
+  writes the key.
+
+`runcommand` is the only plugin that can change the host by running a program,
+so its defaults carry the design. Commands come only from the allowlist, are
+split on whitespace and executed directly — never through a shell — so a
+mis-written entry cannot become an injection. The phone's own "add command" UI
+is advertised as unavailable rather than half-working, because the allowlist is
+a file the user edits.
+
+New desktop adapters, because five plugins were blocked on them:
+
+- `Telephony` reads calls from `mmcli`. The parser keys off field names, not
+  column positions: `mmcli`'s table layout has changed between versions.
+- `Contacts` serves a directory of `.vcf` files. The plugin answers the
+  two-step `request_all_uids_timestamps` / `request_vcards_by_uid` handshake,
+  because sending every vCard on every reconnect is one packet per contact.
+- `Display` drives `wlay` or a headless `weston`. A client cannot create an
+  output on Wayland; a headless compositor is what a virtual monitor is.
+- `Input::pointer_absolute` was added for `digitizer`. A tablet sample names a
+  position on a surface, and the existing relative pointer API would have
+  drifted away from the stroke. The default trait method reports `Unsupported`
+  so a backend that cannot do it says so once instead of failing every sample.
+- `SftpServerBackend` runs a one-shot `sshd` chrooted to the configured root on
+  loopback, keys only. Writing an SFTP server was not worth it.
+
+Two structural decisions worth recording:
+
+- **`telephony` and `mmtelephony` are separate plugins**, as upstream has them.
+  `telephony` shows the phone's calls as desktop notifications and sends
+  nothing; `mmtelephony` reads a local modem and reports to the phone. An early
+  draft merged them, which gave the roster one name for two behaviours.
+- **Backend failures are logged and counted, never returned as `PluginError`.**
+  That error disables the plugin for the whole session, which is the wrong
+  response to a temporarily unreadable address book or one failed injection.
+
+`shareinputdevices` gates injection on an explicit share request from the peer.
+`mousepad` accepts input whenever it is enabled; here nothing is injected until
+the phone asks, so a stray packet cannot type into a desktop.
+
+SFTP, `shareinputdevices` and `digitizer` remain the least exercised: their
+tests use a fake backend or the mock desktop, and no real client has driven
+them. No `E2E` cell is `yes`.
