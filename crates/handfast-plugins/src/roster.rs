@@ -198,7 +198,7 @@ pub const REMOTECOMMANDS: PluginMeta = PluginMeta {
 pub const REMOTECONTROL: PluginMeta = PluginMeta {
     name: "remotecontrol",
     title: "Send remote mouse input",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[],
     outgoing: &[types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::None,
@@ -208,7 +208,7 @@ pub const REMOTECONTROL: PluginMeta = PluginMeta {
 pub const REMOTEKEYBOARD: PluginMeta = PluginMeta {
     name: "remotekeyboard",
     title: "Send remote keyboard input",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::MOUSEPAD_ECHO, types::MOUSEPAD_KEYBOARDSTATE],
     outgoing: &[types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::None,
@@ -394,15 +394,18 @@ mod tests {
     }
 
     #[test]
-    fn implemented_plugins_have_an_incoming_contract() {
+    fn implemented_plugins_declare_a_packet_contract() {
         for meta in ALL.iter().filter(|meta| meta.status == IMPLEMENTED) {
             if meta.desktop == DesktopRequirement::Screensaver {
                 // Screensaver inhibition is connection-driven and handles no packets.
                 continue;
             }
+            // A plugin either handles packets, sends them, or both. The
+            // outbound-only ones are remotecontrol, which drives the peer's
+            // pointer and never reads anything.
             assert!(
-                !meta.incoming.is_empty(),
-                "{} is implemented but handles no packets",
+                !meta.incoming.is_empty() || !meta.outgoing.is_empty(),
+                "{} is implemented but declares no packet",
                 meta.name
             );
         }

@@ -31,8 +31,8 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 15 | `ping` | bidirectional | `kdeconnect.ping` | none | P0 | yes | n/a | no |
 | 16 | `presenter` | phone -> desktop | `kdeconnect.presenter` | libei pointer injection | P3 | yes | no | no |
 | 17 | `remotecommands` | phone -> desktop | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | no | no | no |
-| 18 | `remotecontrol` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
-| 19 | `remotekeyboard` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | no | n/a | no |
+| 18 | `remotecontrol` | desktop -> phone | `kdeconnect.mousepad.request` | none | P3 | yes | n/a | no |
+| 19 | `remotekeyboard` | desktop -> phone | `kdeconnect.mousepad.request`, `.mousepad.echo`, `.mousepad.keyboardstate` | none | P3 | yes | n/a | no |
 | 20 | `remotesystemvolume` | desktop -> phone | `kdeconnect.systemvolume`, `.systemvolume.request` | PipeWire or wpctl | P2 | no | no | no |
 | 21 | `runcommand` | bidirectional | `kdeconnect.runcommand`, `.runcommand.request`, `.runcommand.output` | configured command runner | P3 | no | no | no |
 | 22 | `screensaver-inhibit` | connection state | none (uses link state) | `systemd-inhibit` | P2 | yes | yes | no |

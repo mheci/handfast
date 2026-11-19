@@ -18,6 +18,7 @@ pub mod notifications;
 pub mod pausemusic;
 pub mod ping;
 pub mod presenter;
+pub mod remoteinput;
 pub mod roster;
 pub mod screensaver_inhibit;
 pub mod share;
@@ -37,6 +38,10 @@ pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
 pub use presenter::{PresenterFactory, PresenterPlugin};
+pub use remoteinput::{
+    RemoteControlFactory, RemoteControlPlugin, RemoteInputError, RemoteKeyboardFactory,
+    RemoteKeyboardPlugin,
+};
 pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
 pub use share::{ShareFactory, SharePlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
@@ -60,6 +65,8 @@ pub fn registry() -> Registry {
         Box::new(lockdevice::LockDeviceFactory),
         Box::new(presenter::PresenterFactory),
         Box::new(mousepad::MousepadFactory),
+        Box::new(remoteinput::RemoteControlFactory),
+        Box::new(remoteinput::RemoteKeyboardFactory),
     ])
 }
 
