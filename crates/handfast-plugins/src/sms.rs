@@ -23,7 +23,7 @@
 use async_trait::async_trait;
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
-    DesktopRequirement, LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
+    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
     PluginMeta, PluginOutput,
 };
 use serde_json::{json, Map, Value};
@@ -236,11 +236,6 @@ impl Plugin for SmsPlugin {
         &roster::SMS
     }
 
-    fn requirements(&self) -> &'static [DesktopRequirement] {
-        // The plugin is a client of the phone's store, not of a local one, so
-        // it needs no desktop adapter but does need a peer that speaks SMS.
-        &[]
-    }
 
     async fn on_tick(&mut self, _ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
         if self.pending.is_empty() {

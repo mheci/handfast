@@ -16,7 +16,7 @@
 use async_trait::async_trait;
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
-    DesktopRequirement, LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
+    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
     PluginMeta, PluginOutput,
 };
 use serde_json::{json, Map, Value};
@@ -85,9 +85,6 @@ impl Plugin for ContactsPlugin {
         &roster::CONTACTS
     }
 
-    fn requirements(&self) -> &'static [DesktopRequirement] {
-        &[DesktopRequirement::Contacts]
-    }
 
     async fn on_packet(
         &mut self,
@@ -125,8 +122,11 @@ impl Plugin for ContactsPlugin {
                 body.insert("uids".to_string(), Value::Object(timestamps));
                 Ok(PluginOutput::new()
                     .with_packet(
-                        Packet::new(types::CONTACTS_RESPONSE_UIDS_TIMESTAMPS, Value::Object(body))
-                            .map_err(|error| PluginError::InvalidPacket(error.to_string()))?,
+                        Packet::new(
+                            types::CONTACTS_RESPONSE_UIDS_TIMESTAMPS,
+                            Value::Object(body),
+                        )
+                        .map_err(|error| PluginError::InvalidPacket(error.to_string()))?,
                     )
                     .with_event(PluginEvent::Log {
                         level: LogLevel::Info,

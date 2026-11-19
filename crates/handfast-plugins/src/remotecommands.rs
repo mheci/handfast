@@ -155,9 +155,8 @@ impl Plugin for RemoteCommandsPlugin {
     ) -> Result<PluginOutput, PluginError> {
         match packet.ptype.as_str() {
             types::RUNCOMMAND => {
-                let commands = parse_command_list(packet.body.get("commandList").unwrap_or(
-                    &Value::Null,
-                ));
+                let commands =
+                    parse_command_list(packet.body.get("commandList").unwrap_or(&Value::Null));
                 let count = commands.len();
                 self.commands = commands;
                 Ok(PluginOutput::new().with_event(PluginEvent::Log {

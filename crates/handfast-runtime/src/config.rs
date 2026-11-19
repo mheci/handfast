@@ -77,7 +77,7 @@ impl PluginConfig {
         for (plugin, entries) in value.into_tables()? {
             let mut section = BTreeMap::new();
             for (key, value) in entries {
-                section.insert(key, value.into_scalar()?);
+                section.insert(key, value.into_string());
             }
             sections.insert(plugin, section);
         }
@@ -148,7 +148,6 @@ impl PluginConfig {
     }
 
     /// Every plugin name that has a section, for diagnostics.
-    #[must_use]
     pub fn sections(&self) -> impl Iterator<Item = &str> {
         self.sections.keys().map(String::as_str)
     }
@@ -231,8 +230,6 @@ mod tests {
 /// accepts exactly what a plugin config needs and rejects everything else with
 /// a line number, so a malformed config fails at start rather than at runtime.
 mod toml_lite {
-    use std::collections::BTreeMap;
-
     /// One scalar value as written in the file.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub(super) enum Scalar {
@@ -251,21 +248,18 @@ mod toml_lite {
         }
     }
 
+    /// One table in the document: its name and its ordered entries.
+    pub(super) type Table = (String, Vec<(String, Scalar)>);
+
     /// A parsed document: tables in order, each holding scalar entries.
     #[derive(Debug, Default)]
     pub(super) struct Value {
-        tables: Vec<(String, Vec<(String, Scalar)>)>,
+        tables: Vec<Table>,
     }
 
     impl Value {
-        pub(super) fn into_tables(self) -> Result<Vec<(String, Vec<(String, Scalar)>)>, String> {
+        pub(super) fn into_tables(self) -> Result<Vec<Table>, String> {
             Ok(self.tables)
-        }
-    }
-
-    impl Scalar {
-        pub(super) fn into_scalar(self) -> Result<String, String> {
-            Ok(self.into_string())
         }
     }
 

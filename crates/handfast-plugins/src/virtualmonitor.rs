@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use handfast_desktop::VirtualDisplay;
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
-    DesktopRequirement, LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
+    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
     PluginMeta, PluginOutput,
 };
 use serde_json::{json, Map, Value};
@@ -112,9 +112,6 @@ impl Plugin for VirtualMonitorPlugin {
         &roster::VIRTUALMONITOR
     }
 
-    fn requirements(&self) -> &'static [DesktopRequirement] {
-        &[DesktopRequirement::Display]
-    }
 
     async fn on_packet(
         &mut self,

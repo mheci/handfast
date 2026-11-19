@@ -47,7 +47,15 @@ def annotate_build(path: str) -> None:
         errors += 1
         parts = line.split(":", 3)
         if len(parts) >= 4 and parts[0].endswith(".rs"):
-            emit("error", parts[0], parts[1], f"{parts[2].strip()}: {parts[3]}".strip())
+            # `--message-format=short` puts the detail on the next indented
+            # line, so include it: "mismatched types" alone is unusable.
+            detail = ""
+            idx = lines.index(line)
+            if idx + 1 < len(lines):
+                nxt = lines[idx + 1].strip()
+                if nxt and not nxt.startswith("error"):
+                    detail = f" [{nxt[:300]}]"
+            emit("error", parts[0], parts[1], f"{parts[2].strip()}: {parts[3]}{detail}".strip())
         else:
             emit("error", ".github", "1", line)
     if errors == 0:

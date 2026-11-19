@@ -289,14 +289,8 @@ mod tests {
 
     #[test]
     fn the_roster_entry_matches_upstream() {
-        assert_eq!(
-            roster::REMOTESYSTEMVOLUME.status,
-            PluginStatus::Implemented
-        );
-        assert_eq!(
-            roster::REMOTESYSTEMVOLUME.incoming,
-            &[types::SYSTEMVOLUME]
-        );
+        assert_eq!(roster::REMOTESYSTEMVOLUME.status, PluginStatus::Implemented);
+        assert_eq!(roster::REMOTESYSTEMVOLUME.incoming, &[types::SYSTEMVOLUME]);
         assert_eq!(
             roster::REMOTESYSTEMVOLUME.outgoing,
             &[types::SYSTEMVOLUME_REQUEST]
@@ -380,7 +374,10 @@ mod tests {
     #[test]
     fn bad_names_are_rejected_before_they_queue() {
         let mut plugin = RemoteSystemVolumePlugin::new();
-        assert_eq!(plugin.set_volume("", 10), Err(RemoteVolumeError::InvalidName));
+        assert_eq!(
+            plugin.set_volume("", 10),
+            Err(RemoteVolumeError::InvalidName)
+        );
         assert_eq!(
             plugin.set_muted("bad\u{7}", true),
             Err(RemoteVolumeError::InvalidName)

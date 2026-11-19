@@ -19,7 +19,7 @@
 use async_trait::async_trait;
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
-    DesktopRequirement, LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
+    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
     PluginMeta, PluginOutput,
 };
 use serde_json::{json, Map, Value};
@@ -144,9 +144,6 @@ impl Plugin for TelephonyPlugin {
         &roster::TELEPHONY
     }
 
-    fn requirements(&self) -> &'static [DesktopRequirement] {
-        &[DesktopRequirement::Telephony]
-    }
 
     async fn on_tick(&mut self, ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
         let mut output = PluginOutput::new();

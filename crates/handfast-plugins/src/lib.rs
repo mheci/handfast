@@ -26,12 +26,12 @@ pub mod remoteinput;
 pub mod remotesystemvolume;
 pub mod roster;
 pub mod runcommand;
+pub mod screensaver_inhibit;
 pub mod sendnotifications;
 pub mod sftp;
+pub mod share;
 pub mod shareinputdevices;
 pub mod shareinputdevicesremote;
-pub mod screensaver_inhibit;
-pub mod share;
 pub mod sms;
 pub mod systemvolume;
 pub mod telephony;
@@ -44,8 +44,8 @@ pub use clipboard::{ClipboardFactory, ClipboardPlugin};
 pub use connectivity_report::{ConnectivityReportFactory, ConnectivityReportPlugin};
 pub use contacts::{ContactsFactory, ContactsPlugin};
 pub use digitizer::{DigitizerFactory, DigitizerPlugin, DigitizerSession};
-pub use findmyphone::{FindMyPhoneFactory, FindMyPhonePlugin};
 pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
+pub use findmyphone::{FindMyPhoneFactory, FindMyPhonePlugin};
 pub use lockdevice::{LockDeviceFactory, LockDevicePlugin};
 pub use mousepad::{MousepadFactory, MousepadPlugin};
 pub use mpriscontrol::{MprisControlFactory, MprisControlPlugin};
@@ -57,27 +57,27 @@ pub use presenter::{PresenterFactory, PresenterPlugin};
 pub use remotecommands::{
     RemoteCommand, RemoteCommandError, RemoteCommandsFactory, RemoteCommandsPlugin,
 };
+pub use remoteinput::{
+    RemoteControlFactory, RemoteControlPlugin, RemoteInputError, RemoteKeyboardFactory,
+    RemoteKeyboardPlugin,
+};
 pub use remotesystemvolume::{
     RemoteSystemVolumeFactory, RemoteSystemVolumePlugin, RemoteVolumeError,
 };
 pub use runcommand::{
     parse_commands, ConfiguredCommand, RunCommandError, RunCommandFactory, RunCommandPlugin,
 };
+pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
 pub use sendnotifications::{
     OutgoingNotification, SendNotificationsFactory, SendNotificationsPlugin,
 };
 pub use sftp::{DesktopSftpServer, SftpFactory, SftpPlugin, SftpServer, SftpStart};
+pub use share::{ShareFactory, SharePlugin};
 pub use shareinputdevices::{ShareInputDevicesFactory, ShareInputDevicesPlugin};
 pub use shareinputdevicesremote::{
     ShareInputDevicesRemoteFactory, ShareInputDevicesRemotePlugin, ShareState,
 };
 pub use sms::{Conversation, Message, SmsFactory, SmsPlugin};
-pub use remoteinput::{
-    RemoteControlFactory, RemoteControlPlugin, RemoteInputError, RemoteKeyboardFactory,
-    RemoteKeyboardPlugin,
-};
-pub use screensaver_inhibit::{ScreensaverInhibitFactory, ScreensaverInhibitPlugin};
-pub use share::{ShareFactory, SharePlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
 pub use telephony::{TelephonyEvent, TelephonyFactory, TelephonyPlugin};
 pub use virtualmonitor::{RequestedDisplay, VirtualMonitorFactory, VirtualMonitorPlugin};
