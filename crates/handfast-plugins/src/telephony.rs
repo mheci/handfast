@@ -167,8 +167,9 @@ impl Plugin for TelephonyPlugin {
                     }));
                 };
                 // Any event ends the previous ring, whether it is a cancel, a
-                // talk or a missed call.
-                let was_ringing = std::mem::replace(&mut self.ringing, call.event == "ringing");
+                // talk or a missed call. A cancelled ring is not a ring.
+                let still_ringing = call.event == "ringing" && !call.is_cancel;
+                let was_ringing = std::mem::replace(&mut self.ringing, still_ringing);
                 self.handled += 1;
 
                 let Some(notifier) = &ctx.desktop.notifier else {
@@ -255,7 +256,8 @@ mod tests {
     fn the_roster_entry_matches_upstream() {
         assert_eq!(roster::TELEPHONY.status, PluginStatus::Implemented);
         assert_eq!(roster::TELEPHONY.incoming, &[types::TELEPHONY]);
-        assert_eq!(roster::TELEPHONY.outgoing, &[types::TELEPHONY_REQUEST_MUTE]);
+        // Inbound only: the phone's calls are shown, nothing is sent back.
+        assert!(roster::TELEPHONY.outgoing.is_empty());
     }
 
     #[tokio::test]

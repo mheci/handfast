@@ -341,8 +341,8 @@ mod tests {
                     .as_object()
                     .unwrap()
             )
-                .unwrap()
-                .scale,
+            .unwrap()
+            .scale,
             200
         );
         // Out-of-range scale falls back rather than refusing the request.
@@ -352,13 +352,12 @@ mod tests {
                     .as_object()
                     .unwrap()
             )
-                .unwrap()
-                .scale,
+            .unwrap()
+            .scale,
             100
         );
-        assert!(RequestedDisplay::from_body(
-            json!({ "width": 100 }).as_object().unwrap()
-        )
-        .is_none());
+        assert!(
+            RequestedDisplay::from_body(json!({ "width": 100 }).as_object().unwrap()).is_none()
+        );
     }
 }

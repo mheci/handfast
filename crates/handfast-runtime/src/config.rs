@@ -61,8 +61,7 @@ impl PluginConfig {
     /// values. An absent file is an error: pass [`Self::new`] for no config.
     pub fn load(path: &Path) -> io::Result<Self> {
         let text = std::fs::read_to_string(path)?;
-        Self::parse(&text)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        Self::parse(&text).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
     /// Parse the config from TOML text.
@@ -382,8 +381,8 @@ mod toml_lite {
 
         #[test]
         fn parses_tables_and_scalars() {
-            let value = parse("[a]\nx = \"one\"\ny = 2\nz = true\n# comment\n\n[b]\nq = 'lit'\n")
-                .unwrap();
+            let value =
+                parse("[a]\nx = \"one\"\ny = 2\nz = true\n# comment\n\n[b]\nq = 'lit'\n").unwrap();
             assert_eq!(value.tables.len(), 2);
             assert_eq!(value.tables[0].0, "a");
             assert_eq!(value.tables[0].1.len(), 3);

@@ -211,7 +211,15 @@ impl DeviceHost {
             if !meta.incoming.contains(&packet.ptype.as_str()) {
                 continue;
             }
-            match invoke(plugin.as_mut(), device, desktop, config, Call::Packet(packet)).await {
+            match invoke(
+                plugin.as_mut(),
+                device,
+                desktop,
+                config,
+                Call::Packet(packet),
+            )
+            .await
+            {
                 Ok(output) => result.absorb(output),
                 Err(error) => {
                     newly_failed.push(meta.name);
