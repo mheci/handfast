@@ -148,13 +148,13 @@ def annotate_tests(path: str) -> None:
 def main() -> None:
     for target in sys.argv[1:]:
         name = os.path.basename(target)
-        if name.startswith("clippy") or name.startswith("build") or name.startswith("doc"):
-            annotate_build(target)
-        elif name.startswith("fmt"):
+        if name.startswith("fmt"):
             annotate_fmt(target)
-        elif name.startswith("test"):
+        elif name.startswith("test") or name.startswith("desktop") or name.startswith("daemon"):
             annotate_build(target)
             annotate_tests(target)
+        else:
+            annotate_build(target)
 
 
 if __name__ == "__main__":
