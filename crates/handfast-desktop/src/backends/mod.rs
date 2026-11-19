@@ -3,10 +3,12 @@
 //! Each backend is independent, so a host missing one capability still gets the
 //! others.
 
+pub mod battery;
 pub mod clipboard;
 pub mod lock;
 pub mod mpris;
 pub mod notifications;
+pub mod presenter;
 pub mod screensaver;
 pub mod shell;
 pub mod volume;
@@ -14,7 +16,7 @@ pub mod volume;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::traits::{Clipboard, Lock, Media, Notifier, Screensaver, Shell, Volume};
+use crate::traits::{Battery, Clipboard, Lock, Media, Notifier, Presenter, Screensaver, Shell, Volume};
 
 /// Whether `program` resolves to a regular file on `PATH`.
 ///
@@ -81,6 +83,20 @@ pub fn volume() -> Arc<dyn Volume> {
 #[must_use]
 pub fn shell() -> Arc<dyn Shell> {
     Arc::new(shell::XdgOpenShell::new())
+}
+
+/// Build the host battery backend.
+///
+/// Linux reads sysfs; other hosts report "no battery" rather than failing.
+#[must_use]
+pub fn battery() -> Arc<dyn Battery> {
+    battery::adapter()
+}
+
+/// Build the presenter view backend.
+#[must_use]
+pub fn presenter() -> Arc<dyn Presenter> {
+    Arc::new(presenter::CommandPresenter::new())
 }
 
 /// Build the host screensaver inhibition backend.

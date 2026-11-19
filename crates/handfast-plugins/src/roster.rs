@@ -12,8 +12,8 @@ pub const BATTERY: PluginMeta = PluginMeta {
     title: "Battery monitor",
     status: IMPLEMENTED,
     incoming: &[types::BATTERY],
-    outgoing: &[],
-    desktop: DesktopRequirement::None,
+    outgoing: &[types::BATTERY],
+    desktop: DesktopRequirement::Battery,
 };
 
 /// Clipboard text sync.
@@ -21,8 +21,16 @@ pub const CLIPBOARD: PluginMeta = PluginMeta {
     name: "clipboard",
     title: "Clipboard synchronization",
     status: IMPLEMENTED,
-    incoming: &[types::CLIPBOARD, types::CLIPBOARD_CONNECT],
-    outgoing: &[],
+    incoming: &[
+        types::CLIPBOARD,
+        types::CLIPBOARD_CONNECT,
+        types::CLIPBOARD_FILE,
+    ],
+    outgoing: &[
+        types::CLIPBOARD,
+        types::CLIPBOARD_CONNECT,
+        types::CLIPBOARD_FILE,
+    ],
     desktop: DesktopRequirement::Clipboard,
 };
 
@@ -32,7 +40,7 @@ pub const CONNECTIVITY_REPORT: PluginMeta = PluginMeta {
     title: "Connectivity monitor",
     status: IMPLEMENTED,
     incoming: &[types::CONNECTIVITY_REPORT],
-    outgoing: &[types::CONNECTIVITY_REPORT_REQUEST],
+    outgoing: &[],
     desktop: DesktopRequirement::None,
 };
 
@@ -77,7 +85,7 @@ pub const FINDTHISDEVICE: PluginMeta = PluginMeta {
     name: "findthisdevice",
     title: "Find this device",
     status: IMPLEMENTED,
-    incoming: &[types::FINDMYPHONE_REQUEST, types::FINDTHISDEVICE_PRIVATE],
+    incoming: &[types::FINDMYPHONE_REQUEST],
     outgoing: &[],
     desktop: DesktopRequirement::Notifications,
 };
@@ -87,8 +95,8 @@ pub const LOCKDEVICE: PluginMeta = PluginMeta {
     name: "lockdevice",
     title: "Lock device",
     status: IMPLEMENTED,
-    incoming: &[types::LOCK_REQUEST],
-    outgoing: &[],
+    incoming: &[types::LOCK_REQUEST, types::LOCK],
+    outgoing: &[types::LOCK_REQUEST, types::LOCK],
     desktop: DesktopRequirement::Lock,
 };
 
@@ -97,7 +105,7 @@ pub const MMTELEPHONY: PluginMeta = PluginMeta {
     name: "mmtelephony",
     title: "ModemManager telephony",
     status: PLANNED,
-    incoming: &[types::TELEPHONY_REQUEST_MUTE],
+    incoming: &[types::TELEPHONY, types::TELEPHONY_REQUEST_MUTE],
     outgoing: &[types::TELEPHONY],
     desktop: DesktopRequirement::Telephony,
 };
@@ -108,7 +116,7 @@ pub const MOUSEPAD: PluginMeta = PluginMeta {
     title: "Receive remote input",
     status: PLANNED,
     incoming: &[types::MOUSEPAD_REQUEST],
-    outgoing: &[types::MOUSEPAD_ECHO, types::MOUSEPAD_KEYBOARDSTATE],
+    outgoing: &[types::MOUSEPAD_KEYBOARDSTATE],
     desktop: DesktopRequirement::Input,
 };
 
@@ -118,7 +126,7 @@ pub const MPRISCONTROL: PluginMeta = PluginMeta {
     title: "Multimedia control receiver",
     status: IMPLEMENTED,
     incoming: &[types::MPRIS_REQUEST],
-    outgoing: &[],
+    outgoing: &[types::MPRIS],
     desktop: DesktopRequirement::Media,
 };
 
@@ -138,7 +146,7 @@ pub const NOTIFICATIONS: PluginMeta = PluginMeta {
     title: "Receive notifications",
     status: IMPLEMENTED,
     incoming: &[types::NOTIFICATION],
-    outgoing: &[],
+    outgoing: &[types::NOTIFICATION_ACTION, types::NOTIFICATION_REPLY, types::NOTIFICATION_REQUEST],
     desktop: DesktopRequirement::Notifications,
 };
 
@@ -158,7 +166,7 @@ pub const PING: PluginMeta = PluginMeta {
     title: "Ping",
     status: IMPLEMENTED,
     incoming: &[types::PING],
-    outgoing: &[],
+    outgoing: &[types::PING],
     desktop: DesktopRequirement::None,
 };
 
@@ -169,7 +177,7 @@ pub const PRESENTER: PluginMeta = PluginMeta {
     status: IMPLEMENTED,
     incoming: &[types::PRESENTER],
     outgoing: &[],
-    desktop: DesktopRequirement::Input,
+    desktop: DesktopRequirement::Presenter,
 };
 
 /// Trigger commands on a remote device.
@@ -177,8 +185,8 @@ pub const REMOTECOMMANDS: PluginMeta = PluginMeta {
     name: "remotecommands",
     title: "Send commands to execute",
     status: PLANNED,
-    incoming: &[types::RUNCOMMAND_REQUEST],
-    outgoing: &[types::RUNCOMMAND],
+    incoming: &[types::RUNCOMMAND],
+    outgoing: &[types::RUNCOMMAND_REQUEST],
     desktop: DesktopRequirement::Shell,
 };
 
@@ -197,7 +205,7 @@ pub const REMOTEKEYBOARD: PluginMeta = PluginMeta {
     name: "remotekeyboard",
     title: "Send remote keyboard input",
     status: PLANNED,
-    incoming: &[],
+    incoming: &[types::MOUSEPAD_ECHO, types::MOUSEPAD_KEYBOARDSTATE],
     outgoing: &[types::MOUSEPAD_REQUEST],
     desktop: DesktopRequirement::None,
 };
@@ -247,8 +255,8 @@ pub const SFTP: PluginMeta = PluginMeta {
     name: "sftp",
     title: "Remote filesystem browser",
     status: PLANNED,
-    incoming: &[types::SFTP_REQUEST],
-    outgoing: &[types::SFTP],
+    incoming: &[types::SFTP],
+    outgoing: &[types::SFTP_REQUEST],
     desktop: DesktopRequirement::Files,
 };
 
@@ -257,7 +265,7 @@ pub const SHARE: PluginMeta = PluginMeta {
     name: "share",
     title: "Share and receive",
     status: IMPLEMENTED,
-    incoming: &[types::SHARE_REQUEST, types::SHARE_REQUEST_UPDATE],
+    incoming: &[types::SHARE_REQUEST],
     outgoing: &[types::SHARE_REQUEST, types::SHARE_REQUEST_UPDATE],
     desktop: DesktopRequirement::Files,
 };
@@ -267,8 +275,8 @@ pub const SHAREINPUTDEVICES: PluginMeta = PluginMeta {
     name: "shareinputdevices",
     title: "Share input devices",
     status: PLANNED,
-    incoming: &[types::SHAREINPUTDEVICES_REQUEST],
-    outgoing: &[types::SHAREINPUTDEVICES, types::MOUSEPAD_REQUEST],
+    incoming: &[types::SHAREINPUTDEVICES],
+    outgoing: &[types::MOUSEPAD_REQUEST, types::SHAREINPUTDEVICES_REQUEST],
     desktop: DesktopRequirement::Input,
 };
 
@@ -277,8 +285,8 @@ pub const SHAREINPUTDEVICESREMOTE: PluginMeta = PluginMeta {
     name: "shareinputdevicesremote",
     title: "Receive shared input devices",
     status: PLANNED,
-    incoming: &[types::SHAREINPUTDEVICES, types::MOUSEPAD_REQUEST],
-    outgoing: &[types::SHAREINPUTDEVICES_REQUEST],
+    incoming: &[types::MOUSEPAD_REQUEST, types::SHAREINPUTDEVICES_REQUEST],
+    outgoing: &[types::SHAREINPUTDEVICES],
     desktop: DesktopRequirement::Input,
 };
 
@@ -287,15 +295,8 @@ pub const SMS: PluginMeta = PluginMeta {
     name: "sms",
     title: "SMS integration",
     status: PLANNED,
-    incoming: &[
-        types::SMS_MESSAGES,
-        types::SMS_REQUEST_CONVERSATION,
-        types::SMS_REQUEST_CONVERSATIONS,
-        types::SMS_REQUEST_ATTACHMENT,
-        types::SMS_ATTACHMENT_FILE,
-    ],
+    incoming: &[types::SMS_MESSAGES, types::SMS_ATTACHMENT_FILE],
     outgoing: &[
-        types::SMS_MESSAGES,
         types::SMS_REQUEST,
         types::SMS_REQUEST_CONVERSATION,
         types::SMS_REQUEST_CONVERSATIONS,
@@ -309,8 +310,8 @@ pub const SYSTEMVOLUME: PluginMeta = PluginMeta {
     name: "systemvolume",
     title: "Receive volume controls",
     status: IMPLEMENTED,
-    incoming: &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST],
-    outgoing: &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST],
+    incoming: &[types::SYSTEMVOLUME_REQUEST],
+    outgoing: &[types::SYSTEMVOLUME],
     desktop: DesktopRequirement::Volume,
 };
 
@@ -319,7 +320,7 @@ pub const TELEPHONY: PluginMeta = PluginMeta {
     name: "telephony",
     title: "Telephony integration",
     status: PLANNED,
-    incoming: &[types::TELEPHONY, types::TELEPHONY_REQUEST_MUTE],
+    incoming: &[types::TELEPHONY],
     outgoing: &[types::TELEPHONY_REQUEST_MUTE],
     desktop: DesktopRequirement::Telephony,
 };

@@ -1120,6 +1120,12 @@ fn install_backends(
     if available("loginctl") {
         desktop.lock = Some(backends::lock());
     }
+    // Battery and the presentation view need no external tool: sysfs is read
+    // directly and the view is drawn in process. Both are advertised always,
+    // exactly as the desktop client does, and a host without a battery reports
+    // charge -1 rather than hiding the plugin.
+    desktop.battery = Some(backends::battery());
+    desktop.presenter = Some(backends::presenter());
     desktop
 }
 
@@ -1145,8 +1151,16 @@ mod tests {
 
     #[test]
     fn available_tools_select_their_backends() {
+        // Battery and presenter are tool-independent, so even a bare host has
+        // them; every other adapter follows its program.
+        let bare = DesktopCapabilities {
+            battery: true,
+            presenter: true,
+            ..DesktopCapabilities::default()
+        };
+
         let none = install_backends(Desktop::default(), false, |_| false);
-        assert_eq!(none.capabilities(), DesktopCapabilities::default());
+        assert_eq!(none.capabilities(), bare);
 
         let all = install_backends(Desktop::default(), false, |_| true);
         assert_eq!(
@@ -1161,6 +1175,8 @@ mod tests {
                 lock: true,
                 shell: true,
                 files: false,
+                battery: true,
+                presenter: true,
             }
         );
 
@@ -1188,21 +1204,25 @@ mod tests {
             ("xclip", &[types::CLIPBOARD, types::CLIPBOARD_CONNECT][..]),
             (
                 "notify-send",
-                &[
-                    types::NOTIFICATION,
-                    types::FINDMYPHONE_REQUEST,
-                    types::FINDTHISDEVICE_PRIVATE,
-                ][..],
+                &[types::NOTIFICATION, types::FINDMYPHONE_REQUEST][..],
             ),
-            ("playerctl", &[types::MPRIS_REQUEST, types::TELEPHONY][..]),
+            ("playerctl", &[types::MPRIS_REQUEST][..]),
             (
                 "wpctl",
                 &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST][..],
             ),
-            ("loginctl", &[types::LOCK_REQUEST][..]),
+            (
+                "loginctl",
+                &[
+                    types::LOCK_REQUEST,
+                    types::LOCK,
+                ][..],
+            ),
         ];
 
         for (tool, accepted) in packets {
+            // The tool-independent adapters are present either way; the loop
+            // only exercises the ones that follow a program.
             let without = install_backends(Desktop::default(), false, |program| program != tool);
             let capabilities = registry.capabilities(&without).unwrap();
             for packet in accepted {

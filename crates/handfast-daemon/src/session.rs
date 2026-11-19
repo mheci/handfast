@@ -41,6 +41,12 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 /// Byte step that also releases a progress event.
 const PROGRESS_BYTES: u64 = 4 * 1024 * 1024;
 
+/// How often every enabled plugin gets a tick.
+///
+/// The interval bounds how long a polled plugin's state can lag. Plugins that
+/// have nothing to say return an empty output, so this is a cheap wakeup.
+const PLUGIN_TICK_INTERVAL: Duration = Duration::from_secs(2);
+
 /// An event from a session or a pairing task back to the daemon.
 #[derive(Debug)]
 pub enum DaemonEvent {
@@ -703,6 +709,7 @@ impl TransferRunner {
 /// One step of the session loop.
 enum SessionStep {
     Input(Option<SessionInput>),
+    Tick,
     Stop(String),
     Receive(Option<Result<(), JoinError>>),
     Connect(Option<ConnectJoin>),
@@ -755,6 +762,9 @@ async fn run(
         runner.enqueue_all(transfers).await;
     }
 
+    let mut ticker = tokio::time::interval(PLUGIN_TICK_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let reason = loop {
         if let Some(runner) = runner.as_mut() {
             runner.start_front();
@@ -774,6 +784,7 @@ async fn run(
                     biased;
                     reason = next_stop(&mut stop) => SessionStep::Stop(reason),
                     input = input.recv() => SessionStep::Input(input),
+                    _ = ticker.tick() => SessionStep::Tick,
                     joined = runner.receives.join_next(), if receives_open => {
                         SessionStep::Receive(joined)
                     }
@@ -790,6 +801,7 @@ async fn run(
                     biased;
                     reason = next_stop(&mut stop) => SessionStep::Stop(reason),
                     input = input.recv() => SessionStep::Input(input),
+                    _ = ticker.tick() => SessionStep::Tick,
                 }
             }
         };
@@ -802,6 +814,13 @@ async fn run(
                     break reason;
                 }
                 handle_input(input, &mut host, &mut runner, &link, &events, &device_id).await;
+            }
+            SessionStep::Tick => {
+                let dispatch = host.on_tick().await;
+                let transfers = send_dispatch(&link, &events, &device_id, dispatch).await;
+                if let Some(runner) = runner.as_mut() {
+                    runner.enqueue_all(transfers).await;
+                }
             }
             SessionStep::Receive(joined) => {
                 if let Some(runner) = runner.as_mut() {
@@ -1430,6 +1449,7 @@ mod tests {
 
     struct RecordingPlugin {
         calls: Arc<Mutex<Vec<&'static str>>>,
+        ticks: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -1470,6 +1490,7 @@ mod tests {
 
     struct RecordingFactory {
         calls: Arc<Mutex<Vec<&'static str>>>,
+        ticks: Arc<AtomicUsize>,
     }
 
     impl PluginFactory for RecordingFactory {
@@ -1480,6 +1501,7 @@ mod tests {
         fn create(&self) -> Box<dyn Plugin> {
             Box::new(RecordingPlugin {
                 calls: Arc::clone(&self.calls),
+                ticks: Arc::clone(&self.ticks),
             })
         }
     }
@@ -1542,8 +1564,10 @@ mod tests {
     #[tokio::test]
     async fn disconnect_runs_on_disconnect_and_forwards_its_output() {
         let calls = Arc::new(Mutex::new(Vec::new()));
+        let ticks = Arc::new(AtomicUsize::new(0));
         let registry = Arc::new(Registry::new(vec![Box::new(RecordingFactory {
             calls: Arc::clone(&calls),
+            ticks: Arc::clone(&ticks),
         })]));
         let peer = peer_identity();
         let device_id = peer.device_id.clone();
@@ -1600,6 +1624,40 @@ mod tests {
             }
             _ => panic!("expected plugin events"),
         }
+    }
+
+    #[tokio::test]
+    async fn every_plugin_gets_periodic_ticks() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(Registry::new(vec![Box::new(RecordingFactory {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            ticks: Arc::clone(&ticks),
+        })]));
+        let (link_tx, mut link_rx) = mpsc::channel(8);
+        let drain = tokio::spawn(async move { while link_rx.recv().await.is_some() {} });
+        let (events_tx, _events_rx) = mpsc::channel(8);
+        let session = DeviceSession::start(
+            peer_identity(),
+            LinkHandle::from_channel(
+                DeviceId::new("0123456789abcdef0123456789abcdef").unwrap(),
+                link_tx,
+            ),
+            registry,
+            Desktop::default(),
+            events_tx,
+            SessionLimits::default(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while ticks.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the session ticks its plugins");
+
+        stop_session(session).await;
+        drain.abort();
     }
 
     #[tokio::test]

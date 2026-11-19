@@ -7,7 +7,7 @@ use handfast_runtime::{
     LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
     PluginOutput,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::roster;
 
@@ -92,17 +92,149 @@ fn parse(packet: &Packet, device_id: &DeviceId) -> Result<Incoming, String> {
     Ok(Incoming::Post(notification))
 }
 
+/// Largest action/reply id accepted, matching the inbound id cap.
+const MAX_KEY_BYTES: usize = 256;
+
+/// Split a Handfast notification id back into the peer's raw id.
+///
+/// Inbound ids are namespaced `{device_id}|{raw}` so two phones cannot collide
+/// in the desktop notification daemon. An id without the prefix is passed
+/// through, which keeps a locally generated id working.
+fn raw_id(id: &str) -> &str {
+    id.split_once('|').map_or(id, |(_, raw)| raw)
+}
+
 /// Shows inbound phone notifications and closes them on cancel or disconnect.
+///
+/// The control direction is the other half of the plugin: a notification on
+/// this desktop can be dismissed, answered or acted on. Those packets are
+/// queued and released on the next tick, because a plugin hook is the only
+/// place the session sends from.
 #[derive(Debug, Default)]
 pub struct NotificationsPlugin {
     posted: Vec<String>,
+    pending: Vec<Packet>,
+}
+
+/// Why a control action was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlError {
+    /// The id or key is empty or too long.
+    InvalidId,
+    /// The message is empty or too long.
+    InvalidMessage,
+}
+
+impl std::fmt::Display for ControlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidId => formatter.write_str("notification id is empty or too long"),
+            Self::InvalidMessage => formatter.write_str("notification message is empty or too long"),
+        }
+    }
+}
+
+fn valid_key(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_KEY_BYTES
+        && !value.chars().any(|character| character.is_control())
 }
 
 impl NotificationsPlugin {
     /// Create a notifications plugin.
     #[must_use]
     pub const fn new() -> Self {
-        Self { posted: Vec::new() }
+        Self {
+            posted: Vec::new(),
+            pending: Vec::new(),
+        }
+    }
+
+    /// Queue a dismissal of one of the peer's notifications.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the id is unusable.
+    pub fn dismiss(&mut self, id: &str) -> Result<(), ControlError> {
+        if !valid_key(id) {
+            return Err(ControlError::InvalidId);
+        }
+        self.pending
+            .push(Packet::new(types::NOTIFICATION_REQUEST, json!({ "cancel": raw_id(id) }))
+                .map_err(|_| ControlError::InvalidId)?);
+        Ok(())
+    }
+
+    /// Queue a request for the peer's list of active notifications.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the packet cannot be built, which cannot happen for a
+    /// constant type and an object body.
+    pub fn request_active(&mut self) -> Result<(), ControlError> {
+        self.pending
+            .push(Packet::new(types::NOTIFICATION_REQUEST, json!({ "request": true }))
+                .map_err(|_| ControlError::InvalidId)?);
+        Ok(())
+    }
+
+    /// Queue a reply to a notification that asked for one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the reply id or the message is unusable.
+    pub fn reply(&mut self, request_reply_id: &str, message: &str) -> Result<(), ControlError> {
+        if !valid_key(request_reply_id) {
+            return Err(ControlError::InvalidId);
+        }
+        if message.is_empty() || message.len() > MAX_TEXT_BYTES {
+            return Err(ControlError::InvalidMessage);
+        }
+        self.pending.push(
+            Packet::new(
+                types::NOTIFICATION_REPLY,
+                json!({
+                    "requestReplyId": raw_id(request_reply_id),
+                    "message": message,
+                }),
+            )
+            .map_err(|_| ControlError::InvalidMessage)?,
+        );
+        Ok(())
+    }
+
+    /// Queue an action on a notification.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the key or the action label is unusable.
+    pub fn action(&mut self, key: &str, action: &str) -> Result<(), ControlError> {
+        if !valid_key(key) {
+            return Err(ControlError::InvalidId);
+        }
+        if action.is_empty() || action.len() > MAX_TEXT_BYTES {
+            return Err(ControlError::InvalidMessage);
+        }
+        self.pending.push(
+            Packet::new(
+                types::NOTIFICATION_ACTION,
+                json!({ "key": raw_id(key), "action": action }),
+            )
+            .map_err(|_| ControlError::InvalidMessage)?,
+        );
+        Ok(())
+    }
+
+    /// How many control packets are waiting for the next tick.
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// The queued control packets, for inspection in tests.
+    #[must_use]
+    pub fn pending_packets(&self) -> &[Packet] {
+        &self.pending
     }
 
     async fn apply(
@@ -127,8 +259,13 @@ impl NotificationsPlugin {
                     .notify(&notification)
                     .await
                     .map_err(|error| PluginError::Backend(error.to_string()))?;
-                if let Some(id) = notification.id {
+                if let Some(id) = notification.id.clone() {
                     self.posted.push(id);
+                }
+                if let Some(reply_id) = notification.reply_id.as_deref() {
+                    // The notifier shows a reply prompt for this notification;
+                    // the plugin answers it through [`Self::reply`].
+                    tracing::debug!(%reply_id, "notification accepts a reply");
                 }
             }
             Incoming::Cancel(id) => notifier
@@ -146,6 +283,15 @@ impl Plugin for NotificationsPlugin {
         &roster::NOTIFICATIONS
     }
 
+    async fn on_tick(&mut self, _ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
+        if self.pending.is_empty() {
+            return Ok(PluginOutput::new());
+        }
+        let mut output = PluginOutput::new();
+        output.packets = std::mem::take(&mut self.pending);
+        Ok(output)
+    }
+
     async fn on_packet(
         &mut self,
         ctx: &mut PluginContext<'_>,
@@ -153,12 +299,14 @@ impl Plugin for NotificationsPlugin {
     ) -> Result<PluginOutput, PluginError> {
         match packet.ptype.as_str() {
             types::NOTIFICATION => self.apply(ctx, packet).await,
+            // These travel from the desktop to the phone; a peer sending them
+            // is confused rather than hostile, so note it at debug level.
             types::NOTIFICATION_REQUEST
             | types::NOTIFICATION_ACTION
-            | types::NOTIFICATION_REPLY => Ok(PluginOutput::new().with_event(PluginEvent::Log {
-                level: LogLevel::Info,
-                message: format!("{} is not supported yet", packet.ptype),
-            })),
+            | types::NOTIFICATION_REPLY => {
+                tracing::debug!(ptype = %packet.ptype, "ignoring a control packet from the peer");
+                Ok(PluginOutput::new())
+            }
             _ => Ok(PluginOutput::new()),
         }
     }
@@ -207,7 +355,6 @@ mod tests {
     use handfast_desktop::MockDesktop;
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
     use handfast_runtime::{Device, PluginStatus};
-    use serde_json::json;
 
     const RAW_ID: &str = "0|com.example|1|null|1000";
 
@@ -509,5 +656,66 @@ mod tests {
         let output = disconnect(&mut plugin, &device, &desktop).await;
         assert!(output.events.is_empty());
         assert_eq!(mock.notifications().len(), 1);
+    }
+
+    #[test]
+    fn a_dismissal_targets_the_raw_id() {
+        let mut plugin = NotificationsPlugin::new();
+        plugin.dismiss("device|0|com.example|1|null|1000").unwrap();
+        let packet = &plugin.pending_packets()[0];
+        assert_eq!(packet.ptype, types::NOTIFICATION_REQUEST);
+        assert_eq!(packet.body["cancel"], json!("0|com.example|1|null|1000"));
+    }
+
+    #[test]
+    fn a_reply_targets_the_raw_reply_id() {
+        let mut plugin = NotificationsPlugin::new();
+        plugin.reply("device|reply-7", "on my way").unwrap();
+        let packet = &plugin.pending_packets()[0];
+        assert_eq!(packet.ptype, types::NOTIFICATION_REPLY);
+        assert_eq!(packet.body["requestReplyId"], json!("reply-7"));
+        assert_eq!(packet.body["message"], json!("on my way"));
+    }
+
+    #[test]
+    fn an_action_carries_the_key_and_label() {
+        let mut plugin = NotificationsPlugin::new();
+        plugin.action("device|key-1", "Mark as read").unwrap();
+        let packet = &plugin.pending_packets()[0];
+        assert_eq!(packet.ptype, types::NOTIFICATION_ACTION);
+        assert_eq!(packet.body["key"], json!("key-1"));
+        assert_eq!(packet.body["action"], json!("Mark as read"));
+    }
+
+    #[test]
+    fn an_empty_control_field_is_rejected() {
+        let mut plugin = NotificationsPlugin::new();
+        assert_eq!(plugin.dismiss(""), Err(ControlError::InvalidId));
+        assert_eq!(
+            plugin.reply("id", ""),
+            Err(ControlError::InvalidMessage)
+        );
+        assert_eq!(plugin.action("id", ""), Err(ControlError::InvalidMessage));
+        assert_eq!(plugin.pending(), 0, "nothing was queued");
+    }
+
+    #[tokio::test]
+    async fn queued_controls_are_released_on_the_next_tick() {
+        let mock = MockDesktop::new();
+        let device = device();
+        let desktop = mock.desktop();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let mut plugin = NotificationsPlugin::new();
+        plugin.request_active().unwrap();
+        plugin.dismiss("device|id").unwrap();
+        assert_eq!(plugin.pending(), 2);
+        let output = plugin.on_tick(&mut ctx).await.unwrap();
+        assert_eq!(output.packets.len(), 2);
+        assert_eq!(plugin.pending(), 0);
+        let again = plugin.on_tick(&mut ctx).await.unwrap();
+        assert!(again.packets.is_empty());
     }
 }

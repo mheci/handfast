@@ -53,6 +53,9 @@ impl Plugin for FindThisDevicePlugin {
         ctx: &mut PluginContext<'_>,
         packet: &Packet,
     ) -> Result<PluginOutput, PluginError> {
+        // Upstream advertises only the public ring request. The private alias is
+        // accepted as well because older desktop builds send it, but it is not
+        // part of the advertised capability set.
         if !matches!(
             packet.ptype.as_str(),
             types::FINDMYPHONE_REQUEST | types::FINDTHISDEVICE_PRIVATE

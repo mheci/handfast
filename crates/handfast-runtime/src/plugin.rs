@@ -47,6 +47,10 @@ pub enum DesktopRequirement {
     Contacts,
     /// Virtual display output.
     Display,
+    /// Host battery reporting.
+    Battery,
+    /// A fullscreen presentation view.
+    Presenter,
 }
 
 /// Static plugin metadata. This is the single source of truth for capabilities.
@@ -142,6 +146,16 @@ pub trait Plugin: Send + Sync {
     ) -> Result<PluginOutput, PluginError> {
         Ok(PluginOutput::new())
     }
+
+    /// Periodic opportunity to originate packets from local state.
+    ///
+    /// The session calls this once per tick for every enabled plugin. Like the
+    /// other hooks the output's packets are sent to the peer and its events go
+    /// to the daemon. A plugin that has nothing to say returns an empty output,
+    /// which is the default.
+    async fn on_tick(&mut self, _ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
+        Ok(PluginOutput::new())
+    }
 }
 
 /// Creates fresh plugin instances.
@@ -219,6 +233,8 @@ pub(crate) fn desktop_available(desktop: &Desktop, requirement: DesktopRequireme
         DesktopRequirement::Lock => desktop.lock.is_some(),
         DesktopRequirement::Shell => desktop.shell.is_some(),
         DesktopRequirement::Files => desktop.files.is_some(),
+        DesktopRequirement::Battery => desktop.battery.is_some(),
+        DesktopRequirement::Presenter => desktop.presenter.is_some(),
         DesktopRequirement::Telephony
         | DesktopRequirement::Contacts
         | DesktopRequirement::Display => false,

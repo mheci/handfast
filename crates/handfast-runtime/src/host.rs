@@ -46,6 +46,7 @@ enum Call<'a> {
     Connect,
     Packet(&'a Packet),
     Disconnect,
+    Tick,
 }
 
 async fn invoke(
@@ -60,6 +61,7 @@ async fn invoke(
         Call::Connect => Box::pin(plugin.on_connect(&mut ctx)),
         Call::Packet(packet) => Box::pin(plugin.on_packet(&mut ctx, packet)),
         Call::Disconnect => Box::pin(plugin.on_disconnect(&mut ctx)),
+        Call::Tick => Box::pin(plugin.on_tick(&mut ctx)),
     };
     match tokio::time::timeout(PLUGIN_TIMEOUT, AssertUnwindSafe(future).catch_unwind()).await {
         Ok(Ok(Ok(output))) => Ok(output),
@@ -188,6 +190,42 @@ impl DeviceHost {
                 continue;
             }
             match invoke(plugin.as_mut(), device, desktop, Call::Packet(packet)).await {
+                Ok(output) => result.absorb(output),
+                Err(error) => {
+                    newly_failed.push(meta.name);
+                    result.errors.push(error);
+                }
+            }
+        }
+        for name in newly_failed {
+            failed.insert(name);
+        }
+        result
+    }
+
+    /// Give every enabled plugin a chance to originate packets.
+    ///
+    /// Called once per session tick. A failing plugin is marked failed exactly
+    /// as a failed packet call would be, so a broken timer path cannot spin.
+    pub async fn on_tick(&mut self) -> Dispatch {
+        let mut result = Dispatch::default();
+        let mut newly_failed = Vec::new();
+        let Self {
+            device,
+            desktop,
+            plugins,
+            enabled,
+            failed,
+        } = self;
+        for plugin in plugins.iter_mut() {
+            let meta = plugin.meta();
+            if meta.status != PluginStatus::Implemented
+                || !enabled.contains(meta.name)
+                || failed.contains(meta.name)
+            {
+                continue;
+            }
+            match invoke(plugin.as_mut(), device, desktop, Call::Tick).await {
                 Ok(output) => result.absorb(output),
                 Err(error) => {
                     newly_failed.push(meta.name);

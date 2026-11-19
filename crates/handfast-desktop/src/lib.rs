@@ -27,7 +27,10 @@ pub use model::{
     KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerEvent, Urgency,
     VolumeState,
 };
-pub use traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
+pub use traits::{
+    AudioSink, Battery, BatteryStatus, Clipboard, Input, Lock, Media, Notifier, Presenter,
+    Screensaver, Shell, Volume,
+};
 
 /// Presence of desktop adapters on the current host.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,6 +53,10 @@ pub struct DesktopCapabilities {
     pub shell: bool,
     /// File receive and send is available.
     pub files: bool,
+    /// Host battery reporting is available.
+    pub battery: bool,
+    /// A fullscreen presentation view is available.
+    pub presenter: bool,
 }
 
 /// A composed desktop backend.
@@ -73,6 +80,10 @@ pub struct Desktop {
     pub shell: Option<Arc<dyn Shell>>,
     /// File receive and send adapter.
     pub files: Option<Arc<dyn Files>>,
+    /// Host battery reporting adapter.
+    pub battery: Option<Arc<dyn Battery>>,
+    /// Presentation view adapter.
+    pub presenter: Option<Arc<dyn Presenter>>,
 }
 
 impl std::fmt::Debug for Desktop {
@@ -119,6 +130,20 @@ impl Desktop {
         self
     }
 
+    /// Install a battery adapter.
+    #[must_use]
+    pub fn with_battery(mut self, battery: Arc<dyn Battery>) -> Self {
+        self.battery = Some(battery);
+        self
+    }
+
+    /// Install a presenter adapter.
+    #[must_use]
+    pub fn with_presenter(mut self, presenter: Arc<dyn Presenter>) -> Self {
+        self.presenter = Some(presenter);
+        self
+    }
+
     /// Install a clipboard adapter.
     #[must_use]
     pub fn with_clipboard(mut self, clipboard: Arc<dyn Clipboard>) -> Self {
@@ -146,6 +171,8 @@ impl Desktop {
             lock: self.lock.is_some(),
             shell: self.shell.is_some(),
             files: self.files.is_some(),
+            battery: self.battery.is_some(),
+            presenter: self.presenter.is_some(),
         }
     }
 }

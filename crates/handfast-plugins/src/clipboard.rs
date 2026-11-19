@@ -35,9 +35,19 @@ fn is_out_of_order(timestamp: Option<i64>, last_applied_ms: i64, now: Option<i64
 }
 
 /// Applies inbound clipboard text and emits a typed event.
+///
+/// Clipboard sync is two-way: a change on either side becomes a packet on the
+/// other. To keep the two hosts from bouncing the same text forever, the plugin
+/// remembers what it last sent and what it last received and never publishes
+/// either. There is no desktop clipboard-change notification here, so the local
+/// clipboard is sampled on connect and once per plugin tick.
 #[derive(Debug, Default)]
 pub struct ClipboardPlugin {
     last_timestamp_ms: i64,
+    /// The text most recently published to the peer.
+    last_sent: Option<String>,
+    /// The text most recently applied from the peer.
+    last_applied: Option<String>,
 }
 
 impl ClipboardPlugin {
@@ -46,7 +56,47 @@ impl ClipboardPlugin {
     pub const fn new() -> Self {
         Self {
             last_timestamp_ms: 0,
+            last_sent: None,
+            last_applied: None,
         }
+    }
+
+    /// Whether `text` is worth publishing.
+    ///
+    /// Empty text is not published: an empty selection is not a clipboard, and
+    /// both official clients ignore it. Text that came from the peer, or that
+    /// was already sent, is skipped so a link cannot echo.
+    fn should_publish(&self, text: Option<&str>) -> bool {
+        let Some(text) = text else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        if Some(text) == self.last_sent.as_deref() || Some(text) == self.last_applied.as_deref() {
+            return false;
+        }
+        true
+    }
+
+    /// Read the local clipboard and build a publishable packet, if any.
+    async fn poll(
+        &mut self,
+        ctx: &mut PluginContext<'_>,
+    ) -> Result<Option<Packet>, PluginError> {
+        let Some(clipboard) = ctx.desktop.clipboard.as_ref() else {
+            return Ok(None);
+        };
+        let text = clipboard
+            .read_text()
+            .await
+            .map_err(|error| PluginError::Backend(error.to_string()))?;
+        if !self.should_publish(text.as_deref()) {
+            return Ok(None);
+        }
+        let text = text.unwrap_or_default();
+        self.last_sent = Some(text.clone());
+        Ok(Some(clipboard_packet(&text)?))
     }
 
     /// Last applied peer timestamp in milliseconds.
@@ -60,6 +110,32 @@ impl ClipboardPlugin {
 impl Plugin for ClipboardPlugin {
     fn meta(&self) -> &'static PluginMeta {
         &roster::CLIPBOARD
+    }
+
+    async fn on_connect(
+        &mut self,
+        ctx: &mut PluginContext<'_>,
+    ) -> Result<PluginOutput, PluginError> {
+        let Some(clipboard) = ctx.desktop.clipboard.as_ref() else {
+            return Ok(PluginOutput::new());
+        };
+        let text = clipboard
+            .read_text()
+            .await
+            .map_err(|error| PluginError::Backend(error.to_string()))?;
+        let Some(text) = text.filter(|text| !text.is_empty()) else {
+            return Ok(PluginOutput::new());
+        };
+        self.last_sent = Some(text.clone());
+        let timestamp = now_ms().unwrap_or(0);
+        Ok(PluginOutput::new().with_packet(clipboard_connect_packet(&text, timestamp)?))
+    }
+
+    async fn on_tick(&mut self, ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
+        match self.poll(ctx).await? {
+            Some(packet) => Ok(PluginOutput::new().with_packet(packet)),
+            None => Ok(PluginOutput::new()),
+        }
     }
 
     async fn on_packet(
@@ -97,6 +173,8 @@ impl Plugin for ClipboardPlugin {
         if let Some(value) = timestamp {
             self.last_timestamp_ms = self.last_timestamp_ms.max(value);
         }
+        // Remember the inbound text so the tick does not send it straight back.
+        self.last_applied = Some(content.to_string());
 
         Ok(PluginOutput::new().with_event(PluginEvent::Clipboard {
             text: content.to_string(),
@@ -308,6 +386,80 @@ mod tests {
             .on_packet(&mut ctx, &packet)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn connect_publishes_the_local_clipboard() {
+        let mock = MockDesktop::new();
+        mock.desktop()
+            .clipboard
+            .as_ref()
+            .unwrap()
+            .write_text("local")
+            .await
+            .unwrap();
+        let desktop = mock.desktop();
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let output = ClipboardPlugin::new()
+            .on_connect(&mut ctx)
+            .await
+            .unwrap();
+        assert_eq!(output.packets.len(), 1);
+        assert_eq!(output.packets[0].ptype, types::CLIPBOARD_CONNECT);
+        assert_eq!(output.packets[0].body["content"], json!("local"));
+    }
+
+    #[tokio::test]
+    async fn a_local_change_is_published_once() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let mut plugin = ClipboardPlugin::new();
+
+        let quiet = plugin.on_tick(&mut ctx).await.unwrap();
+        assert!(quiet.packets.is_empty(), "an empty clipboard is not sent");
+
+        mock.desktop()
+            .clipboard
+            .as_ref()
+            .unwrap()
+            .write_text("local")
+            .await
+            .unwrap();
+        let sent = plugin.on_tick(&mut ctx).await.unwrap();
+        assert_eq!(sent.packets.len(), 1);
+        assert_eq!(sent.packets[0].ptype, types::CLIPBOARD);
+        assert_eq!(sent.packets[0].body["content"], json!("local"));
+
+        let repeat = plugin.on_tick(&mut ctx).await.unwrap();
+        assert!(repeat.packets.is_empty(), "an unchanged clipboard is not resent");
+    }
+
+    #[tokio::test]
+    async fn inbound_text_is_not_echoed_back() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let mut plugin = ClipboardPlugin::new();
+        plugin
+            .on_packet(&mut ctx, &clipboard_packet("from peer").unwrap())
+            .await
+            .unwrap();
+
+        let output = plugin.on_tick(&mut ctx).await.unwrap();
+        assert!(output.packets.is_empty(), "the applied text is not echoed");
     }
 
     #[test]

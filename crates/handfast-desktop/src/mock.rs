@@ -9,7 +9,10 @@ use async_trait::async_trait;
 use crate::error::{DesktopError, Result};
 use crate::files::{FileLimits, Files, FilesError, LocalFiles};
 use crate::model::{KeyEvent, MediaAction, Notification, PlaybackState, PointerEvent, VolumeState};
-use crate::traits::{Clipboard, Input, Lock, Media, Notifier, Screensaver, Shell, Volume};
+use crate::traits::{
+    AudioSink, Battery, BatteryStatus, Clipboard, Input, Lock, Media, Notifier, Presenter,
+    Screensaver, Shell, Volume,
+};
 use crate::Desktop;
 
 /// Recorded synthetic input.
@@ -52,6 +55,8 @@ struct MockState {
     shell_urls: Mutex<Vec<String>>,
     inhibited: Mutex<bool>,
     media_actions: Mutex<Vec<(String, MediaAction)>>,
+    battery: Mutex<BatteryStatus>,
+    presentations: Mutex<Vec<Option<(f32, f32)>>>,
 }
 
 /// A desktop backend that records every operation.
@@ -80,6 +85,8 @@ impl MockDesktop {
             shell: Some(Arc::clone(&backend) as Arc<dyn Shell>),
             files: None,
             lock: Some(Arc::clone(&lock) as Arc<dyn Lock>),
+            battery: Some(Arc::clone(&backend) as Arc<dyn Battery>),
+            presenter: Some(Arc::clone(&backend) as Arc<dyn Presenter>),
         };
         Self {
             state,
@@ -207,6 +214,35 @@ impl MockDesktop {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Current mock battery state.
+    #[must_use]
+    pub fn battery(&self) -> BatteryStatus {
+        *self
+            .state
+            .battery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Replace the mock battery state.
+    pub fn set_battery(&self, status: BatteryStatus) {
+        *self
+            .state
+            .battery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
+    }
+
+    /// Presentation view calls: `Some((x, y))` for a move, `None` for a stop.
+    #[must_use]
+    pub fn presentations(&self) -> Vec<Option<(f32, f32)>> {
+        self.state
+            .presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Lock calls recorded by the mock lock adapter.
     #[must_use]
     pub fn lock_calls(&self) -> usize {
@@ -299,6 +335,32 @@ impl Volume for MockBackend {
         };
         Ok(())
     }
+
+    async fn sinks(&self) -> Result<Vec<AudioSink>> {
+        let state = *self.lock(&self.0.volume)?;
+        Ok(vec![AudioSink {
+            name: "default".to_string(),
+            description: "System volume".to_string(),
+            volume: i64::from(state.percent),
+            max_volume: 100,
+            muted: state.muted,
+            enabled: true,
+        }])
+    }
+
+    async fn set_sink(&self, name: &str, volume: Option<i64>, muted: Option<bool>) -> Result<()> {
+        if name != "default" {
+            return Err(DesktopError::Backend(format!("unknown audio sink {name}")));
+        }
+        let mut state = self.lock(&self.0.volume)?;
+        if let Some(volume) = volume {
+            state.percent = u8::try_from(volume.clamp(0, 100)).unwrap_or(100);
+        }
+        if let Some(muted) = muted {
+            state.muted = muted;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -323,6 +385,26 @@ impl Screensaver for MockBackend {
 
     async fn release(&self) -> Result<()> {
         *self.lock(&self.0.inhibited)? = false;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Battery for MockBackend {
+    async fn status(&self) -> Result<BatteryStatus> {
+        Ok(*self.lock(&self.0.battery)?)
+    }
+}
+
+#[async_trait]
+impl Presenter for MockBackend {
+    async fn present(&self, x: f32, y: f32) -> Result<()> {
+        self.lock(&self.0.presentations)?.push(Some((x, y)));
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        self.lock(&self.0.presentations)?.push(None);
         Ok(())
     }
 }
