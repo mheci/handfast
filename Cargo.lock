@@ -1576,7 +1576,9 @@ name = "handfast-testkit"
 version = "0.3.0"
 dependencies = [
  "clap",
+ "handfast-plugins",
  "handfast-proto",
+ "handfast-runtime",
  "rcgen",
  "rustls",
  "serde",
