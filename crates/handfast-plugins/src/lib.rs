@@ -14,6 +14,7 @@ pub mod digitizer;
 pub mod findmyphone;
 pub mod findthisdevice;
 pub mod lockdevice;
+pub mod mmtelephony;
 pub mod mousepad;
 pub mod mpriscontrol;
 pub mod mprisremote;
@@ -49,6 +50,7 @@ pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
 pub use lockdevice::{LockDeviceFactory, LockDevicePlugin};
 pub use mousepad::{MousepadFactory, MousepadPlugin};
 pub use mpriscontrol::{MprisControlFactory, MprisControlPlugin};
+pub use mmtelephony::{MmTelephonyEvent, MmTelephonyFactory, MmTelephonyPlugin};
 pub use mprisremote::{MprisRemoteFactory, MprisRemotePlugin, RemoteError};
 pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
@@ -79,7 +81,7 @@ pub use shareinputdevicesremote::{
 };
 pub use sms::{Conversation, Message, SmsFactory, SmsPlugin};
 pub use systemvolume::{SystemVolumeFactory, SystemVolumePlugin};
-pub use telephony::{TelephonyEvent, TelephonyFactory, TelephonyPlugin};
+pub use telephony::{IncomingCall, TelephonyFactory, TelephonyPlugin};
 pub use virtualmonitor::{RequestedDisplay, VirtualMonitorFactory, VirtualMonitorPlugin};
 
 /// Build the registry of implemented plugins.
@@ -128,6 +130,7 @@ pub fn registry_with_sftp(server: Option<std::sync::Arc<dyn sftp::SftpServer>>) 
         Box::new(contacts::ContactsFactory),
         Box::new(sms::SmsFactory),
         Box::new(telephony::TelephonyFactory),
+        Box::new(mmtelephony::MmTelephonyFactory),
         Box::new(virtualmonitor::VirtualMonitorFactory),
     ])
 }

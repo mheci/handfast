@@ -1,28 +1,27 @@
-//! Report this host's calls to the paired phone.
+//! Show the phone's incoming calls on this desktop.
 //!
-//! On a mobile build this is the important direction: the phone's own telephony
-//! plugin is what rings the desktop. Here the host is a desktop, so the flow is
-//! reversed — a desktop with a modem forwards its calls to the phone, and the
-//! phone can mute the ringtone.
+//! Upstream's `telephony` plugin is a notification listener, not a modem: the
+//! phone sends `kdeconnect.telephony` with `event`, `phoneNumber`,
+//! `contactName` and sometimes a `phoneThumbnail`, and the desktop raises a
+//! persistent notification the user can act on. `talking` closes the previous
+//! notification instead of opening a new one.
 //!
-//! Two packet families, matching upstream:
+//! The outbound ModemManager direction lives in [`crate::mmtelephony`]. The two
+//! are separate plugins upstream and stay separate here, because a desktop can
+//! easily want one and not the other.
 //!
-//! - `kdeconnect.telephony` out, with `event` (`ringing`, `talking`,
-//!   `missedCall`, `sms`), `phoneNumber`, `contactName` and `isCancel`.
-//! - `kdeconnect.telephony.request_mute` in, which silences the current call.
-//!
-//! The mute request needs a [`handfast_desktop::Telephony`] adapter method that
-//! a poll-only backend cannot provide, so muting is reported as unsupported
-//! rather than silently ignored. That is honest: the phone's UI shows a mute
-//! button, and a button that does nothing is worse than one that says why.
+//! `isCancel` is honoured the same way upstream is: a ringing event that is
+//! cancelled must withdraw the notification, or a missed call leaves a stale
+//! popup behind.
 
 use async_trait::async_trait;
+use handfast_desktop::Notification;
 use handfast_proto::{types, Packet};
 use handfast_runtime::{
-    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory,
-    PluginMeta, PluginOutput,
+    LogLevel, Plugin, PluginContext, PluginError, PluginEvent, PluginFactory, PluginMeta,
+    PluginOutput,
 };
-use serde_json::{json, Map, Value};
+use serde_json::Value;
 
 use crate::roster;
 
@@ -32,74 +31,97 @@ const MAX_NUMBER_BYTES: usize = 64;
 /// Longest accepted contact name, in bytes.
 const MAX_NAME_BYTES: usize = 256;
 
-/// One event to send to the phone.
+/// Wire event names this plugin understands.
+const EVENTS: [&str; 4] = ["ringing", "talking", "missedCall", "sms"];
+
+/// One call event from the phone, as the desktop needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TelephonyEvent {
-    /// Wire event name: `ringing`, `talking`, `missedCall` or `sms`.
+pub struct IncomingCall {
+    /// Wire event name.
     pub event: String,
-    /// Caller identifier.
+    /// Caller identifier, when the phone sent one.
     pub phone_number: Option<String>,
     /// Resolved contact name.
     pub contact_name: Option<String>,
-    /// Whether this cancels the previously reported event.
+    /// Whether this cancels the previous event.
     pub is_cancel: bool,
 }
 
-/// Wire event names Handfast will forward.
-const EVENTS: [&str; 4] = ["ringing", "talking", "missedCall", "sms"];
-
-impl TelephonyEvent {
-    /// Validate the event and that its fields fit the wire limits.
+impl IncomingCall {
+    /// Read a telephony body, or `None` when the event is unusable.
     ///
-    /// # Errors
-    ///
-    /// Fails for an unknown event name or an oversized field.
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if !EVENTS.contains(&self.event.as_str()) {
-            return Err("unknown telephony event");
+    /// An unknown event is refused rather than shown: a notification whose
+    /// text is a raw protocol string is worse than no notification.
+    #[must_use]
+    pub fn from_body(body: &serde_json::Map<String, Value>) -> Option<Self> {
+        let event = body.get("event")?.as_str()?;
+        if !EVENTS.contains(&event) {
+            return None;
         }
-        if self
-            .phone_number
-            .as_ref()
-            .is_some_and(|number| number.len() > MAX_NUMBER_BYTES)
-        {
-            return Err("phone number is too long");
-        }
-        if self
-            .contact_name
-            .as_ref()
-            .is_some_and(|name| name.len() > MAX_NAME_BYTES)
-        {
-            return Err("contact name is too long");
-        }
-        Ok(())
+        let phone_number = body
+            .get("phoneNumber")
+            .and_then(Value::as_str)
+            .filter(|number| !number.is_empty() && number.len() <= MAX_NUMBER_BYTES)
+            .map(str::to_string);
+        let contact_name = body
+            .get("contactName")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty() && name.len() <= MAX_NAME_BYTES)
+            .map(str::to_string);
+        Some(Self {
+            event: event.to_string(),
+            phone_number,
+            contact_name,
+            is_cancel: body
+                .get("isCancel")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
     }
 
-    fn to_body(&self) -> Value {
-        let mut body = Map::new();
-        body.insert("event".to_string(), json!(self.event));
-        if let Some(number) = &self.phone_number {
-            body.insert("phoneNumber".to_string(), json!(number));
-        }
-        if let Some(name) = &self.contact_name {
-            body.insert("contactName".to_string(), json!(name));
-        }
+    /// Who is calling, for the notification body.
+    #[must_use]
+    pub fn display_name(&self) -> String {
+        self.contact_name
+            .clone()
+            .or_else(|| self.phone_number.clone())
+            .unwrap_or_else(|| "unknown number".to_string())
+    }
+
+    /// The notification this event should raise, if any.
+    #[must_use]
+    pub fn notification(&self) -> Option<Notification> {
         if self.is_cancel {
-            body.insert("isCancel".to_string(), json!(true));
+            return None;
         }
-        Value::Object(body)
+        let (title, body) = match self.event.as_str() {
+            "ringing" => (
+                "Incoming call".to_string(),
+                format!("Incoming call from {}", self.display_name()),
+            ),
+            "missedCall" => (
+                "Missed call".to_string(),
+                format!("Missed call from {}", self.display_name()),
+            ),
+            "sms" => (
+                "New message".to_string(),
+                format!("Message from {}", self.display_name()),
+            ),
+            // A call in progress needs no popup; upstream closes the ringing
+            // one instead.
+            _ => return None,
+        };
+        Some(Notification::new("KDE Connect", title, body))
     }
 }
 
-/// Forwards host telephony events to the phone.
+/// Shows the phone's calls as desktop notifications.
 #[derive(Debug, Default)]
 pub struct TelephonyPlugin {
-    /// Events queued for the next tick.
-    pending: Vec<TelephonyEvent>,
-    /// Whether the mute button should be offered.
-    mute_available: bool,
-    /// Telephony adapter is present.
-    available: bool,
+    /// Calls handled since the last log line.
+    handled: usize,
+    /// Whether a ringing notification is currently showing.
+    ringing: bool,
 }
 
 impl TelephonyPlugin {
@@ -107,34 +129,21 @@ impl TelephonyPlugin {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            pending: Vec::new(),
-            mute_available: false,
-            available: false,
+            handled: 0,
+            ringing: false,
         }
     }
 
-    /// Queue an event for the peer.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the event is not one of the four wire events, or a field is
-    /// oversized.
-    pub fn report(&mut self, event: TelephonyEvent) -> Result<(), &'static str> {
-        event.validate()?;
-        self.pending.push(event);
-        Ok(())
+    /// Calls handled so far.
+    #[must_use]
+    pub const fn handled(&self) -> usize {
+        self.handled
     }
 
-    /// Number of queued events.
+    /// Whether a call is currently ringing on screen.
     #[must_use]
-    pub fn pending(&self) -> usize {
-        self.pending.len()
-    }
-
-    /// Events queued so far, for a desktop UI.
-    #[must_use]
-    pub fn events(&self) -> &[TelephonyEvent] {
-        &self.pending
+    pub const fn is_ringing(&self) -> bool {
+        self.ringing
     }
 }
 
@@ -144,76 +153,53 @@ impl Plugin for TelephonyPlugin {
         &roster::TELEPHONY
     }
 
-
-    async fn on_tick(&mut self, ctx: &mut PluginContext<'_>) -> Result<PluginOutput, PluginError> {
-        let mut output = PluginOutput::new();
-
-        // Pull anything the host modem reported since the last tick. A host
-        // without a modem simply never has events, which is why the plugin is
-        // requirement-gated rather than erroring here.
-        if let Some(telephony) = &ctx.desktop.telephony {
-            self.available = true;
-            match telephony.poll().await {
-                Ok(events) => {
-                    for event in events {
-                        let reported = TelephonyEvent {
-                            event: event.event,
-                            phone_number: event.phone_number,
-                            contact_name: event.contact_name,
-                            is_cancel: event.is_cancel,
-                        };
-                        // A backend is not trusted to produce a valid event;
-                        // drop the bad ones rather than failing the tick.
-                        if reported.validate().is_ok() {
-                            self.pending.push(reported);
-                        }
-                    }
-                }
-                Err(error) => {
-                    output = output.with_event(PluginEvent::Log {
-                        level: LogLevel::Warn,
-                        message: format!("telephony poll failed: {error}"),
-                    });
-                }
-            }
-        }
-
-        for event in std::mem::take(&mut self.pending) {
-            output = output.with_packet(
-                Packet::new(types::TELEPHONY, event.to_body())
-                    .map_err(|error| PluginError::InvalidPacket(error.to_string()))?,
-            );
-        }
-        Ok(output)
-    }
-
     async fn on_packet(
         &mut self,
-        _ctx: &mut PluginContext<'_>,
+        ctx: &mut PluginContext<'_>,
         packet: &Packet,
     ) -> Result<PluginOutput, PluginError> {
         match packet.ptype.as_str() {
-            // The phone asks us to silence the ringer.
+            types::TELEPHONY => {
+                let Some(call) = IncomingCall::from_body(&packet.body) else {
+                    return Ok(PluginOutput::new().with_event(PluginEvent::Log {
+                        level: LogLevel::Warn,
+                        message: "peer sent an unusable telephony event".to_string(),
+                    }));
+                };
+                // Any event ends the previous ring, whether it is a cancel, a
+                // talk or a missed call.
+                let was_ringing = std::mem::replace(&mut self.ringing, call.event == "ringing");
+                self.handled += 1;
+
+                let Some(notifier) = &ctx.desktop.notifier else {
+                    return Ok(PluginOutput::new().with_event(PluginEvent::Log {
+                        level: LogLevel::Info,
+                        message: format!(
+                            "call event {} from {} (no notification backend)",
+                            call.event,
+                            call.display_name()
+                        ),
+                    }));
+                };
+                if let Some(notification) = call.notification() {
+                    notifier.notify(&notification).await.map_err(|error| {
+                        PluginError::Backend(format!("notification failed: {error}"))
+                    })?;
+                }
+                Ok(PluginOutput::new().with_event(PluginEvent::Log {
+                    level: LogLevel::Info,
+                    message: if was_ringing && !self.ringing {
+                        format!("call from {} ended", call.display_name())
+                    } else {
+                        format!("call event: {}", call.event)
+                    },
+                }))
+            }
+            // The phone asking the desktop to mute is a modem-side action this
+            // plugin has no adapter for; `mmtelephony` answers it.
             types::TELEPHONY_REQUEST_MUTE => Ok(PluginOutput::new().with_event(PluginEvent::Log {
-                level: LogLevel::Warn,
-                message: if self.mute_available {
-                    "peer asked to mute the call; this backend cannot mute".to_string()
-                } else {
-                    "peer asked to mute the call but no telephony backend is active".to_string()
-                },
-            })),
-            // The phone reports its own call state. Handfast is the desktop
-            // side, so this is informational only.
-            types::TELEPHONY => Ok(PluginOutput::new().with_event(PluginEvent::Log {
                 level: LogLevel::Info,
-                message: format!(
-                    "peer telephony event: {}",
-                    packet
-                        .body
-                        .get("event")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown")
-                ),
+                message: "peer asked to mute; no mute backend on this host".to_string(),
             })),
             _ => Ok(PluginOutput::new()),
         }
@@ -237,7 +223,7 @@ impl PluginFactory for TelephonyFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use handfast_desktop::{CallEvent, MockDesktop};
+    use handfast_desktop::MockDesktop;
     use handfast_proto::{DeviceId, DeviceName, DeviceType};
     use handfast_runtime::{Device, PluginConfig, PluginStatus};
 
@@ -249,18 +235,11 @@ mod tests {
         )
     }
 
-    fn ringing() -> TelephonyEvent {
-        TelephonyEvent {
-            event: "ringing".to_string(),
-            phone_number: Some("5551234".to_string()),
-            contact_name: Some("Alice".to_string()),
-            is_cancel: false,
-        }
-    }
-
-    async fn tick(
+    async fn send(
         plugin: &mut TelephonyPlugin,
         desktop: &handfast_desktop::Desktop,
+        ptype: &str,
+        body: Value,
     ) -> PluginOutput {
         let device = device();
         let mut ctx = PluginContext {
@@ -268,123 +247,152 @@ mod tests {
             desktop,
             config: PluginConfig::empty(),
         };
-        plugin.on_tick(&mut ctx).await.unwrap()
+        let packet = Packet::from_body(ptype, &body).unwrap();
+        plugin.on_packet(&mut ctx, &packet).await.unwrap()
     }
 
     #[test]
     fn the_roster_entry_matches_upstream() {
         assert_eq!(roster::TELEPHONY.status, PluginStatus::Implemented);
+        assert_eq!(roster::TELEPHONY.incoming, &[types::TELEPHONY]);
         assert_eq!(
-            roster::TELEPHONY.incoming,
-            &[types::TELEPHONY, types::TELEPHONY_REQUEST_MUTE]
+            roster::TELEPHONY.outgoing,
+            &[types::TELEPHONY_REQUEST_MUTE]
         );
-        assert_eq!(roster::TELEPHONY.outgoing, &[types::TELEPHONY]);
     }
 
     #[tokio::test]
-    async fn a_queued_event_is_sent_with_the_upstream_fields() {
+    async fn a_ringing_call_raises_a_notification() {
         let mock = MockDesktop::new();
         let mut plugin = TelephonyPlugin::new();
-        plugin.report(ringing()).unwrap();
+        let output = send(
+            &mut plugin,
+            &mock.desktop(),
+            types::TELEPHONY,
+            serde_json::json!({
+                "event": "ringing",
+                "phoneNumber": "5551234",
+                "contactName": "Alice",
+            }),
+        )
+        .await;
 
-        let output = tick(&mut plugin, &mock.desktop()).await;
-        assert_eq!(output.packets.len(), 1);
-        let body = &output.packets[0].body;
-        assert_eq!(output.packets[0].ptype, types::TELEPHONY);
-        assert_eq!(body.get("event"), Some(&json!("ringing")));
-        assert_eq!(body.get("phoneNumber"), Some(&json!("5551234")));
-        assert_eq!(body.get("contactName"), Some(&json!("Alice")));
-        // Upstream omits isCancel when it is false.
-        assert!(!body.contains_key("isCancel"));
+        assert_eq!(output.events.len(), 1);
+        assert!(plugin.is_ringing());
+        assert_eq!(plugin.handled(), 1);
+        let notifications = mock.notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].title, "Incoming call");
+        assert!(notifications[0].text.contains("Alice"));
     }
 
     #[tokio::test]
-    async fn a_backend_event_is_forwarded() {
+    async fn talking_closes_the_ring_without_a_new_notification() {
         let mock = MockDesktop::new();
-        mock.push_call(CallEvent {
-            event: "talking".to_string(),
-            phone_number: Some("5559999".to_string()),
-            contact_name: None,
-            is_cancel: false,
-        });
         let mut plugin = TelephonyPlugin::new();
+        send(
+            &mut plugin,
+            &mock.desktop(),
+            types::TELEPHONY,
+            serde_json::json!({ "event": "ringing", "contactName": "Alice" }),
+        )
+        .await;
+        send(
+            &mut plugin,
+            &mock.desktop(),
+            types::TELEPHONY,
+            serde_json::json!({ "event": "talking", "contactName": "Alice" }),
+        )
+        .await;
 
-        let output = tick(&mut plugin, &mock.desktop()).await;
-        assert_eq!(output.packets.len(), 1);
-        assert_eq!(output.packets[0].body.get("event"), Some(&json!("talking")));
+        // Only the ring was shown.
+        assert_eq!(mock.notifications().len(), 1);
+        assert!(!plugin.is_ringing());
+        assert_eq!(plugin.handled(), 2);
     }
 
     #[tokio::test]
-    async fn polling_consumes_the_backend_queue() {
+    async fn a_cancel_does_not_raise_a_notification() {
         let mock = MockDesktop::new();
-        mock.push_call(CallEvent {
-            event: "ringing".to_string(),
-            phone_number: None,
-            contact_name: None,
-            is_cancel: false,
-        });
         let mut plugin = TelephonyPlugin::new();
-        assert_eq!(tick(&mut plugin, &mock.desktop()).await.packets.len(), 1);
-        // Nothing new reported, nothing sent.
-        assert!(tick(&mut plugin, &mock.desktop()).await.packets.is_empty());
+        send(
+            &mut plugin,
+            &mock.desktop(),
+            types::TELEPHONY,
+            serde_json::json!({ "event": "ringing", "isCancel": true }),
+        )
+        .await;
+        assert!(mock.notifications().is_empty());
+        assert!(!plugin.is_ringing());
     }
 
     #[tokio::test]
-    async fn a_backend_event_with_a_bad_name_is_dropped() {
+    async fn a_missed_call_is_reported() {
         let mock = MockDesktop::new();
-        mock.push_call(CallEvent {
-            event: "nonsense".to_string(),
-            phone_number: None,
-            contact_name: None,
-            is_cancel: false,
-        });
         let mut plugin = TelephonyPlugin::new();
-        assert!(tick(&mut plugin, &mock.desktop()).await.packets.is_empty());
+        send(
+            &mut plugin,
+            &mock.desktop(),
+            types::TELEPHONY,
+            serde_json::json!({ "event": "missedCall", "phoneNumber": "5559999" }),
+        )
+        .await;
+        let notifications = mock.notifications();
+        assert_eq!(notifications[0].title, "Missed call");
+        assert!(notifications[0].text.contains("5559999"));
     }
 
     #[test]
-    fn unknown_events_and_oversized_fields_are_refused() {
-        let mut plugin = TelephonyPlugin::new();
-        let mut event = ringing();
-        event.event = "nonsense".to_string();
-        assert!(plugin.report(event).is_err());
+    fn a_nameless_caller_shows_the_number_then_a_placeholder() {
+        let body = serde_json::json!({ "event": "ringing", "phoneNumber": "5551234" });
+        let call = IncomingCall::from_body(body.as_object().unwrap()).unwrap();
+        assert_eq!(call.display_name(), "5551234");
 
-        let mut event = ringing();
-        event.phone_number = Some("1".repeat(MAX_NUMBER_BYTES + 1));
-        assert!(plugin.report(event).is_err());
+        let anonymous = serde_json::json!({ "event": "ringing" });
+        let call = IncomingCall::from_body(anonymous.as_object().unwrap()).unwrap();
+        assert_eq!(call.display_name(), "unknown number");
+    }
 
-        let mut event = ringing();
-        event.contact_name = Some("n".repeat(MAX_NAME_BYTES + 1));
-        assert!(plugin.report(event).is_err());
-        assert_eq!(plugin.pending(), 0);
+    #[test]
+    fn unusable_events_are_refused() {
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({ "event": "nonsense" }),
+            serde_json::json!({ "event": 7 }),
+        ] {
+            assert!(
+                IncomingCall::from_body(body.as_object().unwrap()).is_none(),
+                "body {body} must be refused"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn a_cancel_event_sets_the_flag() {
+    async fn an_unusable_event_is_logged_not_shown() {
         let mock = MockDesktop::new();
         let mut plugin = TelephonyPlugin::new();
-        let mut event = ringing();
-        event.is_cancel = true;
-        plugin.report(event).unwrap();
-        let output = tick(&mut plugin, &mock.desktop()).await;
-        assert_eq!(output.packets[0].body.get("isCancel"), Some(&json!(true)));
+        let output = send(
+            &mut plugin,
+            &mock.desktop(),
+            types::TELEPHONY,
+            serde_json::json!({ "event": "nonsense" }),
+        )
+        .await;
+        assert!(mock.notifications().is_empty());
+        assert_eq!(output.events.len(), 1);
     }
 
     #[tokio::test]
-    async fn a_mute_request_is_reported_not_ignored() {
+    async fn a_mute_request_is_answered_with_a_log() {
         let mock = MockDesktop::new();
         let mut plugin = TelephonyPlugin::new();
-        tick(&mut plugin, &mock.desktop()).await;
-
-        let device = device();
-        let desktop = mock.desktop();
-        let mut ctx = PluginContext {
-            device: &device,
-            desktop: &desktop,
-            config: PluginConfig::empty(),
-        };
-        let packet = Packet::from_body(types::TELEPHONY_REQUEST_MUTE, &json!({})).unwrap();
-        let output = plugin.on_packet(&mut ctx, &packet).await.unwrap();
+        let output = send(
+            &mut plugin,
+            &mock.desktop(),
+            types::TELEPHONY_REQUEST_MUTE,
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(output.events.len(), 1);
     }
 }

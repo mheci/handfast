@@ -252,7 +252,10 @@ mod tests {
     #[test]
     fn the_roster_entry_matches_upstream() {
         assert_eq!(roster::REMOTECOMMANDS.status, PluginStatus::Implemented);
-        assert_eq!(roster::REMOTECOMMANDS.incoming, &[types::RUNCOMMAND]);
+        assert_eq!(
+            roster::REMOTECOMMANDS.incoming,
+            &[types::RUNCOMMAND, types::RUNCOMMAND_OUTPUT]
+        );
         assert_eq!(
             roster::REMOTECOMMANDS.outgoing,
             &[types::RUNCOMMAND_REQUEST]

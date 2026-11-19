@@ -194,7 +194,7 @@ impl Plugin for SftpPlugin {
         let Some(server) = &self.server else {
             // No configured root: refuse, with a reason the phone can show.
             let state = Some(SftpStart::Failed(
-                "no SFTP directory is configured on this host".to_string(),
+                "SFTP is not configured on this host: set [sftp] root in plugins.toml".to_string(),
             ));
             self.running = state.clone();
             return Ok(PluginOutput::new()
@@ -212,7 +212,7 @@ impl Plugin for SftpPlugin {
             .unwrap_or("handfast");
         if root.trim().is_empty() {
             let state = Some(SftpStart::Failed(
-                "no SFTP directory is configured on this host".to_string(),
+                "SFTP is not configured on this host: set [sftp] root in plugins.toml".to_string(),
             ));
             self.running = state.clone();
             return Ok(PluginOutput::new().with_optional_packet(SftpPlugin::reply(&state)));

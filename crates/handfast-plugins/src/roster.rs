@@ -111,7 +111,8 @@ pub const MMTELEPHONY: PluginMeta = PluginMeta {
     name: "mmtelephony",
     title: "ModemManager telephony",
     status: IMPLEMENTED,
-    incoming: &[types::TELEPHONY, types::TELEPHONY_REQUEST_MUTE],
+    // Outbound: the local modem's calls go to the phone, which may mute them.
+    incoming: &[types::TELEPHONY_REQUEST_MUTE],
     outgoing: &[types::TELEPHONY],
     desktop: DesktopRequirement::Telephony,
 };
@@ -336,9 +337,10 @@ pub const TELEPHONY: PluginMeta = PluginMeta {
     name: "telephony",
     title: "Telephony integration",
     status: IMPLEMENTED,
-    incoming: &[types::TELEPHONY, types::TELEPHONY_REQUEST_MUTE],
-    outgoing: &[types::TELEPHONY],
-    desktop: DesktopRequirement::Telephony,
+    // Inbound only: the phone's calls are shown here as notifications.
+    incoming: &[types::TELEPHONY],
+    outgoing: &[],
+    desktop: DesktopRequirement::Notifications,
 };
 
 /// Use the phone as a virtual monitor.

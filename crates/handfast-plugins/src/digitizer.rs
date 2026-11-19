@@ -329,7 +329,8 @@ mod tests {
         assert_eq!(roster::DIGITIZER.status, PluginStatus::Implemented);
         assert_eq!(
             roster::DIGITIZER.incoming,
-            &[types::DIGITIZER_SESSION, types::DIGITIZER]
+            // Wire order is the sample type first, then the session.
+            &[types::DIGITIZER, types::DIGITIZER_SESSION]
         );
         assert!(roster::DIGITIZER.outgoing.is_empty());
     }

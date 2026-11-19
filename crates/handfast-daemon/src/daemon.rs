@@ -1328,7 +1328,11 @@ mod tests {
         assert!(desktop.capabilities().screensaver);
 
         let capabilities = registry.capabilities(&desktop).unwrap();
-        assert!(!capabilities.accepts(types::RUNCOMMAND_REQUEST));
+        // `runcommand` runs a configured command and needs no desktop adapter,
+        // so it is advertised regardless of which tools are installed. The
+        // allowlist, not the capability list, is what keeps it inert.
+        assert!(capabilities.accepts(types::RUNCOMMAND_REQUEST));
+        // `lockdevice` follows `loginctl`, which is not installed here.
         assert!(!capabilities.accepts(types::LOCK_REQUEST));
     }
 

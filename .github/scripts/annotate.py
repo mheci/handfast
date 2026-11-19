@@ -109,10 +109,13 @@ def annotate_tests(path: str) -> None:
     """Report failing test names, then the captured output of each failure."""
     lines = read(path)
     failed: list[str] = []
+    seen: set[str] = set()
     for line in lines:
         if line.startswith("test ") and line.endswith("FAILED"):
             failed.append(line)
-            emit("error", ".github", "1", line)
+            if line not in seen:
+                seen.add(line)
+                emit("error", ".github", "1", line)
     if not failed:
         emit("notice", ".github", "1", "tests: no reported failures in this log")
         return

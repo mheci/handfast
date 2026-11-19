@@ -2019,11 +2019,28 @@ mod tests {
         })
         .await
         .expect("both eager connects complete");
-        let early = tokio::time::timeout(Duration::from_millis(100), events.recv()).await;
-        assert!(
-            early.is_err(),
-            "the first file is still active when the second connects"
-        );
+        // Plugins log on connect, so "no event at all" is no longer the
+        // signal here. What must not happen is a completion: the first file is
+        // still active when the second connects.
+        let deadline = Instant::now() + Duration::from_millis(100);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let Ok(Ok(DaemonEvent::PluginEvents { events: batch, .. })) =
+                tokio::time::timeout(remaining, events.recv()).await
+            else {
+                break;
+            };
+            assert!(
+                !batch.iter().any(|event| matches!(
+                    event,
+                    PluginEvent::ShareCompleted { .. } | PluginEvent::ShareFailed { .. }
+                )),
+                "a transfer finished while the first file was still active: {batch:?}"
+            );
+        }
 
         let first = sender.accept_and_send(b"aaaa");
         let second = sender.accept_and_send(b"bbbb");
