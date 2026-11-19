@@ -1,0 +1,37 @@
+name: compile-report
+
+# Temporary: this environment can read check-run annotations but not job logs,
+# so compiler diagnostics are surfaced as annotations.
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: compile-report-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  report:
+    name: report
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          components: rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      - name: fmt
+        run: cargo fmt --all -- --check > /tmp/fmt.txt 2>&1 || cat /tmp/fmt.txt
+      - name: build
+        run: cargo build --all-targets --message-format=short > /tmp/build.txt 2>&1 || true
+      - name: annotate
+        if: always()
+        run: python3 .github/scripts/annotate.py /tmp/build.txt /tmp/fmt.txt
