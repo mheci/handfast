@@ -130,10 +130,9 @@ Wayland development packages on Linux; the `gui` CI job installs
   a closed link cancels the prompt.
 - Plugin runtime: registry, per-device host, five-second timeout, panic
   isolation and permanent disable after a failure.
-- Plugin roster: all 31 KDE Connect plugins are listed and 13 are implemented:
-  battery, clipboard, connectivity report, find this device, lock device, MPRIS
-  control, notifications, pause music, ping, presenter, screensaver inhibit,
-  share and system volume.
+- Plugin roster: 31 desktop plugins are listed; 27 are marked implemented and
+  four are planned. An implemented contract does not imply full feature parity
+  or real-client verification; see [docs/PARITY.md](docs/PARITY.md).
 - Share and file transfer over the second TLS connection, both directions, with
   a safe incoming folder, no-clobber names and a bounded extra-bytes policy.
 - State store: redb tables for devices, per-device plugin state, settings and
@@ -154,13 +153,16 @@ Wayland development packages on Linux; the `gui` CI job installs
   over the control channel, and answers pairing requests with the peer name,
   device ID and fingerprint.
 
-Not wired yet:
+Known gaps:
 
-- 18 of the 31 plugins.
-- Windows and macOS desktop backends. The adapter traits leave room for them,
-  but v2 ships Linux only.
-- The real Android and desktop interop run. The checklist is in
-  [docs/INTEROP.md](docs/INTEROP.md); it is the P1 exit gate.
+- `mmtelephony`, `sendnotifications`, `shareinputdevices` capture and
+  `virtualmonitor` remain planned; other implemented plugins have partial
+  functionality listed in [docs/PARITY.md](docs/PARITY.md).
+- The current GUI uses egui, not the intended native WinUI 3 and GPUI-based
+  interfaces. Linux and Windows backends are available with platform-specific
+  limitations; macOS backends are not implemented.
+- Real Android and desktop interoperability still needs the manual run in
+  [docs/INTEROP.md](docs/INTEROP.md). Automated fixtures do not certify it.
 
 `handfast daemon` announces its identity over UDP discovery on port 1716, binds
 a TCP port in 1716-1764, accepts or dials peers, runs the TLS link and pairing

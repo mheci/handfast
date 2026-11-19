@@ -49,8 +49,6 @@ fn is_out_of_order(timestamp: Option<i64>, last_applied_ms: i64, now: Option<i64
 pub struct ClipboardPlugin {
     last_timestamp_ms: i64,
     last_text: Option<String>,
-    last_emitted: Option<String>,
-    skip_next: bool,
     warned: bool,
 }
 
@@ -61,8 +59,6 @@ impl ClipboardPlugin {
         Self {
             last_timestamp_ms: 0,
             last_text: None,
-            last_emitted: None,
-            skip_next: false,
             warned: false,
         }
     }
@@ -101,7 +97,6 @@ impl Plugin for ClipboardPlugin {
             }
         };
         self.last_text = Some(text.clone());
-        self.last_emitted = Some(text.clone());
         if text.is_empty() || text.len() > MAX_OUTBOUND_BYTES {
             return Ok(PluginOutput::new());
         }
@@ -137,18 +132,10 @@ impl Plugin for ClipboardPlugin {
             self.last_text = None;
             return Ok(PluginOutput::new());
         };
-        if self.skip_next {
-            self.skip_next = false;
-            self.last_text = Some(text);
-            return Ok(PluginOutput::new());
-        }
         if self.last_text.as_deref() == Some(text.as_str()) {
             return Ok(PluginOutput::new());
         }
         self.last_text = Some(text.clone());
-        if self.last_emitted.as_deref() == Some(text.as_str()) {
-            return Ok(PluginOutput::new());
-        }
         if text.is_empty() {
             return Ok(PluginOutput::new());
         }
@@ -163,7 +150,6 @@ impl Plugin for ClipboardPlugin {
         }
         let packet =
             clipboard_packet(&text).map_err(|error| PluginError::Backend(error.to_string()))?;
-        self.last_emitted = Some(text);
         Ok(PluginOutput::new().with_packet(packet))
     }
 
@@ -199,8 +185,6 @@ impl Plugin for ClipboardPlugin {
             .await
             .map_err(|error| PluginError::Backend(error.to_string()))?;
         self.last_text = Some(content.to_string());
-        self.last_emitted = Some(content.to_string());
-        self.skip_next = true;
 
         if let Some(value) = timestamp {
             self.last_timestamp_ms = self.last_timestamp_ms.max(value);
@@ -499,6 +483,47 @@ mod tests {
 
         assert!(plugin.on_tick(&mut ctx).await.unwrap().packets.is_empty());
         assert!(plugin.on_tick(&mut ctx).await.unwrap().packets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_change_before_first_tick_after_inbound_is_sent() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let mut plugin = ClipboardPlugin::new();
+        plugin
+            .on_packet(&mut ctx, &clipboard_packet("remote").unwrap())
+            .await
+            .unwrap();
+        write_clipboard(&desktop, "new local text").await;
+        let output = plugin.on_tick(&mut ctx).await.unwrap();
+        assert_eq!(output.packets.len(), 1);
+        assert_eq!(output.packets[0].body["content"], json!("new local text"));
+        assert!(plugin.on_tick(&mut ctx).await.unwrap().packets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn returning_to_previous_text_after_empty_selection_is_sent() {
+        let mock = MockDesktop::new();
+        let desktop = mock.desktop();
+        write_clipboard(&desktop, "original").await;
+        let device = device();
+        let mut ctx = PluginContext {
+            device: &device,
+            desktop: &desktop,
+        };
+        let mut plugin = ClipboardPlugin::new();
+        plugin.on_connect(&mut ctx).await.unwrap();
+        write_clipboard(&desktop, "").await;
+        assert!(plugin.on_tick(&mut ctx).await.unwrap().packets.is_empty());
+        write_clipboard(&desktop, "original").await;
+        let output = plugin.on_tick(&mut ctx).await.unwrap();
+        assert_eq!(output.packets.len(), 1);
+        assert_eq!(output.packets[0].body["content"], json!("original"));
     }
 
     #[tokio::test]

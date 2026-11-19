@@ -12,7 +12,8 @@ the production code; it does not prove real-client interop.
 ## Prerequisites
 
 - A Linux host for `handfast` and, optionally, the KDE Connect desktop client.
-  The Windows build has the same link code but no desktop backend.
+  Windows shares the link code and has desktop backends with the limitations
+  documented in [PARITY.md](PARITY.md).
 - An Android phone with the official KDE Connect app on the same LAN.
 - A firewall that allows UDP 1716 and TCP 1716-1764 between the peers.
 - A disposable state directory. Do not test against a real profile.
