@@ -316,10 +316,7 @@ mod tests {
             .pointer(PointerEvent::click(PointerButton::Right, 2))
             .await
             .unwrap();
-        assert_eq!(
-            runner.calls(),
-            vec![args(&["click", "--repeat", "2", "3"])]
-        );
+        assert_eq!(runner.calls(), vec![args(&["click", "--repeat", "2", "3"])]);
     }
 
     #[tokio::test]
@@ -380,7 +377,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             runner.calls(),
-            vec![args(&["keydown", "ctrl", "type", "--", "-s", "keyup", "ctrl"])]
+            vec![args(&[
+                "keydown", "ctrl", "type", "--", "-s", "keyup", "ctrl"
+            ])]
         );
     }
 
@@ -405,8 +404,8 @@ mod tests {
                 }
             ),
             args(&[
-                "keydown", "ctrl", "keydown", "alt", "keydown", "shift", "keydown", "super", "type",
-                "a", "keyup", "super", "keyup", "shift", "keyup", "alt", "keyup", "ctrl",
+                "keydown", "ctrl", "keydown", "alt", "keydown", "shift", "keydown", "super",
+                "type", "a", "keyup", "super", "keyup", "shift", "keyup", "alt", "keyup", "ctrl",
             ])
         );
     }
