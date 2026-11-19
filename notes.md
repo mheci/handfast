@@ -263,3 +263,36 @@ CI note: this environment cannot read job logs, so a temporary
 `compile-report` workflow republished rustfmt, clippy, rustdoc and test output
 as check-run annotations. It was removed once the branch was green; the whole
 matrix (fmt, clippy, docs, gui, msrv, test, windows, fuzz, deny, testkit) passes.
+
+## Wave 20 — the phone's media player, from the desktop (PR #275)
+
+`mprisremote` was the last media plugin still marked planned, and it was the one
+direction the desktop could not use at all: `mpriscontrol` let the phone drive
+the desktop's players, but nothing let the desktop touch the phone's. The
+plugin now caches what the phone reports and sends the four requests the
+Android receiver implements.
+
+The wire shapes come from `MprisReceiverPlugin.kt`, which is more specific than
+the desktop client: `requestPlayerList`, `requestNowPlaying` with
+`requestVolume`, `action` (Play, Pause, PlayPause, Stop, Next, Previous,
+FastForward, Rewind), `setVolume` 0-100 and `Seek` with a signed millisecond
+offset. `kdeconnect.mpris` bodies merge field by field into a per-player cache,
+so a partial update does not erase a title; a `playerList` is authoritative and
+drops players the phone no longer has.
+
+Requests queue from any thread and leave on the next tick, the same shape the
+notifications plugin already used for desktop-initiated packets, so no new
+runtime surface was needed. Player names are capped, checked for control
+characters and validated against a fixed action table before anything queues.
+
+Two CI findings along the way were worth the delay. The desktop-side plugin
+started from `LogLevel::Debug`, which does not exist in this runtime, and the
+`two_queued_files_arrive_in_order` daemon test read the log once after both
+files were on disk, so it raced the daemon's own completion line. Both are
+fixed; the second now waits for two `event="ShareCompleted"` lines before
+checking their order.
+
+Note for the next wave: `remotecontrol` and `remotekeyboard` are still planned.
+They are the mirror of `mousepad` — the desktop sends `mousepad.request` to a
+phone that already implements it — so the packet builder and the pointer
+encoding in `handfast-desktop` can be reused instead of written again.
