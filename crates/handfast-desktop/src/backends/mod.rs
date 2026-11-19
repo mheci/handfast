@@ -5,6 +5,7 @@
 
 pub mod battery;
 pub mod clipboard;
+pub mod input;
 pub mod lock;
 pub mod mpris;
 pub mod notifications;
@@ -17,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::traits::{
-    Battery, Clipboard, Lock, Media, Notifier, Presenter, Screensaver, Shell, Volume,
+    Battery, Clipboard, Input, Lock, Media, Notifier, Presenter, Screensaver, Shell, Volume,
 };
 
 /// Whether `program` resolves to a regular file on `PATH`.
@@ -93,6 +94,15 @@ pub fn shell() -> Arc<dyn Shell> {
 #[must_use]
 pub fn battery() -> Arc<dyn Battery> {
     battery::adapter()
+}
+
+/// Build the synthetic input backend.
+///
+/// Injection needs `xdotool`, which drives the same XTest calls the desktop
+/// client makes.
+#[must_use]
+pub fn input() -> Arc<dyn Input> {
+    Arc::new(input::XdotoolInput::new())
 }
 
 /// Build the presenter view backend.

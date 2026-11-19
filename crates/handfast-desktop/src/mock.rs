@@ -476,11 +476,7 @@ mod tests {
         let desktop = MockDesktop::new();
         let input = desktop.desktop().input.clone().unwrap();
         input
-            .pointer(PointerEvent {
-                dx: 1.0,
-                dy: -2.0,
-                scroll: false,
-            })
+            .pointer(PointerEvent::movement(1.0, -2.0))
             .await
             .unwrap();
         input

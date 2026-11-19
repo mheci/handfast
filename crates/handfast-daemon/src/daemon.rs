@@ -1120,6 +1120,11 @@ fn install_backends(
     if available("loginctl") {
         desktop.lock = Some(backends::lock());
     }
+    // Remote input needs an X display: xdotool speaks XTest to Xwayland on a
+    // Wayland session, and to the X server directly otherwise.
+    if available("xdotool") {
+        desktop.input = Some(backends::input());
+    }
     // Battery and the presentation view need no external tool: sysfs is read
     // directly and the view is drawn in process. Both are advertised always,
     // exactly as the desktop client does, and a host without a battery reports
@@ -1170,7 +1175,7 @@ mod tests {
                 notifications: true,
                 media: true,
                 volume: true,
-                input: false,
+                input: true,
                 screensaver: true,
                 lock: true,
                 shell: true,
@@ -1211,6 +1216,7 @@ mod tests {
             // plugin receives belong here: systemvolume sends the sink list.
             ("wpctl", &[types::SYSTEMVOLUME_REQUEST][..]),
             ("loginctl", &[types::LOCK_REQUEST, types::LOCK][..]),
+            ("xdotool", &[types::MOUSEPAD_REQUEST][..]),
         ];
 
         for (tool, accepted) in packets {

@@ -114,7 +114,7 @@ pub const MMTELEPHONY: PluginMeta = PluginMeta {
 pub const MOUSEPAD: PluginMeta = PluginMeta {
     name: "mousepad",
     title: "Receive remote input",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::MOUSEPAD_REQUEST],
     outgoing: &[types::MOUSEPAD_KEYBOARDSTATE],
     desktop: DesktopRequirement::Input,

@@ -102,7 +102,38 @@ pub enum KeyEvent {
     },
 }
 
-/// A relative pointer movement or scroll.
+/// A pointer button, using the X11 numbering both KDE Connect clients send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PointerButton {
+    /// Primary button.
+    Left,
+    /// Middle button, usually paste.
+    Middle,
+    /// Secondary button.
+    Right,
+}
+
+/// What a pointer event does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PointerAction {
+    /// Relative movement.
+    Move,
+    /// Scroll wheel movement.
+    Scroll,
+    /// Press a button and release it after `count` clicks.
+    Click {
+        /// Button to click.
+        button: PointerButton,
+        /// 1 for a single click, 2 for a double click.
+        count: u8,
+    },
+    /// Press a button and keep it pressed, for drag and drop.
+    Press(PointerButton),
+    /// Release a button pressed earlier.
+    Release(PointerButton),
+}
+
+/// A relative pointer movement, scroll, click or drag step.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PointerEvent {
     /// Relative X delta.
@@ -111,6 +142,58 @@ pub struct PointerEvent {
     pub dy: f64,
     /// Whether this is a scroll event rather than movement.
     pub scroll: bool,
+    /// What the event does. Defaults to movement for older callers.
+    pub action: PointerAction,
+}
+
+impl PointerEvent {
+    /// A relative movement event.
+    #[must_use]
+    pub const fn movement(dx: f64, dy: f64) -> Self {
+        Self {
+            dx,
+            dy,
+            scroll: false,
+            action: PointerAction::Move,
+        }
+    }
+
+    /// A scroll wheel event.
+    #[must_use]
+    pub const fn scroll(dx: f64, dy: f64) -> Self {
+        Self {
+            dx,
+            dy,
+            scroll: true,
+            action: PointerAction::Scroll,
+        }
+    }
+
+    /// A click of `count` clicks on `button`.
+    #[must_use]
+    pub const fn click(button: PointerButton, count: u8) -> Self {
+        Self {
+            dx: 0.0,
+            dy: 0.0,
+            scroll: false,
+            action: PointerAction::Click { button, count },
+        }
+    }
+
+    /// A button press or release.
+    #[must_use]
+    pub const fn button(button: PointerButton, pressed: bool) -> Self {
+        Self {
+            dx: 0.0,
+            dy: 0.0,
+            scroll: false,
+            action: if pressed {
+                PointerAction::Press(button)
+            } else {
+                PointerAction::Release(button)
+            },
+        }
+    }
 }
 
 /// Transport action for an MPRIS player.

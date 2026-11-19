@@ -24,8 +24,8 @@ pub use files::{
 };
 pub use mock::MockDesktop;
 pub use model::{
-    KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerEvent, Urgency,
-    VolumeState,
+    KeyEvent, MediaAction, Modifiers, Notification, PlaybackState, PointerAction, PointerButton,
+    PointerEvent, Urgency, VolumeState,
 };
 pub use traits::{
     AudioSink, Battery, BatteryStatus, Clipboard, Input, Lock, Media, Notifier, Presenter,
