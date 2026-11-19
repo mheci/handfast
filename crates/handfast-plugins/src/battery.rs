@@ -142,7 +142,7 @@ impl Plugin for BatteryPlugin {
 
     async fn on_packet(
         &mut self,
-        ctx: &mut PluginContext<'_>,
+        _ctx: &mut PluginContext<'_>,
         packet: &Packet,
     ) -> Result<PluginOutput, PluginError> {
         if packet.ptype != types::BATTERY {

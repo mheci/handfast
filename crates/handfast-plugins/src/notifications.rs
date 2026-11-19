@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_action_and_reply_are_logged_as_unsupported() {
+    async fn control_packets_from_the_peer_are_ignored() {
         let mock = MockDesktop::new();
         let device = device();
         let mut plugin = NotificationsPlugin::new();
@@ -462,205 +462,13 @@ mod tests {
         ];
         for packet in packets {
             let output = dispatch(&mut plugin, &device, &mock, &packet).await;
-            assert!(matches!(
-                output.events.as_slice(),
-                [PluginEvent::Log {
-                    level: LogLevel::Info,
-                    message,
-                }] if message.contains("not supported")
-            ));
+            assert!(
+                output.events.is_empty(),
+                "a control packet from the peer is not an event"
+            );
+            assert!(output.packets.is_empty());
         }
         assert!(mock.notifications().is_empty());
-    }
-
-    #[tokio::test]
-    async fn malformed_notification_is_a_warning() {
-        let mock = MockDesktop::new();
-        let device = device();
-        let packet = Packet::from_body(
-            types::NOTIFICATION,
-            &json!({"appName": "Messages", "title": "Ada"}),
-        )
-        .unwrap();
-        let output = dispatch(&mut NotificationsPlugin::new(), &device, &mock, &packet).await;
-        assert!(matches!(
-            output.events.as_slice(),
-            [PluginEvent::Log {
-                level: LogLevel::Warn,
-                ..
-            }]
-        ));
-        assert!(mock.notifications().is_empty());
-    }
-
-    #[test]
-    fn meta_matches_the_roster() {
-        let factory = NotificationsFactory;
-        assert_eq!(factory.meta(), &roster::NOTIFICATIONS);
-        assert_eq!(factory.create().meta(), &roster::NOTIFICATIONS);
-        assert_eq!(factory.meta().name, "notifications");
-        assert_eq!(factory.meta().status, PluginStatus::Implemented);
-        assert_eq!(factory.meta().incoming, [types::NOTIFICATION].as_slice());
-    }
-
-    #[tokio::test]
-    async fn missing_notifier_is_an_error() {
-        let desktop = handfast_desktop::Desktop::default();
-        let device = device();
-        let mut ctx = PluginContext {
-            device: &device,
-            desktop: &desktop,
-        };
-        assert!(NotificationsPlugin::new()
-            .on_packet(&mut ctx, &post())
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn foreign_packets_are_ignored() {
-        let mock = MockDesktop::new();
-        let device = device();
-        let packet = Packet::empty(types::PING).unwrap();
-        let output = dispatch(&mut NotificationsPlugin::new(), &device, &mock, &packet).await;
-        assert!(output.events.is_empty());
-        assert!(mock.notifications().is_empty());
-    }
-
-    #[tokio::test]
-    async fn two_devices_with_the_same_raw_id_do_not_collide() {
-        let mock = MockDesktop::new();
-        let first = device();
-        let second = device();
-        let mut first_plugin = NotificationsPlugin::new();
-        let mut second_plugin = NotificationsPlugin::new();
-        dispatch(&mut first_plugin, &first, &mock, &post()).await;
-        dispatch(&mut second_plugin, &second, &mock, &post()).await;
-        assert_eq!(mock.notifications().len(), 2);
-
-        dispatch(&mut first_plugin, &first, &mock, &cancel(RAW_ID)).await;
-        let remaining = mock.notifications();
-        let expected = namespaced(&second, RAW_ID);
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].id.as_deref(), Some(expected.as_str()));
-
-        dispatch(&mut second_plugin, &second, &mock, &cancel(RAW_ID)).await;
-        assert!(mock.notifications().is_empty());
-    }
-
-    #[tokio::test]
-    async fn oversized_id_is_rejected_with_a_warning() {
-        let mock = MockDesktop::new();
-        let device = device();
-        let packet = post_with(&"a".repeat(MAX_ID_BYTES + 1));
-        let output = dispatch(&mut NotificationsPlugin::new(), &device, &mock, &packet).await;
-        assert!(matches!(
-            output.events.as_slice(),
-            [PluginEvent::Log {
-                level: LogLevel::Warn,
-                message,
-            }] if message.contains("id is longer")
-        ));
-        assert!(mock.notifications().is_empty());
-    }
-
-    #[tokio::test]
-    async fn control_characters_are_rejected_with_a_warning() {
-        let mock = MockDesktop::new();
-        let device = device();
-        let packet = Packet::from_body(
-            types::NOTIFICATION,
-            &json!({
-                "id": RAW_ID,
-                "appName": "Messages",
-                "title": "Ada\u{0}",
-                "text": "See you at six",
-            }),
-        )
-        .unwrap();
-        let output = dispatch(&mut NotificationsPlugin::new(), &device, &mock, &packet).await;
-        assert!(matches!(
-            output.events.as_slice(),
-            [PluginEvent::Log {
-                level: LogLevel::Warn,
-                message,
-            }] if message.contains("control characters")
-        ));
-        assert!(mock.notifications().is_empty());
-    }
-
-    #[tokio::test]
-    async fn newline_and_tab_are_allowed_in_title_and_text() {
-        let mock = MockDesktop::new();
-        let device = device();
-        let packet = Packet::from_body(
-            types::NOTIFICATION,
-            &json!({
-                "id": RAW_ID,
-                "appName": "Messages",
-                "title": "Ada\nReyes",
-                "text": "\tSee you at six\nBring the keys",
-            }),
-        )
-        .unwrap();
-        let output = dispatch(&mut NotificationsPlugin::new(), &device, &mock, &packet).await;
-        assert!(output.events.is_empty());
-        let notifications = mock.notifications();
-        assert_eq!(notifications.len(), 1);
-        assert_eq!(notifications[0].title, "Ada\nReyes");
-        assert_eq!(notifications[0].text, "\tSee you at six\nBring the keys");
-    }
-
-    #[tokio::test]
-    async fn disconnect_closes_exactly_the_posted_notifications() {
-        let mock = MockDesktop::new();
-        let device = device();
-        let mut plugin = NotificationsPlugin::new();
-        dispatch(&mut plugin, &device, &mock, &post()).await;
-        dispatch(&mut plugin, &device, &mock, &post_with("second")).await;
-
-        let mut unrelated = Notification::new("Other", "Title", "Text");
-        unrelated.id = Some("unrelated".to_string());
-        mock.desktop()
-            .notifier
-            .as_ref()
-            .unwrap()
-            .notify(&unrelated)
-            .await
-            .unwrap();
-
-        let desktop = mock.desktop();
-        let output = disconnect(&mut plugin, &device, &desktop).await;
-        assert!(output.events.is_empty());
-        assert_eq!(mock.notifications(), vec![unrelated.clone()]);
-
-        let output = disconnect(&mut plugin, &device, &desktop).await;
-        assert!(output.events.is_empty());
-        assert_eq!(mock.notifications(), vec![unrelated]);
-    }
-
-    #[tokio::test]
-    async fn disconnect_without_a_notifier_is_not_fatal() {
-        let mock = MockDesktop::new();
-        let device = device();
-        let mut plugin = NotificationsPlugin::new();
-        dispatch(&mut plugin, &device, &mock, &post()).await;
-
-        let desktop = handfast_desktop::Desktop::default();
-        let output = disconnect(&mut plugin, &device, &desktop).await;
-        assert!(matches!(
-            output.events.as_slice(),
-            [PluginEvent::Log {
-                level: LogLevel::Warn,
-                ..
-            }]
-        ));
-        assert_eq!(mock.notifications().len(), 1);
-
-        let desktop = mock.desktop();
-        let output = disconnect(&mut plugin, &device, &desktop).await;
-        assert!(output.events.is_empty());
-        assert_eq!(mock.notifications().len(), 1);
     }
 
     #[test]

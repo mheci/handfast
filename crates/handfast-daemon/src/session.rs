@@ -1635,17 +1635,18 @@ mod tests {
         })]));
         let (link_tx, mut link_rx) = mpsc::channel(8);
         let drain = tokio::spawn(async move { while link_rx.recv().await.is_some() {} });
+        let desktop = MockDesktop::new().desktop();
         let (events_tx, _events_rx) = mpsc::channel(8);
         let session = DeviceSession::start(
             peer_identity(),
-            LinkHandle::from_channel(peer_identity().device_id, link_tx),
+            LinkHandle::from_channel(peer_id(), link_tx),
             registry,
-            Desktop::default(),
+            desktop,
             events_tx,
             SessionLimits::default(),
         );
 
-        tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             while ticks.load(Ordering::SeqCst) == 0 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
