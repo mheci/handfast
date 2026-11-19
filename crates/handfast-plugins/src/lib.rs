@@ -13,6 +13,7 @@ pub mod findthisdevice;
 pub mod lockdevice;
 pub mod mousepad;
 pub mod mpriscontrol;
+pub mod mprisremote;
 pub mod notifications;
 pub mod pausemusic;
 pub mod ping;
@@ -31,6 +32,7 @@ pub use findthisdevice::{FindThisDeviceFactory, FindThisDevicePlugin};
 pub use lockdevice::{LockDeviceFactory, LockDevicePlugin};
 pub use mousepad::{MousepadFactory, MousepadPlugin};
 pub use mpriscontrol::{MprisControlFactory, MprisControlPlugin};
+pub use mprisremote::{MprisRemoteFactory, MprisRemotePlugin, RemoteError};
 pub use notifications::{NotificationsFactory, NotificationsPlugin};
 pub use pausemusic::{PauseMusicFactory, PauseMusicPlugin};
 pub use ping::{PingFactory, PingPlugin};
@@ -50,6 +52,7 @@ pub fn registry() -> Registry {
         Box::new(pausemusic::PauseMusicFactory),
         Box::new(share::ShareFactory),
         Box::new(mpriscontrol::MprisControlFactory),
+        Box::new(mprisremote::MprisRemoteFactory),
         Box::new(notifications::NotificationsFactory),
         Box::new(findthisdevice::FindThisDeviceFactory),
         Box::new(systemvolume::SystemVolumeFactory),
@@ -97,5 +100,24 @@ mod tests {
         assert!(capabilities.accepts(types::SHARE_REQUEST));
         assert!(capabilities.accepts(types::SHARE_REQUEST_UPDATE));
         assert!(DeviceHost::new(device(), &registry, with_files.desktop()).is_enabled("share"));
+    }
+
+    #[test]
+    fn mpris_remote_is_advertised_only_with_the_media_adapter() {
+        let registry = registry();
+
+        // Without a media adapter the host cannot act on either MPRIS
+        // direction, so neither plugin is enabled or advertised.
+        let mock = MockDesktop::new();
+        let mut without_media = mock.desktop();
+        without_media.media = None;
+        let capabilities = registry.capabilities(&without_media).unwrap();
+        assert!(!capabilities.accepts(types::MPRIS));
+        assert!(!DeviceHost::new(device(), &registry, without_media).is_enabled("mprisremote"));
+
+        let with_media = mock.desktop();
+        let capabilities = registry.capabilities(&with_media).unwrap();
+        assert!(capabilities.accepts(types::MPRIS));
+        assert!(DeviceHost::new(device(), &registry, with_media).is_enabled("mprisremote"));
     }
 }

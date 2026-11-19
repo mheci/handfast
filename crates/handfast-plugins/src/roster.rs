@@ -134,7 +134,7 @@ pub const MPRISCONTROL: PluginMeta = PluginMeta {
 pub const MPRISREMOTE: PluginMeta = PluginMeta {
     name: "mprisremote",
     title: "Send multimedia control commands",
-    status: PLANNED,
+    status: IMPLEMENTED,
     incoming: &[types::MPRIS],
     outgoing: &[types::MPRIS_REQUEST],
     desktop: DesktopRequirement::Media,

@@ -25,7 +25,7 @@ Phases: **P0** foundation, **P1** link and core transfer, **P2** desktop sync,
 | 9 | `mmtelephony` | ModemManager -> desktop | `kdeconnect.telephony`, `.telephony.request_mute` | ModemManager DBus | P4 | no | no | no |
 | 10 | `mousepad` | phone -> desktop | `kdeconnect.mousepad.request`, `.echo`, `.keyboardstate` | libei pointer + keyboard | P3 | no | no | no |
 | 11 | `mpriscontrol` | phone -> desktop | `kdeconnect.mpris`, `.mpris.request` | `playerctl` | P2 | yes | yes | no |
-| 12 | `mprisremote` | desktop -> phone | `kdeconnect.mpris`, `.mpris.request` | MPRIS DBus (remote players) | P2 | no | no | no |
+| 12 | `mprisremote` | desktop -> phone | `kdeconnect.mpris`, `.mpris.request` | phone-owned; cached player state, no local adapter | P2 | yes | n/a | no |
 | 13 | `notifications` | phone -> desktop | `kdeconnect.notification`, `.notification.action`, `.notification.reply`, `.notification.request` | `notify-send`, `gdbus` close | P2 | yes | yes | no |
 | 14 | `pausemusic` | phone -> desktop | `kdeconnect.telephony`, `kdeconnect.mpris.request` | `playerctl` | P2 | yes | yes | no |
 | 15 | `ping` | bidirectional | `kdeconnect.ping` | none | P0 | yes | n/a | no |
