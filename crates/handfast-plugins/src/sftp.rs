@@ -335,7 +335,6 @@ impl PluginFactory for SftpFactory {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,11 +382,7 @@ mod tests {
         })
     }
 
-    async fn send(
-        plugin: &mut SftpPlugin,
-        config: &PluginConfig,
-        body: Value,
-    ) -> PluginOutput {
+    async fn send(plugin: &mut SftpPlugin, config: &PluginConfig, body: Value) -> PluginOutput {
         let desktop = MockDesktop::new().desktop();
         let device = device();
         let mut ctx = PluginContext {
@@ -465,7 +460,10 @@ mod tests {
 
         let body = &output.packets[0].body;
         assert_eq!(body.get("serverRunning"), Some(&json!(false)));
-        assert_eq!(body.get("errorMessage"), Some(&json!("sshd is not installed")));
+        assert_eq!(
+            body.get("errorMessage"),
+            Some(&json!("sshd is not installed"))
+        );
         assert!(!plugin.is_running());
     }
 
@@ -522,7 +520,11 @@ mod tests {
     #[tokio::test]
     async fn every_reply_states_whether_the_server_is_running() {
         // The phone's UI reads serverRunning first; a reply without it hangs.
-        for body in [json!({ "start": true }), json!({ "start": false }), json!({})] {
+        for body in [
+            json!({ "start": true }),
+            json!({ "start": false }),
+            json!({}),
+        ] {
             let mut plugin = SftpPlugin::new();
             let output = send(&mut plugin, &PluginConfig::new(), body).await;
             assert_eq!(output.packets.len(), 1);

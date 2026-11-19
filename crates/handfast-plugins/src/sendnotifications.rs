@@ -253,12 +253,25 @@ mod tests {
         }
 
 
-        fn ctx(&self) -> PluginContext<'_> {
-            PluginContext {
-                device: &self.device,
-                desktop: &self.desktop,
-                config: &self.config,
-            }
+        /// Queue a notification, borrowing the plugin mutably and everything
+        /// else immutably.
+        ///
+        /// `notify` needs `&mut plugin` and `&PluginContext`, and a context
+        /// built from `&self` would borrow the whole harness, so the fields are
+        /// destructured first.
+        fn notify(&mut self, notification: OutgoingNotification) -> bool {
+            let Self {
+                plugin,
+                desktop,
+                device,
+                config,
+            } = self;
+            let ctx = PluginContext {
+                device,
+                desktop,
+                config,
+            };
+            plugin.notify(&ctx, notification)
         }
 
         async fn tick(&mut self) -> PluginOutput {
@@ -296,12 +309,7 @@ mod tests {
     #[test]
     fn nothing_is_forwarded_without_an_allowlist() {
         let mut harness = Harness::new(PluginConfig::new());
-        let accepted = {
-            let ctx = harness.ctx();
-            harness
-                .plugin
-                .notify(&ctx, OutgoingNotification::new("firefox", "Hello"))
-        };
+        let accepted = harness.notify(OutgoingNotification::new("firefox", "Hello"));
         assert!(!accepted, "an empty allowlist must forward nothing");
         assert_eq!(harness.plugin.pending(), 0);
     }
@@ -309,13 +317,9 @@ mod tests {
     #[tokio::test]
     async fn an_allowed_application_is_forwarded_with_the_upstream_fields() {
         let mut harness = Harness::new(configured("firefox,kmail"));
-        let accepted = {
-            let ctx = harness.ctx();
-            harness.plugin.notify(
-                &ctx,
-                OutgoingNotification::new("firefox", "Download done").with_text("report.pdf"),
-            )
-        };
+        let accepted = harness.notify(
+            OutgoingNotification::new("firefox", "Download done").with_text("report.pdf"),
+        );
         assert!(accepted);
 
         let output = harness.tick().await;
@@ -339,15 +343,8 @@ mod tests {
     #[tokio::test]
     async fn a_disallowed_application_is_counted_and_reported_once() {
         let mut harness = Harness::new(configured("firefox"));
-        {
-            let ctx = harness.ctx();
-            assert!(!harness
-                .plugin
-                .notify(&ctx, OutgoingNotification::new("keepassxc", "Unlock")));
-            assert!(!harness
-                .plugin
-                .notify(&ctx, OutgoingNotification::new("keepassxc", "Again")));
-        }
+        assert!(!harness.notify(OutgoingNotification::new("keepassxc", "Unlock")));
+        assert!(!harness.notify(OutgoingNotification::new("keepassxc", "Again")));
 
         let output = harness.tick().await;
         assert!(output.packets.is_empty());
@@ -359,12 +356,7 @@ mod tests {
     #[tokio::test]
     async fn a_notification_without_a_body_omits_text() {
         let mut harness = Harness::new(configured("firefox"));
-        {
-            let ctx = harness.ctx();
-            harness
-                .plugin
-                .notify(&ctx, OutgoingNotification::new("firefox", "Just a title"));
-        }
+        harness.notify(OutgoingNotification::new("firefox", "Just a title"));
         let output = harness.tick().await;
         let body = &output.packets[0].body;
         assert!(!body.contains_key("text"));
@@ -375,10 +367,7 @@ mod tests {
     async fn ids_increase_so_the_phone_can_tell_notifications_apart() {
         let mut harness = Harness::new(configured("firefox"));
         for title in ["one", "two"] {
-            let ctx = harness.ctx();
-            harness
-                .plugin
-                .notify(&ctx, OutgoingNotification::new("firefox", title));
+            harness.notify(OutgoingNotification::new("firefox", title));
         }
         let output = harness.tick().await;
         let first = output.packets[0].body.get("id").unwrap();
@@ -390,12 +379,7 @@ mod tests {
     async fn an_oversized_field_is_rejected() {
         let mut harness = Harness::new(configured("firefox"));
         let long = "x".repeat(MAX_TEXT_BYTES + 1);
-        let accepted = {
-            let ctx = harness.ctx();
-            harness
-                .plugin
-                .notify(&ctx, OutgoingNotification::new("firefox", long))
-        };
+        let accepted = harness.notify(OutgoingNotification::new("firefox", long));
         assert!(!accepted);
         assert_eq!(harness.plugin.pending(), 0);
     }

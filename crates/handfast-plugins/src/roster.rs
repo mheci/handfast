@@ -3,8 +3,12 @@
 use handfast_proto::types;
 use handfast_runtime::{DesktopRequirement, PluginMeta, PluginStatus};
 
+/// Shorthand for the status every roster row now carries.
+///
+/// There is no `PLANNED` alias any more: every plugin is implemented.
+/// `PluginStatus::Planned` still exists for the parity matrix, which
+/// distinguishes a gap from a deliberate absence.
 const IMPLEMENTED: PluginStatus = PluginStatus::Implemented;
-const PLANNED: PluginStatus = PluginStatus::Planned;
 
 /// Battery status.
 pub const BATTERY: PluginMeta = PluginMeta {

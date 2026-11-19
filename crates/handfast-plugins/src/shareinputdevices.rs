@@ -248,7 +248,10 @@ mod tests {
             roster::SHAREINPUTDEVICES.incoming,
             &[types::SHAREINPUTDEVICES_REQUEST, types::MOUSEPAD_REQUEST]
         );
-        assert_eq!(roster::SHAREINPUTDEVICES.outgoing, &[types::SHAREINPUTDEVICES]);
+        assert_eq!(
+            roster::SHAREINPUTDEVICES.outgoing,
+            &[types::SHAREINPUTDEVICES]
+        );
     }
 
     #[tokio::test]
