@@ -181,14 +181,13 @@ impl MprisRemotePlugin {
 
     /// Refresh the player list and every cached player's state.
     ///
-    /// Cached keys already passed validation when they entered the map, so the
-    /// per-player requests cannot fail; the method ignores the result to keep
-    /// that invariant out of the signature.
+    /// Cached keys were validated when they entered the map, so the requests
+    /// are queued directly instead of going through the fallible builders.
     pub fn refresh(&mut self) {
         self.request_player_list();
         let players: Vec<String> = self.players.keys().cloned().collect();
         for player in players {
-            drop(self.request_now_playing(&player));
+            self.pending.push(Outgoing::NowPlaying { player });
         }
     }
 
