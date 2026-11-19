@@ -57,6 +57,10 @@ def annotate_build(path: str) -> None:
 def annotate_fmt(path: str) -> None:
     """Republish the rustfmt diff, one annotation per hunk."""
     lines = read(path)
+    if not lines:
+        emit("notice", ".github", "1", "fmt: clean")
+        return
+    emit("notice", ".github", "1", f"fmt: {len(lines)} lines of output, first: {lines[0][:200]}")
     current_file = None
     current_line = "1"
     hunk: list[str] = []
