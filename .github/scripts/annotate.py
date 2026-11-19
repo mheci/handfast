@@ -55,34 +55,46 @@ def annotate_build(path: str) -> None:
 
 
 def annotate_fmt(path: str) -> None:
-    """Republish the rustfmt diff, one annotation per hunk."""
+    """Republish the rustfmt diff, one annotation per hunk.
+
+    rustfmt prints either "Diff in <path> at line <n>:" or, since 1.6x,
+    "Diff in <path>:<n>:".
+    """
     lines = read(path)
     if not lines:
         emit("notice", ".github", "1", "fmt: clean")
         return
-    emit("notice", ".github", "1", f"fmt: {len(lines)} lines of output, first: {lines[0][:200]}")
+
+    header = re.compile(r"^Diff in (.+?)(?: at line |:)(\d+):?$")
     current_file = None
     current_line = "1"
     hunk: list[str] = []
+    emitted = 0
 
     def flush() -> None:
+        nonlocal emitted
         if current_file and hunk:
-            for part in chunk(" | ".join(hunk).strip()):
-                emit("error", current_file, current_line, f"fmt: {part}")
+            text = " ".join(part for part in hunk if part).strip()
+            for part in chunk(f"fmt: {text}"):
+                emit("error", current_file, current_line, part)
+                emitted += 1
 
     for line in lines:
-        match = re.match(r"Diff in (\S+) at line (\d+):", line)
+        match = header.match(line)
         if match:
             flush()
             current_file = match.group(1)
             current_line = match.group(2)
             hunk = []
             continue
-        if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+        if line.startswith(("+++", "---", "@@")):
             continue
-        if current_file and (line.startswith(("+", "-", " ")) or not line.strip()):
+        if current_file:
             hunk.append(line.rstrip())
     flush()
+    if emitted == 0:
+        for part in chunk(" ".join(lines))[:6]:
+            emit("notice", ".github", "1", f"fmt raw: {part}")
 
 
 def annotate_tests(path: str) -> None:

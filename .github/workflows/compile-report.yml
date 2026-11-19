@@ -54,6 +54,24 @@ jobs:
         if: always()
         run: python3 .github/scripts/annotate.py /tmp/clippy.txt
 
+  docs:
+    name: report docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      - name: docs
+        run: cargo doc --workspace --no-deps --message-format=short > /tmp/doc.txt 2>&1 || true
+      - name: annotate
+        if: always()
+        run: python3 .github/scripts/annotate.py /tmp/doc.txt
+
   test:
     name: report test
     runs-on: ubuntu-latest
