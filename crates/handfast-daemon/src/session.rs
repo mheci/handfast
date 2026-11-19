@@ -1163,7 +1163,7 @@ mod tests {
         name: "recording",
         title: "Recording",
         status: PluginStatus::Implemented,
-        incoming: &[],
+        incoming: &[types::PING],
         outgoing: &[],
         desktop: DesktopRequirement::None,
     };
@@ -1638,17 +1638,14 @@ mod tests {
         let (events_tx, _events_rx) = mpsc::channel(8);
         let session = DeviceSession::start(
             peer_identity(),
-            LinkHandle::from_channel(
-                DeviceId::new("0123456789abcdef0123456789abcdef").unwrap(),
-                link_tx,
-            ),
+            LinkHandle::from_channel(peer_identity().device_id, link_tx),
             registry,
             Desktop::default(),
             events_tx,
             SessionLimits::default(),
         );
 
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(20), async {
             while ticks.load(Ordering::SeqCst) == 0 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }

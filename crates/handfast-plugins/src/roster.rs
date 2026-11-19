@@ -265,7 +265,9 @@ pub const SHARE: PluginMeta = PluginMeta {
     name: "share",
     title: "Share and receive",
     status: IMPLEMENTED,
-    incoming: &[types::SHARE_REQUEST],
+    // The desktop client only sends `share.request.update`, but Android
+    // receives it, so a Handfast peer keeps accepting it for interop.
+    incoming: &[types::SHARE_REQUEST, types::SHARE_REQUEST_UPDATE],
     outgoing: &[types::SHARE_REQUEST, types::SHARE_REQUEST_UPDATE],
     desktop: DesktopRequirement::Files,
 };

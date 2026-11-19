@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::error::{DesktopError, Result};
+use crate::error::Result;
 use crate::traits::{Battery, BatteryStatus};
 
 /// Low-battery threshold, matching the desktop client's 15 percent rule.
@@ -95,7 +95,7 @@ fn interpret(capacity: &str, status: Option<&str>) -> BatteryStatus {
             "Charging" | "Full" | "Not charging" | "Unknown" | "Warming"
         )
     });
-    let threshold = if charge >= 0 && charge <= LOW_THRESHOLD && !charging {
+    let threshold = if (0..=LOW_THRESHOLD).contains(&charge) && !charging {
         1
     } else {
         0

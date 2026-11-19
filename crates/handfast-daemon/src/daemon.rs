@@ -1207,10 +1207,9 @@ mod tests {
                 &[types::NOTIFICATION, types::FINDMYPHONE_REQUEST][..],
             ),
             ("playerctl", &[types::MPRIS_REQUEST][..]),
-            (
-                "wpctl",
-                &[types::SYSTEMVOLUME, types::SYSTEMVOLUME_REQUEST][..],
-            ),
+            // `accepts` asks about incomingCapabilities, so only the types the
+            // plugin receives belong here: systemvolume sends the sink list.
+            ("wpctl", &[types::SYSTEMVOLUME_REQUEST][..]),
             ("loginctl", &[types::LOCK_REQUEST, types::LOCK][..]),
         ];
 

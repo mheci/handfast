@@ -82,24 +82,46 @@ def annotate_fmt(path: str) -> None:
 
 
 def annotate_tests(path: str) -> None:
+    """Report failing test names, then the captured output of each failure."""
     lines = read(path)
-    failures = 0
+    failed: list[str] = []
     for line in lines:
         if line.startswith("test ") and line.endswith("FAILED"):
-            failures += 1
+            failed.append(line)
             emit("error", ".github", "1", line)
-        elif line.startswith("---- ") and line.endswith(" stdout ----"):
-            emit("error", ".github", "1", line)
-        elif line.startswith("failures:"):
-            emit("error", ".github", "1", line)
-    if failures == 0:
+    if not failed:
         emit("notice", ".github", "1", "tests: no reported failures in this log")
+        return
+
+    # Each failure block starts with "---- <name> stdout ----".
+    block: list[str] = []
+    in_block = False
+    for line in lines:
+        if line.startswith("---- ") and line.endswith(" stdout ----"):
+            if block:
+                for part in chunk(" ".join(block).strip()):
+                    emit("error", ".github", "1", f"assert: {part}")
+            block = []
+            in_block = True
+            continue
+        if in_block:
+            if line.startswith("failures:") or line.startswith("---- "):
+                in_block = False
+                if block:
+                    for part in chunk(" ".join(block).strip()):
+                        emit("error", ".github", "1", f"assert: {part}")
+                block = []
+            else:
+                block.append(line.strip())
+    if block:
+        for part in chunk(" ".join(block).strip()):
+            emit("error", ".github", "1", f"assert: {part}")
 
 
 def main() -> None:
     for target in sys.argv[1:]:
         name = os.path.basename(target)
-        if name.startswith("build") or name.startswith("clippy") or name.startswith("doc"):
+        if name.startswith("clippy") or name.startswith("build") or name.startswith("doc"):
             annotate_build(target)
         elif name.startswith("fmt"):
             annotate_fmt(target)
