@@ -296,3 +296,36 @@ Note for the next wave: `remotecontrol` and `remotekeyboard` are still planned.
 They are the mirror of `mousepad` — the desktop sends `mousepad.request` to a
 phone that already implements it — so the packet builder and the pointer
 encoding in `handfast-desktop` can be reused instead of written again.
+
+## Wave 21 — sending input to the phone (PR #275)
+
+`remotecontrol` and `remotekeyboard` were the last two input plugins marked
+planned, and they are the mirror of `mousepad`: instead of injecting what a
+phone sends us, they send `kdeconnect.mousepad.request` to a phone that already
+knows how to receive it. Both live in one module, because they share a single
+packet and the receiver decides by presence of `key` or `specialKey`.
+
+Readiness is the interesting part. `remotekeyboard` sets `sendAck` on every key
+event, and the receiver echoes a handled event back as `kdeconnect.mousepad.echo`
+with `isAck: true`. Upstream refuses an echo that lacks either field, so this
+does too, and only then reports the peer as ready. `mousepad.keyboardstate` is
+tracked separately, because it says whether the peer's keyboard is up rather
+than whether a keypress landed. `remotecontrol` never acks: the Android mouse
+receiver has no echo path, so a probe there would wait forever.
+
+Two constraints came out of reading the Android receiver rather than guessing.
+Its hold/release fields exist only for the left button, so a drag with the
+middle or right button is rejected up front instead of being silently encoded as
+a left drag. And movement of exactly zero is rejected: the receiver treats a
+packet with no coordinates as "hide the pointer", which is not what a caller
+asking to move by nothing wants.
+
+The roster test needed a wider rule. It asserted every implemented plugin has a
+non-empty incoming set, which was true until `remotecontrol` — a plugin that
+only sends. It now requires an incoming or an outgoing set, so the outbound-only
+case is covered honestly instead of skipped.
+
+Remaining in the input family: `shareinputdevices` and `shareinputdevicesremote`
+(libei capture and forwarding between two desktops). Those need a Wayland input
+capture backend that does not exist yet; the packet side is already in the
+roster.
