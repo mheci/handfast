@@ -16,7 +16,7 @@ gui = ["dep:eframe"]
 
 [dependencies]
 clap.workspace = true
-eframe = { version = "0.33", default-features = false, features = [
+eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "glow",
